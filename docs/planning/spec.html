@@ -1,0 +1,452 @@
+<title>Карта продлений ОФД — спецификация бордов</title>
+<style>
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #101715;
+      --ink: #e6ece8;
+      --accent: #4bd1ae;
+      --warn: #e2a15a;
+      --critical: #ef7166;
+      --line: #2c3733;
+      --muted: #93a09a;
+      --card-bg: #151d1a;
+    }
+  }
+  :root {
+    --paper: #eef1ef;
+    --ink: #16231f;
+    --accent: #0f6b5c;
+    --warn: #a15a1c;
+    --critical: #a33327;
+    --line: #c7cec8;
+    --muted: #57635c;
+    --card-bg: #f6f8f6;
+    --serif: Georgia, "PT Serif", "Times New Roman", serif;
+    --sans: -apple-system, "Segoe UI", "Helvetica Neue", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  :root[data-theme="dark"] {
+    --paper: #101715; --ink: #e6ece8; --accent: #4bd1ae; --warn: #e2a15a;
+    --critical: #ef7166; --line: #2c3733; --muted: #93a09a; --card-bg: #151d1a;
+  }
+  :root[data-theme="light"] {
+    --paper: #eef1ef; --ink: #16231f; --accent: #0f6b5c; --warn: #a15a1c;
+    --critical: #a33327; --line: #c7cec8; --muted: #57635c; --card-bg: #f6f8f6;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink); font-family: var(--sans);
+    font-size: 16px; line-height: 1.55; margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+
+  .page {
+    max-width: 1180px; margin: 0 auto; padding: 56px 28px 120px;
+    display: grid; grid-template-columns: 200px minmax(0, 800px);
+    gap: 56px; justify-content: center;
+  }
+  @media (max-width: 880px) {
+    .page { grid-template-columns: 1fr; padding: 32px 18px 80px; }
+    nav.rail { position: static !important; border-right: none !important; padding: 0 0 24px !important; }
+  }
+
+  header.title-block { grid-column: 1 / -1; margin-bottom: 8px; }
+  header.title-block .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  header.title-block h1 {
+    font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 4vw, 40px);
+    margin: 6px 0 10px; text-wrap: balance;
+  }
+  header.title-block p.lede {
+    max-width: 62ch; color: var(--muted); margin: 0; font-size: 15px;
+  }
+
+  nav.rail {
+    position: sticky; top: 40px; align-self: start; height: max-content;
+    border-right: 1px solid var(--line); padding-right: 20px;
+  }
+  nav.rail .rail-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px;
+  }
+  nav.rail ul { list-style: none; margin: 0; padding: 0; }
+  nav.rail li { margin-bottom: 4px; }
+  nav.rail a {
+    display: block; text-decoration: none; color: var(--ink); font-size: 14px;
+    padding: 7px 8px; border-radius: 3px;
+  }
+  nav.rail a .code { font-family: var(--mono); color: var(--muted); margin-right: 8px; font-size: 12px; }
+  nav.rail a:hover { background: var(--card-bg); }
+
+  main { min-width: 0; }
+
+  section.board { margin-bottom: 64px; }
+  section.board .board-head {
+    border-bottom: 1px dashed var(--line); padding-bottom: 16px; margin-bottom: 28px;
+  }
+  section.board .board-code {
+    font-family: var(--mono); font-size: 13px; color: var(--accent); letter-spacing: .06em;
+  }
+  section.board h2 {
+    font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 4px 0 6px;
+  }
+  section.board .board-purpose { color: var(--muted); font-size: 14.5px; margin: 0; max-width: 68ch; }
+
+  section.notes {
+    background: var(--card-bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 22px 24px; margin-bottom: 56px;
+  }
+  section.notes h2 { font-family: var(--serif); font-weight: 400; font-size: 20px; margin: 0 0 14px; }
+  section.notes .rule { margin-bottom: 14px; }
+  section.notes .rule:last-child { margin-bottom: 0; }
+  section.notes .rule .k { font-weight: 600; font-size: 14.5px; }
+  section.notes .rule .v { color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+  .card {
+    border-top: 1px solid var(--line); padding: 20px 0;
+  }
+  .card:last-child { padding-bottom: 0; }
+  .card .card-head {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  .card h3 { font-size: 16.5px; margin: 0; font-weight: 600; }
+  .chip {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+    border: 1px solid var(--line); color: var(--muted); border-radius: 100px; padding: 2px 9px;
+    white-space: nowrap;
+  }
+  .chip.scope { border-style: dashed; }
+  .chip.scope.period { color: var(--accent); border-color: var(--accent); }
+  .card p.desc { margin: 8px 0 0; font-size: 14.5px; color: var(--ink); max-width: 68ch; }
+  .card pre.formula {
+    font-family: var(--mono); font-size: 12.5px; background: var(--card-bg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; margin: 10px 0 0;
+    overflow-x: auto; white-space: pre; color: var(--ink); font-variant-numeric: tabular-nums;
+  }
+  .meta-row { display: flex; gap: 24px; margin-top: 10px; flex-wrap: wrap; }
+  .meta-row .meta { font-size: 13px; }
+  .meta-row .meta .label {
+    font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); display: block; margin-bottom: 3px;
+  }
+  .pill-list { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pill {
+    font-size: 12.5px; border: 1px solid var(--line); border-radius: 4px; padding: 3px 8px;
+    background: var(--card-bg);
+  }
+  .pill.risk { color: var(--warn); border-color: var(--warn); }
+  .pill.crit { color: var(--critical); border-color: var(--critical); }
+  .pill.export { color: var(--accent); border-color: var(--accent); }
+
+  table.channels {
+    width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 10px;
+    overflow-x: auto; display: block;
+  }
+  table.channels th, table.channels td {
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  table.channels th { font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; color: var(--muted); font-weight: 400; }
+  table.channels td.field { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+
+  section.ui-mechanics { margin-top: 8px; }
+  .step-list { list-style: none; margin: 16px 0 0; padding: 0; counter-reset: step; }
+  .step-list li {
+    display: grid; grid-template-columns: 28px 1fr; gap: 12px; padding: 10px 0;
+    border-top: 1px solid var(--line); font-size: 14.5px;
+  }
+  .step-list li:first-child { border-top: none; }
+  .step-list li::before {
+    counter-increment: step; content: counter(step); font-family: var(--mono);
+    color: var(--muted); font-size: 13px;
+  }
+  .step-list li b { display: block; margin-bottom: 2px; }
+  .step-list li span.d { color: var(--muted); }
+
+  footer.approve {
+    grid-column: 1 / -1; margin-top: 8px; border-top: 1px solid var(--line); padding-top: 20px;
+    font-size: 13.5px; color: var(--muted);
+  }
+</style>
+
+<div class="page">
+
+<header class="title-block">
+  <div class="eyebrow">Спецификация · до утверждения — дизайн и разработка не начаты</div>
+  <h1>Карта продлений ОФД</h1>
+  <p class="lede">Все борды, виджеты, формулы и кнопки будущего инструмента — построчно, для сверки. После ОК переходим к дизайну интерфейса, после утверждения дизайна — к разработке.</p>
+</header>
+
+<nav class="rail">
+  <div class="rail-label">Борды</div>
+  <ul>
+    <li><a href="#defs"><span class="code">00</span>Определения</a></li>
+    <li><a href="#b1"><span class="code">B1</span>Клиенты</a></li>
+    <li><a href="#b2"><span class="code">B2</span>Кассы</a></li>
+    <li><a href="#b3"><span class="code">B3</span>Партнёры</a></li>
+    <li><a href="#b4"><span class="code">B4</span>Коды ОФД</a></li>
+    <li><a href="#ui"><span class="code">UI</span>Механика сайта</a></li>
+  </ul>
+</nav>
+
+<main>
+
+<section class="notes" id="defs">
+  <h2>Сквозные определения и исключения</h2>
+  <div class="rule">
+    <div class="k">Клиент</div>
+    <div class="v">ИНН организации. Если поля нет — ИНН физлица (892 строки, статус «Новый»/«Выдан», старые даты создания — отдел продаж). Эти 892 считаются клиентами по факту создания, отдельно от общей логики резерва партнёров.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Касса</div>
+    <div class="v">РНМ ККТ. Один клиент → 1..N касс.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Код ОФД</div>
+    <div class="v">PIN. Может существовать без клиента (партнёр сгенерировал впрок) и без активации.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Дата появления сущности</div>
+    <div class="v">MIN(Дата активации) среди кодов со статусом «Зарегистрировано». Коды «Новый»/«Выдан» — резерв партнёра, в клиентские/кассовые метрики не входят. «Отозвано» — не участвует нигде, кроме отдельного счётчика.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Период</div>
+    <div class="v">Произвольный диапазон дат («с» — «по»), один фильтр наверху. Фильтрует только виджеты с меткой <span class="chip scope period" style="vertical-align:middle">период</span> ниже — это потоковые метрики (новые/отток/реанимация и всё явно помеченное «за период»).</div>
+  </div>
+  <div class="rule">
+    <div class="k">As-of дата</div>
+    <div class="v">Фиксируется в момент загрузки XLSX. Не пересчитывается при открытии сайта без новой загрузки. Виджеты с меткой <span class="chip scope" style="vertical-align:middle">as-of</span> — снэпшот текущего состояния, верхний фильтр периода на них не влияет.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Отток</div>
+    <div class="v">Считается раздельно по клиентам и по кассам — два независимых показателя, не объединяются. Касса: «Общая дата окончания» попадает в [начало периода; конец периода] (не только «раньше конца» — иначе считает накопительный отток за всё время вместо оттока именно за выбранный период), и к as-of дате продления не было. Клиент: в оттоке, когда в оттоке абсолютно все его кассы.</div>
+  </div>
+  <div class="rule">
+    <div class="k">Реанимация</div>
+    <div class="v">Сущность была в оттоке на конец периода, но появилась новая дата активации в окне [конец периода; конец периода + 3 мес].</div>
+  </div>
+  <div class="rule">
+    <div class="k">Продления кассы</div>
+    <div class="v">Не полагаемся на флаг «Тип активации» (в 298 цепочках из 263 675 встречается два «Первичная» подряд — флаг иногда врёт). Считаем так: берём только коды со статусом «Зарегистрировано» (отозванные из цепочки исключаются — по правилу выше «Отозвано» не участвует нигде, кроме своего счётчика), сортируем по дате, число продлений = количество оставшихся кодов − 1.</div>
+  </div>
+</section>
+
+<section class="board" id="b1">
+  <div class="board-head">
+    <div class="board-code">B1 / КЛИЕНТЫ</div>
+    <h2>Клиенты</h2>
+    <p class="board-purpose">Всё на уровне ИНН, агрегировано по всей базе — не карточка одного клиента.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Активные клиенты сейчас</h3><span class="chip">карточка</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Счётчик уникальных ИНН, у кого хотя бы одна касса не в оттоке на as-of дату. Снэпшот — верхний фильтр периода на это число не влияет.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Новые клиенты за период</h3><span class="chip">карточка + график</span><span class="chip scope period">период</span></div>
+    <p class="desc">Дата появления ИНН попала в выбранный диапазон. График — помесячно внутри диапазона.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Отток клиентов за период</h3><span class="chip">карточка + график</span><span class="chip scope period">период</span></div>
+    <p class="desc">ИНН, у которых все кассы вышли в отток внутри периода (см. определение оттока выше).</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Реанимированные клиенты</h3><span class="chip">карточка + график</span><span class="chip scope period">период</span></div>
+    <p class="desc">Были в оттоке на конец периода, вернулись в окне +3 месяца.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Нетто-прирост базы</h3><span class="chip">график</span><span class="chip scope period">период</span></div>
+    <p class="desc">Новые минус отток, накопительный итог по месяцам периода.</p>
+    <pre class="formula">нетто(t) = новые(t) − отток(t)
+накопительно(t) = накопительно(t−1) + нетто(t)</pre>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Распределение по числу касс</h3><span class="chip">график</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Гистограмма по всей базе клиентов: 1 / 2–3 / 4–9 / 10+ касс на ИНН. Снэпшот на as-of.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Клиенты «под риском»</h3><span class="chip">таблица</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Клиенты, у которых общий срок ближайшей кассы подходит к концу — считается от as-of, не от верхнего периода. Переключатель — только одно из двух полей активно за раз.</p>
+    <div class="meta-row">
+      <div class="meta"><span class="label">Фильтр А</span>дней до окончания <span class="pill risk">по умолчанию 30</span></div>
+      <div class="meta"><span class="label">Фильтр Б</span>конкретная дата окончания</div>
+      <div class="meta"><span class="label">Кнопка</span><span class="pill export">Экспорт CSV / Excel</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Возрастная структура базы</h3><span class="chip">график</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Retention-кривая: доля клиентов старше 1 года / 2 лет / 3+ лет от даты появления до as-of.</p>
+  </div>
+</section>
+
+<section class="board" id="b2">
+  <div class="board-head">
+    <div class="board-code">B2 / КАССЫ</div>
+    <h2>Кассы</h2>
+    <p class="board-purpose">Тот же набор метрик, что у клиентов, но на уровне РНМ — чтобы видеть расхождение между «клиент жив» и «касса в оттоке».</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Активные кассы сейчас</h3><span class="chip">карточка</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Счётчик РНМ, чья «Общая дата окончания» ≥ as-of дата. Снэпшот, период не влияет.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Новые / отток / реанимация касс</h3><span class="chip">карточки + графики</span><span class="chip scope period">период</span></div>
+    <p class="desc">Симметрично клиентским, но независимо — своя когорта, не привязана к статусу клиента.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Кассы и продления</h3><span class="chip">таблица</span><span class="chip scope">as-of</span></div>
+    <p class="desc">1 строка на РНМ: число продлений, текущий тариф, «Общая дата окончания», статус. Снэпшот по всей истории кассы, период не фильтрует.</p>
+    <pre class="formula">продления(РНМ) = COUNT(коды кассы, статус="Зарегистрировано") − 1
+// «Отозвано» исключены из подсчёта заранее; сортировка по дате активации;
+// флаг «Первичная» не используется как источник истины</pre>
+    <div class="meta-row">
+      <div class="meta"><span class="label">Кнопка</span><span class="pill export">Экспорт CSV / Excel</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Распределение продлений</h3><span class="chip">график</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Гистограмма из таблицы выше: 0 / 1–2 / 3–5 / 6+ продлений на кассу — прокси лояльности по всему парку.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Распределение по сроку тарифа</h3><span class="chip">график</span><span class="chip scope">as-of</span></div>
+    <p class="desc">15 / 36 / 13 / 1 / 6 / 3 месяца — доли по всей базе касс.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Кассы «под риском»</h3><span class="chip">таблица</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Те же два взаимоисключающих фильтра, что у клиентов, от as-of.</p>
+    <div class="meta-row">
+      <div class="meta"><span class="label">Фильтр А</span>дней до окончания <span class="pill risk">по умолчанию 30</span></div>
+      <div class="meta"><span class="label">Фильтр Б</span>конкретная дата окончания</div>
+      <div class="meta"><span class="label">Кнопка</span><span class="pill export">Экспорт CSV / Excel</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Сводка клиенты vs кассы</h3><span class="chip">карточки</span><span class="chip scope">as-of</span></div>
+    <p class="desc">% клиентов с более чем 1 кассой, среднее число касс на клиента — агрегат по всей базе, без захода в конкретного клиента.</p>
+  </div>
+</section>
+
+<section class="board" id="b3">
+  <div class="board-head">
+    <div class="board-code">B3 / ПАРТНЁРЫ</div>
+    <h2>Партнёры</h2>
+    <p class="board-purpose">Таблицы и счётчики по всем партнёрам сразу — без карточки одного партнёра.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Действующие партнёры сейчас</h3><span class="chip">карточка</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Партнёр = есть хотя бы 1 активная касса или клиент на as-of дату. Снэпшот, период не влияет.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Таблица по партнёрам</h3><span class="chip">таблица</span><span class="chip scope">as-of</span></div>
+    <p class="desc">1 строка на партнёра: число закреплённых клиентов (партнёр = последний по дате активации), число касс, число неактивированных кодов в резерве. Сортируемая целиком, снэпшот на as-of.</p>
+    <div class="meta-row">
+      <div class="meta"><span class="label">Кнопка</span><span class="pill export">Экспорт CSV / Excel</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Топ партнёров по объёму</h3><span class="chip">таблица</span><span class="chip scope period">период</span></div>
+    <p class="desc">За выбранный период: клиенты / кассы / продления, по убыванию.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Топ по зависшему резерву</h3><span class="chip">таблица</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Партнёры с наибольшим количеством неактивированных кодов (весь резерв — 47 283 кода, 27 324 старше года). Снэпшот на as-of.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Разбивка по каналам</h3><span class="chip">таблица + график</span><span class="chip scope">as-of</span></div>
+    <p class="desc">3 канала. Логика распределения зафиксирована, живёт в разделе «Партнёры» — если поменяется, перепишем отдельно.</p>
+    <table class="channels">
+      <tr><th>Канал</th><th>Поле фильтра</th><th>Значения</th></tr>
+      <tr>
+        <td>Ольга Зибер</td>
+        <td class="field">Партнёр</td>
+        <td>содержит «ЛК ОФД» / «ОПС ЭДО» / «ОППС ЭДО»</td>
+      </tr>
+      <tr>
+        <td>Лариса Пенигина</td>
+        <td class="field">Центр продаж</td>
+        <td>11 подтверждённых ЦП (список зафиксирован, 3 нерабочих пункта убраны)</td>
+      </tr>
+      <tr>
+        <td>Партнёры</td>
+        <td class="field">—</td>
+        <td>всё остальное, включая «АО Калуга Астрал Центр Продаж» (127 124 строки)</td>
+      </tr>
+    </table>
+  </div>
+</section>
+
+<section class="board" id="b4">
+  <div class="board-head">
+    <div class="board-code">B4 / КОДЫ ОФД</div>
+    <h2>Коды ОФД</h2>
+    <p class="board-purpose">Учёт кодов вне привязки к клиенту — воронка, резерв, аннулированные.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Неактивированные коды по годам</h3><span class="chip">график, раскрывается</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Клик на год → раскрытие по месяцам. Считаются коды, созданные и не активированные к as-of дате. Весь срез разом, верхний период на выбор года/месяца не влияет.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Неактивированные коды по партнёрам</h3><span class="chip">таблица, раскрывается</span><span class="chip scope">as-of</span></div>
+    <p class="desc">Топ-список партнёров по резерву. Клик на партнёра → раскрытие год + месяц (при необходимости — до дня). Снэпшот на as-of.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Отозванные коды</h3><span class="chip">карточка</span><span class="chip scope period">период</span></div>
+    <p class="desc">Отдельный счётчик за период. Больше нигде не учитывается — ни в оттоке, ни в резерве, ни в базе клиентов/касс.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Общая воронка</h3><span class="chip">график</span><span class="chip scope period">период</span></div>
+    <p class="desc">Создано → активировано → зарегистрировано / отозвано, для кодов, созданных в выбранном периоде. Плюс среднее время от создания до активации.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h3>Доля кодов «впрок»</h3><span class="chip">карточка</span><span class="chip scope period">период</span></div>
+    <p class="desc">Доля кодов, сгенерированных партнёром без клиента на момент выгрузки, от всех созданных за период.</p>
+  </div>
+</section>
+
+<section class="notes ui-mechanics" id="ui">
+  <h2>Механика сайта</h2>
+  <ol class="step-list">
+    <li><b>Загрузка</b><span class="d">Перетащить XLSX в браузер или выбрать файл. Обработка — целиком на клиенте, ничего не уходит на сервер.</span></li>
+    <li><b>Пересчёт</b><span class="d">As-of дата фиксируется на момент загрузки. Все борды и виджеты пересчитываются от неё.</span></li>
+    <li><b>Период</b><span class="d">Один общий фильтр «с — по» наверху — фильтрует виджеты с меткой «период». Виджеты с меткой «as-of» игнорируют его и всегда показывают снэпшот на дату загрузки.</span></li>
+    <li><b>Библиотека виджетов</b><span class="d">Правая панель — все ~25 виджетов из B1–B4, сгруппированные по бордам.</span></li>
+    <li><b>Drag-and-drop</b><span class="d">Перетаскивание виджета из библиотеки на рабочую область. Свободная сетка, можно сопоставлять виджеты из разных бордов рядом.</span></li>
+    <li><b>Экспорт</b><span class="d">У каждой таблицы — кнопка «Экспорт CSV / Excel», отдаёт чистый список данных.</span></li>
+  </ol>
+</section>
+
+</main>
+
+<footer class="approve">
+  Даёшь ОК по этой спеке → переходим к дизайну интерфейса → после утверждения дизайна → разработка.
+</footer>
+
+</div>

@@ -1,0 +1,457 @@
+<title>Карта продлений ОФД — дизайн интерфейса</title>
+<style>
+  :root {
+    --paper: #eef1ef; --ink: #16231f; --brand: #0f6b5c; --line: #c7cec8;
+    --muted: #57635c; --card-bg: #f6f8f6; --topbar-bg: #e6eae7;
+    --serif: Georgia, "PT Serif", "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    /* dataviz — fixed roles, do not theme */
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+    --viz-surface: #fcfcfb; --viz-text: #0b0b0b; --viz-text2: #52514e;
+    --viz-muted: #898781; --viz-grid: #e1e0d9; --viz-base: #c3c2b7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #101715; --ink: #e6ece8; --brand: #4bd1ae; --line: #2c3733;
+      --muted: #93a09a; --card-bg: #151d1a; --topbar-bg: #131a17;
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --viz-surface: #1a1a19; --viz-text: #ffffff; --viz-text2: #c3c2b7;
+      --viz-muted: #898781; --viz-grid: #2c2c2a; --viz-base: #383835;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #101715; --ink: #e6ece8; --brand: #4bd1ae; --line: #2c3733;
+    --muted: #93a09a; --card-bg: #151d1a; --topbar-bg: #131a17;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --viz-surface: #1a1a19; --viz-text: #ffffff; --viz-text2: #c3c2b7;
+    --viz-muted: #898781; --viz-grid: #2c2c2a; --viz-base: #383835;
+  }
+  :root[data-theme="light"] {
+    --paper: #eef1ef; --ink: #16231f; --brand: #0f6b5c; --line: #c7cec8;
+    --muted: #57635c; --card-bg: #f6f8f6; --topbar-bg: #e6eae7;
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --viz-surface: #fcfcfb; --viz-text: #0b0b0b; --viz-text2: #52514e;
+    --viz-muted: #898781; --viz-grid: #e1e0d9; --viz-base: #c3c2b7;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--paper); color: var(--ink); font-family: var(--sans);
+    font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+
+  /* ---------- topbar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 20; background: var(--topbar-bg);
+    border-bottom: 1px solid var(--line); display: flex; align-items: center;
+    gap: 20px; padding: 12px 20px; flex-wrap: wrap;
+  }
+  .brand { font-family: var(--serif); font-size: 18px; white-space: nowrap; }
+  .brand .mark { margin-right: 6px; }
+  .range { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .range input[type="date"] {
+    font-family: var(--mono); font-size: 12.5px; background: var(--card-bg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; color: var(--ink);
+  }
+  .range .sep { color: var(--muted); }
+  .btn {
+    font-size: 13px; border: 1px solid var(--line); background: var(--card-bg);
+    color: var(--ink); border-radius: 5px; padding: 6px 12px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--brand); }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: var(--paper); font-weight: 600; }
+  .spacer { flex: 1; }
+  .asof {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    border: 1px dashed var(--line); border-radius: 100px; padding: 4px 11px; white-space: nowrap;
+  }
+  .filename { font-size: 12px; color: var(--muted); }
+
+  /* ---------- shell ---------- */
+  .shell { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 57px); }
+  @media (max-width: 860px) { .shell { grid-template-columns: 1fr; } }
+
+  /* ---------- library rail ---------- */
+  .rail {
+    border-right: 1px solid var(--line); padding: 18px 14px; align-self: start;
+    position: sticky; top: 57px; max-height: calc(100vh - 57px); overflow-y: auto;
+  }
+  @media (max-width: 860px) { .rail { position: static; max-height: none; border-right: none; border-bottom: 1px solid var(--line); } }
+  .rail-title {
+    font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .1em;
+    color: var(--muted); margin: 0 0 12px;
+  }
+  details.board-group { margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+  details.board-group summary {
+    cursor: pointer; padding: 9px 4px; font-size: 13.5px; font-weight: 600; list-style: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  details.board-group summary::-webkit-details-marker { display: none; }
+  details.board-group summary::before { content: "▸"; color: var(--muted); font-size: 11px; transition: transform .15s; }
+  details.board-group[open] summary::before { transform: rotate(90deg); }
+  details.board-group summary .code { font-family: var(--mono); font-size: 10.5px; color: var(--brand); }
+  .lib-item {
+    display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 7px 8px 7px 22px;
+    border-radius: 4px; cursor: grab; color: var(--ink); margin-bottom: 2px;
+  }
+  .lib-item:hover { background: var(--card-bg); }
+  .lib-item:active { cursor: grabbing; opacity: .6; }
+  .lib-item .grip { color: var(--muted); font-size: 11px; }
+  .lib-item .lchip {
+    margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 100px; padding: 1px 6px; white-space: nowrap;
+  }
+
+  /* ---------- canvas ---------- */
+  .canvas-wrap { padding: 20px 24px 100px; }
+  .demo-banner {
+    font-size: 12.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px;
+    padding: 8px 14px; margin-bottom: 18px; background: var(--card-bg);
+  }
+  #canvas {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 18px;
+    min-height: 200px;
+  }
+  #canvas.drag-over { outline: 2px dashed var(--brand); outline-offset: 6px; border-radius: 8px; }
+  .span-2 { grid-column: span 2; }
+  @media (max-width: 700px) { .span-2 { grid-column: span 1; } }
+
+  .widget {
+    background: var(--card-bg); border: 1px solid var(--line); border-radius: 7px;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .widget-head {
+    display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line);
+  }
+  .widget-head .grip { color: var(--muted); font-size: 12px; cursor: grab; }
+  .widget-head h3 { font-size: 13.5px; margin: 0; font-weight: 600; flex: 1; }
+  .wchip {
+    font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em;
+    border: 1px solid var(--line); color: var(--muted); border-radius: 100px; padding: 1.5px 7px;
+    white-space: nowrap;
+  }
+  .wchip.period { border-style: dashed; color: var(--brand); border-color: var(--brand); }
+  .remove-btn {
+    border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 15px;
+    line-height: 1; padding: 2px 4px; border-radius: 3px;
+  }
+  .remove-btn:hover { background: var(--line); color: var(--ink); }
+  .widget-body { padding: 14px; flex: 1; }
+  .widget-foot { padding: 8px 14px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+  .export-btn {
+    font-size: 11.5px; border: 1px solid var(--brand); color: var(--brand); background: transparent;
+    border-radius: 4px; padding: 4px 10px; cursor: pointer; font-family: var(--mono);
+  }
+  .export-btn:hover { background: var(--brand); color: var(--paper); }
+
+  /* stat tile */
+  .stat-value {
+    font-family: var(--sans); font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums;
+    color: var(--viz-text, var(--ink));
+  }
+  .stat-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* generic placeholder card */
+  .placeholder-body {
+    display: flex; align-items: center; justify-content: center; min-height: 90px;
+    color: var(--muted); font-size: 12px; border: 1px dashed var(--line); border-radius: 5px;
+  }
+
+  /* chart chrome */
+  .viz-root { color-scheme: light; }
+  .chart-svg text { font-family: var(--sans); fill: var(--viz-muted); }
+  .chart-svg .tick-label { font-size: 10px; }
+  .chart-svg .value-label { font-size: 11px; font-weight: 600; fill: var(--viz-text); font-variant-numeric: tabular-nums; }
+  .chart-svg .gridline { stroke: var(--viz-grid); stroke-width: 1; }
+  .chart-svg .baseline { stroke: var(--viz-base); stroke-width: 1; }
+  .chart-svg .mark-bar { fill: var(--s1); }
+  .chart-svg .mark-line { fill: none; stroke: var(--s1); stroke-width: 2; stroke-linecap: round; }
+  .chart-svg .mark-area { fill: var(--s1); opacity: .12; }
+  .chart-svg .mark-dot { fill: var(--s1); }
+
+  /* table */
+  table.wtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.wtable th, table.wtable td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  table.wtable th {
+    font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 400;
+  }
+  table.wtable td.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 100px;
+    padding: 2px 8px 2px 6px; font-weight: 600;
+  }
+  .status-pill .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .status-pill.crit { color: var(--crit); background: color-mix(in oklab, var(--crit) 14%, transparent); }
+  .status-pill.crit .dot { background: var(--crit); }
+  .status-pill.warn { color: #8a5c00; background: color-mix(in oklab, var(--warn) 20%, transparent); }
+  .status-pill.warn .dot { background: var(--warn); }
+  .status-pill.good { color: var(--good); background: color-mix(in oklab, var(--good) 14%, transparent); }
+  .status-pill.good .dot { background: var(--good); }
+
+  .threshold-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; font-size: 12px; flex-wrap: wrap; }
+  .threshold-row input[type="number"], .threshold-row input[type="date"] {
+    font-family: var(--mono); font-size: 12px; width: 64px; background: var(--paper);
+    border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; color: var(--ink);
+  }
+  .threshold-row input[type="date"] { width: auto; }
+  .threshold-row label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+
+  .chan-row { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; font-size: 12px; }
+  .chan-row .chan-name { width: 92px; flex-shrink: 0; }
+  .chan-row .chan-bar-track { flex: 1; background: var(--viz-grid); border-radius: 3px; height: 10px; overflow: hidden; }
+  .chan-row .chan-bar-fill { height: 100%; border-radius: 3px 0 0 3px; }
+  .chan-row .chan-val { font-variant-numeric: tabular-nums; width: 64px; text-align: right; color: var(--muted); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .widget { transition: border-color .12s; }
+  }
+</style>
+
+<div class="topbar">
+  <div class="brand"><span class="mark">🧾</span>Карта продлений ОФД</div>
+  <div class="range">
+    <span>период</span>
+    <input type="date" value="2026-01-01" aria-label="начало периода">
+    <span class="sep">—</span>
+    <input type="date" value="2026-07-31" aria-label="конец периода">
+    <button class="btn" id="applyRange">Применить</button>
+  </div>
+  <div class="spacer"></div>
+  <span class="asof" id="asofStamp">as-of · 31.07.2026 09:14</span>
+  <label class="btn primary" style="cursor:pointer;">
+    Загрузить XLSX
+    <input type="file" id="fileInput" accept=".xlsx" style="display:none;">
+  </label>
+  <span class="filename" id="filenameLabel"></span>
+</div>
+
+<div class="shell">
+
+  <aside class="rail">
+    <p class="rail-title">Библиотека виджетов</p>
+
+    <details class="board-group" open>
+      <summary><span class="code">B1</span>Клиенты</summary>
+      <div class="lib-item" draggable="true" data-widget="b1-active"><span class="grip">⋮⋮</span>Активные клиенты сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b1-new"><span class="grip">⋮⋮</span>Новые клиенты за период<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b1-churn"><span class="grip">⋮⋮</span>Отток клиентов за период<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b1-reanim"><span class="grip">⋮⋮</span>Реанимированные клиенты<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-netgrowth"><span class="grip">⋮⋮</span>Нетто-прирост базы<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b1-kassdist"><span class="grip">⋮⋮</span>Распределение по числу касс<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-risk"><span class="grip">⋮⋮</span>Клиенты «под риском»<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b1-age"><span class="grip">⋮⋮</span>Возрастная структура базы<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B2</span>Кассы</summary>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-active"><span class="grip">⋮⋮</span>Активные кассы сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-flow"><span class="grip">⋮⋮</span>Новые / отток / реанимация касс<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-renewals"><span class="grip">⋮⋮</span>Кассы и продления<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-renewdist"><span class="grip">⋮⋮</span>Распределение продлений<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-tariff"><span class="grip">⋮⋮</span>Распределение по сроку тарифа<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-risk"><span class="grip">⋮⋮</span>Кассы «под риском»<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b2-summary"><span class="grip">⋮⋮</span>Сводка клиенты vs кассы<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B3</span>Партнёры</summary>
+      <div class="lib-item" draggable="true" data-widget="ph-b3-active"><span class="grip">⋮⋮</span>Действующие партнёры сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b3-table"><span class="grip">⋮⋮</span>Таблица по партнёрам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b3-top"><span class="grip">⋮⋮</span>Топ партнёров по объёму<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b3-reserve"><span class="grip">⋮⋮</span>Топ по зависшему резерву<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-channels"><span class="grip">⋮⋮</span>Разбивка по каналам<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B4</span>Коды ОФД</summary>
+      <div class="lib-item" draggable="true" data-widget="ph-b4-years"><span class="grip">⋮⋮</span>Неактивированные коды по годам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b4-partners"><span class="grip">⋮⋮</span>Неактивированные коды по партнёрам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b4-revoked"><span class="grip">⋮⋮</span>Отозванные коды<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b4-funnel"><span class="grip">⋮⋮</span>Общая воронка<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="ph-b4-reserve-share"><span class="grip">⋮⋮</span>Доля кодов «впрок»<span class="lchip">период</span></div>
+    </details>
+  </aside>
+
+  <div class="canvas-wrap">
+    <div class="demo-banner">Демо-данные для дизайна — после загрузки XLSX цифры пересчитаются от реальной выгрузки. Перетаскивай виджеты из библиотеки слева на рабочую область.</div>
+    <div id="canvas"></div>
+  </div>
+
+</div>
+
+<!-- ===== widget templates ===== -->
+<template id="tpl-b1-active">
+  <div class="widget" data-widget="b1-active">
+    <div class="widget-head"><span class="grip">⋮⋮</span><h3>Активные клиенты сейчас</h3><span class="wchip">карточка</span><span class="wchip">as-of</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+    <div class="widget-body">
+      <div class="stat-value">150 648</div>
+      <div class="stat-label">уникальных ИНН · снэпшот на as-of дату</div>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-b1-netgrowth">
+  <div class="widget span-2" data-widget="b1-netgrowth">
+    <div class="widget-head"><span class="grip">⋮⋮</span><h3>Нетто-прирост базы</h3><span class="wchip">график</span><span class="wchip period">период</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+    <div class="widget-body viz-root">
+      <svg class="chart-svg" viewBox="0 0 520 160" width="100%" height="160" role="img" aria-label="Нетто-прирост базы клиентов по месяцам">
+        <title>Нетто-прирост: январь 820 → июль 3 140, накопительно</title>
+        <line class="gridline" x1="30" y1="30" x2="500" y2="30"></line>
+        <line class="gridline" x1="30" y1="70" x2="500" y2="70"></line>
+        <line class="baseline" x1="30" y1="110" x2="500" y2="110"></line>
+        <path class="mark-area" d="M40,105 L120,96 L200,88 L280,78 L360,62 L440,45 L480,25 L480,110 L40,110 Z"></path>
+        <path class="mark-line" d="M40,105 L120,96 L200,88 L280,78 L360,62 L440,45 L480,25"></path>
+        <circle class="mark-dot" cx="480" cy="25" r="3.5"></circle>
+        <text class="value-label" x="486" y="22">3 140</text>
+        <text class="tick-label" x="40" y="128">янв</text>
+        <text class="tick-label" x="120" y="128">фев</text>
+        <text class="tick-label" x="200" y="128">мар</text>
+        <text class="tick-label" x="280" y="128">апр</text>
+        <text class="tick-label" x="360" y="128">май</text>
+        <text class="tick-label" x="440" y="128">июн</text>
+        <text class="tick-label" x="470" y="128">июл</text>
+      </svg>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-b1-risk">
+  <div class="widget span-2" data-widget="b1-risk">
+    <div class="widget-head"><span class="grip">⋮⋮</span><h3>Клиенты «под риском»</h3><span class="wchip">таблица</span><span class="wchip">as-of</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+    <div class="widget-body">
+      <div class="threshold-row">
+        <label><input type="radio" name="riskmode" checked> дней до окончания <input type="number" value="30"></label>
+        <label><input type="radio" name="riskmode"> дата окончания <input type="date"></label>
+      </div>
+      <table class="wtable">
+        <tr><th>ИНН (демо)</th><th>Партнёр</th><th class="num">Касс</th><th class="num">До окончания</th><th>Статус</th></tr>
+        <tr><td>7701●●●●12</td><td>ООО «Астрал-Софт» ОПС ЭДО</td><td class="num">1</td><td class="num">4 дня</td><td><span class="status-pill crit"><span class="dot"></span>критично</span></td></tr>
+        <tr><td>5407●●●●77</td><td>АО Калуга Астрал ЦП</td><td class="num">3</td><td class="num">12 дней</td><td><span class="status-pill warn"><span class="dot"></span>риск</span></td></tr>
+        <tr><td>6660●●●●03</td><td>ОП Калуга Астрал в г. Екатеринбург</td><td class="num">1</td><td class="num">27 дней</td><td><span class="status-pill warn"><span class="dot"></span>риск</span></td></tr>
+      </table>
+    </div>
+    <div class="widget-foot"><button class="export-btn">Экспорт CSV / Excel</button></div>
+  </div>
+</template>
+
+<template id="tpl-b3-channels">
+  <div class="widget" data-widget="b3-channels">
+    <div class="widget-head"><span class="grip">⋮⋮</span><h3>Разбивка по каналам</h3><span class="wchip">таблица + график</span><span class="wchip">as-of</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+    <div class="widget-body viz-root">
+      <div class="chan-row"><span class="chan-name">Оля Зибер</span><span class="chan-bar-track"><span class="chan-bar-fill" style="width:14%;background:var(--s1)"></span></span><span class="chan-val">33 305</span></div>
+      <div class="chan-row"><span class="chan-name">Лариса П.</span><span class="chan-bar-track"><span class="chan-bar-fill" style="width:50%;background:var(--s2)"></span></span><span class="chan-val">120 498</span></div>
+      <div class="chan-row"><span class="chan-name">Партнёры</span><span class="chan-bar-track"><span class="chan-bar-fill" style="width:100%;background:var(--s3)"></span></span><span class="chan-val">390 882</span></div>
+    </div>
+  </div>
+</template>
+
+<template id="tpl-b2-renewals">
+  <div class="widget span-2" data-widget="b2-renewals">
+    <div class="widget-head"><span class="grip">⋮⋮</span><h3>Кассы и продления</h3><span class="wchip">таблица</span><span class="wchip">as-of</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+    <div class="widget-body">
+      <table class="wtable">
+        <tr><th>РНМ (демо)</th><th class="num">Продлений</th><th>Тариф</th><th>Окончание</th><th>Статус</th></tr>
+        <tr><td>0001●●●●2233</td><td class="num">6</td><td>36 мес</td><td>14.03.2028</td><td><span class="status-pill good"><span class="dot"></span>активна</span></td></tr>
+        <tr><td>0001●●●●5590</td><td class="num">0</td><td>15 мес</td><td>02.08.2026</td><td><span class="status-pill crit"><span class="dot"></span>критично</span></td></tr>
+        <tr><td>0001●●●●7741</td><td class="num">2</td><td>13 мес</td><td>19.09.2026</td><td><span class="status-pill warn"><span class="dot"></span>риск</span></td></tr>
+      </table>
+    </div>
+    <div class="widget-foot"><button class="export-btn">Экспорт CSV / Excel</button></div>
+  </div>
+</template>
+
+<script>
+  const canvas = document.getElementById('canvas');
+
+  function makeGeneric(widgetName, board, scope, type) {
+    const w = document.createElement('div');
+    w.className = 'widget';
+    w.innerHTML = `
+      <div class="widget-head"><span class="grip">⋮⋮</span><h3>${widgetName}</h3><span class="wchip">${type}</span><span class="wchip ${scope==='период'?'period':''}">${scope}</span><button class="remove-btn" aria-label="Убрать виджет">×</button></div>
+      <div class="widget-body"><div class="placeholder-body">макет виджета — ${board}</div></div>`;
+    return w;
+  }
+
+  const registry = {
+    'b1-active': () => document.getElementById('tpl-b1-active').content.cloneNode(true),
+    'b1-netgrowth': () => document.getElementById('tpl-b1-netgrowth').content.cloneNode(true),
+    'b1-risk': () => document.getElementById('tpl-b1-risk').content.cloneNode(true),
+    'b3-channels': () => document.getElementById('tpl-b3-channels').content.cloneNode(true),
+    'b2-renewals': () => document.getElementById('tpl-b2-renewals').content.cloneNode(true),
+  };
+
+  const placeholderMeta = {
+    'ph-b1-new': ['Новые клиенты за период', 'B1 Клиенты', 'период', 'карточка + график'],
+    'ph-b1-churn': ['Отток клиентов за период', 'B1 Клиенты', 'период', 'карточка + график'],
+    'ph-b1-reanim': ['Реанимированные клиенты', 'B1 Клиенты', 'период', 'карточка + график'],
+    'ph-b1-kassdist': ['Распределение по числу касс', 'B1 Клиенты', 'as-of', 'график'],
+    'ph-b1-age': ['Возрастная структура базы', 'B1 Клиенты', 'as-of', 'график'],
+    'ph-b2-active': ['Активные кассы сейчас', 'B2 Кассы', 'as-of', 'карточка'],
+    'ph-b2-flow': ['Новые / отток / реанимация касс', 'B2 Кассы', 'период', 'карточки + графики'],
+    'ph-b2-renewdist': ['Распределение продлений', 'B2 Кассы', 'as-of', 'график'],
+    'ph-b2-tariff': ['Распределение по сроку тарифа', 'B2 Кассы', 'as-of', 'график'],
+    'ph-b2-risk': ['Кассы «под риском»', 'B2 Кассы', 'as-of', 'таблица'],
+    'ph-b2-summary': ['Сводка клиенты vs кассы', 'B2 Кассы', 'as-of', 'карточки'],
+    'ph-b3-active': ['Действующие партнёры сейчас', 'B3 Партнёры', 'as-of', 'карточка'],
+    'ph-b3-table': ['Таблица по партнёрам', 'B3 Партнёры', 'as-of', 'таблица'],
+    'ph-b3-top': ['Топ партнёров по объёму', 'B3 Партнёры', 'период', 'таблица'],
+    'ph-b3-reserve': ['Топ по зависшему резерву', 'B3 Партнёры', 'as-of', 'таблица'],
+    'ph-b4-years': ['Неактивированные коды по годам', 'B4 Коды ОФД', 'as-of', 'график, раскрывается'],
+    'ph-b4-partners': ['Неактивированные коды по партнёрам', 'B4 Коды ОФД', 'as-of', 'таблица, раскрывается'],
+    'ph-b4-revoked': ['Отозванные коды', 'B4 Коды ОФД', 'период', 'карточка'],
+    'ph-b4-funnel': ['Общая воронка', 'B4 Коды ОФД', 'период', 'график'],
+    'ph-b4-reserve-share': ['Доля кодов «впрок»', 'B4 Коды ОФД', 'период', 'карточка'],
+  };
+
+  function wireRemove(node) {
+    node.querySelectorAll('.remove-btn').forEach(btn => {
+      btn.addEventListener('click', () => btn.closest('.widget').remove());
+    });
+  }
+
+  function addWidget(id) {
+    let node;
+    if (registry[id]) {
+      node = registry[id]();
+    } else if (placeholderMeta[id]) {
+      const [name, board, scope, type] = placeholderMeta[id];
+      node = makeGeneric(name, board, scope, type);
+    } else return;
+    canvas.appendChild(node);
+    wireRemove(canvas);
+  }
+
+  document.querySelectorAll('.lib-item').forEach(item => {
+    item.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', item.dataset.widget);
+    });
+  });
+
+  canvas.addEventListener('dragover', e => { e.preventDefault(); canvas.classList.add('drag-over'); });
+  canvas.addEventListener('dragleave', () => canvas.classList.remove('drag-over'));
+  canvas.addEventListener('drop', e => {
+    e.preventDefault();
+    canvas.classList.remove('drag-over');
+    const id = e.dataTransfer.getData('text/plain');
+    addWidget(id);
+  });
+
+  // seed initial demo layout
+  ['b1-active', 'b1-netgrowth', 'b1-risk', 'b3-channels', 'b2-renewals'].forEach(addWidget);
+
+  // file upload stub
+  document.getElementById('fileInput').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    document.getElementById('filenameLabel').textContent = f.name;
+    const now = new Date();
+    const stamp = now.toLocaleDateString('ru-RU') + ' ' + now.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'});
+    document.getElementById('asofStamp').textContent = 'as-of · ' + stamp;
+  });
+</script>

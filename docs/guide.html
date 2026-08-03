@@ -1,0 +1,340 @@
+<title>Карта продлений ОФД — памятка для команды</title>
+<style>
+  :root {
+    --paper: #eef1ef; --ink: #16231f; --accent: #0f6b5c; --line: #c7cec8;
+    --muted: #57635c; --card-bg: #f6f8f6;
+    --serif: Georgia, "PT Serif", "Times New Roman", serif;
+    --sans: -apple-system, "Segoe UI", "Helvetica Neue", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #101715; --ink: #e6ece8; --accent: #4bd1ae; --line: #2c3733; --muted: #93a09a; --card-bg: #151d1a; }
+  }
+  :root[data-theme="dark"] { --paper: #101715; --ink: #e6ece8; --accent: #4bd1ae; --line: #2c3733; --muted: #93a09a; --card-bg: #151d1a; }
+  :root[data-theme="light"] { --paper: #eef1ef; --ink: #16231f; --accent: #0f6b5c; --line: #c7cec8; --muted: #57635c; --card-bg: #f6f8f6; }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper); color: var(--ink); font-family: var(--sans);
+    font-size: 16px; line-height: 1.6; margin: 0; -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); }
+
+  .page { max-width: 900px; margin: 0 auto; padding: 56px 28px 120px; }
+
+  header.title-block { margin-bottom: 40px; }
+  header.title-block .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted);
+  }
+  header.title-block h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 4vw, 40px); margin: 6px 0 12px; text-wrap: balance; }
+  header.title-block p.lede { max-width: 68ch; color: var(--muted); margin: 0; font-size: 16px; }
+
+  nav.toc {
+    background: var(--card-bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 18px 22px; margin: 32px 0 48px; font-size: 14.5px;
+  }
+  nav.toc .toc-title { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); margin-bottom: 10px; }
+  nav.toc ul { columns: 2; column-gap: 24px; margin: 0; padding: 0; list-style: none; }
+  nav.toc li { margin-bottom: 6px; break-inside: avoid; }
+  nav.toc a { text-decoration: none; color: var(--ink); }
+  nav.toc a:hover { color: var(--accent); }
+
+  section.block { margin-bottom: 52px; }
+  section.block h2 { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 0 0 14px; border-bottom: 1px dashed var(--line); padding-bottom: 12px; }
+  section.block h3 { font-family: var(--serif); font-weight: 400; font-size: 20px; margin: 32px 0 10px; }
+  section.block p { margin: 0 0 14px; max-width: 72ch; }
+  section.block ul, section.block ol { margin: 0 0 14px; padding-left: 22px; max-width: 70ch; }
+  section.block li { margin-bottom: 6px; }
+
+  .callout {
+    background: var(--card-bg); border: 1px solid var(--line); border-radius: 7px;
+    padding: 16px 20px; margin: 18px 0; font-size: 14.5px;
+  }
+  .callout .callout-title { font-weight: 600; margin-bottom: 4px; }
+
+  .widget-card { border-top: 1px solid var(--line); padding: 16px 0; }
+  .widget-card:first-of-type { border-top: none; }
+  .widget-card h4 { font-size: 16px; margin: 0 0 4px; font-weight: 600; }
+  .widget-card .meta { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .05em; text-transform: uppercase;
+    border: 1px solid var(--line); color: var(--muted); border-radius: 100px; padding: 2px 9px; white-space: nowrap;
+  }
+  .chip.period { border-style: dashed; color: var(--accent); border-color: var(--accent); }
+  .widget-card p { margin: 0; font-size: 14.5px; color: var(--ink); }
+  .widget-card p.source { color: var(--muted); font-size: 13.5px; margin-top: 6px; }
+  .widget-card p.source b { color: var(--ink); font-weight: 600; }
+
+  table.terms { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 12px 0 20px; }
+  table.terms th, table.terms td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.terms th { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 400; }
+  table.terms td.term { font-weight: 600; white-space: nowrap; }
+
+  .steps { counter-reset: step; list-style: none; padding: 0; margin: 0 0 20px; }
+  .steps li { display: grid; grid-template-columns: 26px 1fr; gap: 12px; padding: 8px 0; }
+  .steps li::before {
+    counter-increment: step; content: counter(step); font-family: var(--mono);
+    color: var(--accent); font-weight: 600; font-size: 13px;
+  }
+
+  footer.note {
+    margin-top: 60px; border-top: 1px solid var(--line); padding-top: 20px;
+    font-size: 13.5px; color: var(--muted);
+  }
+</style>
+
+<div class="page">
+
+<header class="title-block">
+  <div class="eyebrow">Памятка для смежных отделов</div>
+  <h1>Карта продлений ОФД</h1>
+  <p class="lede">Как пользоваться инструментом, что означает каждый дашборд, откуда берутся цифры и как они считаются — простыми словами, без формул и кода.</p>
+</header>
+
+<nav class="toc">
+  <div class="toc-title">Содержание</div>
+  <ul>
+    <li><a href="#howto">Как этим пользоваться</a></li>
+    <li><a href="#terms">Три главных понятия</a></li>
+    <li><a href="#period">Период и «сейчас»</a></li>
+    <li><a href="#events">Новый / отток / реанимация</a></li>
+    <li><a href="#reserve">Резерв и отозванные коды</a></li>
+    <li><a href="#b1">Клиенты</a></li>
+    <li><a href="#b2">Кассы</a></li>
+    <li><a href="#b3">Партнёры</a></li>
+    <li><a href="#b4">Коды ОФД</a></li>
+  </ul>
+</nav>
+
+<section class="block" id="howto">
+  <h2>Как этим пользоваться</h2>
+  <ol class="steps">
+    <li>Открой сайт, нажми «Загрузить XLSX» справа сверху и выбери файл выгрузки. Ничего никуда не отправляется — вся обработка идёт прямо в твоём браузере.</li>
+    <li>Сверху появится штамп <span class="chip">as-of · дата и время</span> — это момент, на который «сфотографирована» база. Все цифры на страницах с меткой <span class="chip">as-of</span> считаются именно от этого момента.</li>
+    <li>Задай период (поля «с» — «по» в шапке) и нажми «Применить» — это повлияет на виджеты с меткой <span class="chip period">период</span>.</li>
+    <li>Слева — библиотека готовых дашбордов (виджетов), сгруппированных по 4 разделам. Перетащи нужный на рабочую область.</li>
+    <li>У таблиц есть кнопка «Экспорт CSV / Excel» — скачивает именно то, что сейчас отфильтровано на экране.</li>
+    <li>Виджет можно убрать с рабочей области крестиком — на расчёты это не влияет, в любой момент можно перетащить снова.</li>
+  </ol>
+</section>
+
+<section class="block" id="terms">
+  <h2>Три главных понятия</h2>
+  <table class="terms">
+    <tr><th>Термин</th><th>Определение</th></tr>
+    <tr><td class="term">Клиент = ИНН</td><td>Организация или ИП. Не касса. У одного клиента может быть от 1 до нескольких десятков касс — все они одного клиента.</td></tr>
+    <tr><td class="term">Касса = РНМ ККТ</td><td>Один конкретный кассовый аппарат. Строка в выгрузке = касса, не клиент — на это завязана вся логика инструмента.</td></tr>
+    <tr><td class="term">Код ОФД = PIN</td><td>Пропуск на подключение, который партнёр выпускает на кассу. Дальше три исхода: висит неактивированным у партнёра, клиент активировал его у себя, код отозвали.</td></tr>
+  </table>
+  <div class="callout">
+    <div class="callout-title">Зачем различать</div>
+    <p>Клиент = ИНН, не касса. Клиент переживает смерть одной кассы, если у него есть другие живые. Поэтому отток клиентов и отток касс считаются раздельно — цифры не обязаны совпадать, это норма. В каждом пункте ниже прямо сказано, что именно посчитано: клиенты (ИНН), кассы (РНМ) или коды (PIN).</p>
+  </div>
+</section>
+
+<section class="block" id="period">
+  <h2>Период и «сейчас» — два разных фильтра</h2>
+  <p>У каждого виджета в углу — метка. Она говорит, какой фильтр на него действует:</p>
+  <table class="terms">
+    <tr><th>Метка</th><th>Что значит</th></tr>
+    <tr>
+      <td class="term"><span class="chip period">период</span></td>
+      <td>Виджет отвечает на вопрос «что произошло МЕЖДУ выбранными датами» — например, сколько новых клиентов пришло в июле. Меняешь даты наверху — меняется цифра.</td>
+    </tr>
+    <tr>
+      <td class="term"><span class="chip">as-of</span></td>
+      <td>Виджет показывает текущее состояние базы на момент загрузки файла («снэпшот»). Верхний фильтр периода на него не действует — эта цифра всегда «на сейчас».</td>
+    </tr>
+  </table>
+</section>
+
+<section class="block" id="events">
+  <h2>Новый / отток / реанимация — определения</h2>
+  <table class="terms">
+    <tr><th>Термин</th><th>Определение</th></tr>
+    <tr><td class="term">Новый клиент/касса</td><td>Дата первой активации попала в выбранный период. Считается отдельно для клиентов (ИНН) и для касс (РНМ) — это два разных счётчика.</td></tr>
+    <tr><td class="term">Отток кассы</td><td>Общая дата окончания кассы попала в выбранный период, продления не было.</td></tr>
+    <tr><td class="term">Отток клиента</td><td>Все кассы клиента (100%, без исключений) в оттоке. Хотя бы одна живая касса — клиент активен, не в оттоке.</td></tr>
+    <tr><td class="term">Реанимация</td><td>Клиент/касса были в оттоке на конец периода, продлились в течение 3 месяцев после конца периода.</td></tr>
+    <tr><td class="term">Продление кассы</td><td>Количество зарегистрированных кодов в цепочке кассы минус 1. Отозванные коды в счёт не идут.</td></tr>
+  </table>
+</section>
+
+<section class="block" id="reserve">
+  <h2>Резерв партнёра и отозванные коды</h2>
+  <p><b>Резерв = код ОФД, выпущенный партнёром без клиента.</b> Партнёр создаёт код заранее, до появления реального клиента на кассу. Пока клиент его не активировал — код в резерве, не клиент и не касса, ни в одном из расчётов выше не участвует. Резерв старше года — партнёр наштамповал кодов «в стол», сигнал для работы с партнёром.</p>
+  <p><b>Отозванные коды</b> — коды со статусом «Отозвано» исключены из всех расчётов, кроме собственного счётчика. Так они не искажают клиентов, кассы и резерв.</p>
+</section>
+
+<section class="block" id="b1">
+  <h2>Раздел «Клиенты»</h2>
+
+  <div class="widget-card">
+    <h4>Активные клиенты сейчас</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip">as-of</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> Уникальные ИНН, у которых хотя бы одна касса не в оттоке на as-of дату.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Новые клиенты за период</h4>
+    <div class="meta"><span class="chip">карточка + график</span><span class="chip period">период</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> ИНН, у которых дата первой активации попала в выбранный период. Разбивка по месяцам.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Отток клиентов за период</h4>
+    <div class="meta"><span class="chip">карточка + график</span><span class="chip period">период</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> ИНН, у которых <b>все</b> кассы в оттоке — дата окончания последней живой кассы попала в выбранный период.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Реанимированные клиенты</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip period">период</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> ИНН были в оттоке на конец периода, продлили хотя бы одну кассу в течение 3 месяцев после конца периода.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Нетто-прирост базы</h4>
+    <div class="meta"><span class="chip">график</span><span class="chip period">период</span></div>
+    <p><b>Считаем клиентов (ИНН), не кассы.</b> Прирост = новые клиенты минус клиенты в оттоке, по месяцам, нарастающим итогом за период. Наведи на точку — покажет прирост за конкретный месяц и накопительный итог на эту дату. Под графиком — таблица по месяцам: Новые / Отток / Нетто, с сортировкой по клику на заголовок.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Распределение по числу касс</h4>
+    <div class="meta"><span class="chip">график</span><span class="chip">as-of</span></div>
+    <p><b>Считаем клиентов (ИНН), сгруппированных по количеству касс.</b> Сколько ИНН имеют ровно 1 кассу, сколько 2–3, сколько 4–9, сколько 10 и больше.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Клиенты «под риском»</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> ИНН, у которых ближайшая по сроку касса заканчивается в пределах порога. По умолчанию порог — 30 дней от as-of, можно переключить на конкретную дату. Экспорт — CSV/Excel.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Возрастная структура базы</h4>
+    <div class="meta"><span class="chip">график</span><span class="chip">as-of</span></div>
+    <p><b>Считаем клиентов (ИНН).</b> Сколько ИНН с нами больше 1 года, больше 2 лет, больше 3 лет — от даты первой активации до as-of.</p>
+  </div>
+</section>
+
+<section class="block" id="b2">
+  <h2>Раздел «Кассы»</h2>
+  <p>Те же события, что в разделе «Клиенты», но единица счёта — касса (РНМ), не ИНН. Касса может уйти в отток, пока клиент жив за счёт других касс — цифры этого раздела и раздела «Клиенты» законно расходятся.</p>
+
+  <div class="widget-card">
+    <h4>Активные кассы сейчас</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip">as-of</span></div>
+    <p><b>Считаем кассы (РНМ).</b> Общая дата окончания ≥ as-of дата.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Новые / отток / реанимация касс</h4>
+    <div class="meta"><span class="chip">карточки</span><span class="chip period">период</span></div>
+    <p><b>Считаем кассы (РНМ).</b> Те же определения, что в разделе «Новый / отток / реанимация» выше, применённые к кассе, а не к клиенту.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Кассы и продления</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем кассы (РНМ).</b> 1 строка = 1 касса: число продлений, тариф, дата окончания, ИНН клиента, партнёр, статус. Фильтры — по партнёру, тарифу, статусу, ИНН клиента, минимуму продлений. Экспорт — CSV/Excel.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Распределение продлений</h4>
+    <div class="meta"><span class="chip">график + таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем кассы (РНМ), сгруппированные по числу продлений.</b> 0 продлений / 1–2 / 3–5 / 6+. Снизу — та же таблица «Кассы и продления» с фильтрами и экспортом.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Распределение по сроку тарифа</h4>
+    <div class="meta"><span class="chip">график + таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем кассы (РНМ), сгруппированные по тарифу.</b> 15 месяцев / 36 месяцев / и т.д. Снизу — та же таблица с фильтрами.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Кассы «под риском»</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем кассы (РНМ).</b> Тот же порог, что у клиентов под риском (30 дней от as-of или конкретная дата), применён к отдельной кассе, а не к клиенту.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Сводка клиенты vs кассы</h4>
+    <div class="meta"><span class="chip">карточки</span><span class="chip">as-of</span></div>
+    <p><b>Две метрики на стыке ИНН и РНМ.</b> Доля клиентов (ИНН) с более чем одной кассой + среднее число касс на клиента — по всей базе.</p>
+  </div>
+</section>
+
+<section class="block" id="b3">
+  <h2>Раздел «Партнёры»</h2>
+
+  <div class="widget-card">
+    <h4>Действующие партнёры сейчас</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip">as-of</span></div>
+    <p><b>Считаем партнёров.</b> Партнёр = закреплён хотя бы 1 живой клиент (ИНН) или 1 живая касса (РНМ) на as-of дату.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Таблица по партнёрам</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>1 строка = 1 партнёр.</b> Три числа на as-of дату: клиентов (ИНН) закреплено, касс (РНМ) закреплено, кодов в резерве. Поиск по названию партнёра.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Топ партнёров по объёму</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>Те же клиенты и кассы, что в «Таблице по партнёрам».</b> Отсортированы по убыванию числа клиентов — кто крупнее прямо сейчас.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Топ по зависшему резерву</h4>
+    <div class="meta"><span class="chip">таблица</span><span class="chip">as-of</span></div>
+    <p><b>Считаем коды (PIN) в резерве, по партнёру.</b> Партнёры, отсортированные по убыванию количества неактивированных кодов.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Разбивка по каналам</h4>
+    <div class="meta"><span class="chip">таблица + график</span><span class="chip">as-of</span></div>
+    <p><b>Считаем клиентов (ИНН), закреплённых за каналом.</b> Выбери канал в фильтре — появится таблица его партнёров (клиенты/кассы/резерв каждого), с экспортом.</p>
+    <p class="source">
+      <b>Ольга Зибер</b> = поле «Партнёр» содержит «ЛК ОФД», «ОПС ЭДО» или «ОППС ЭДО».<br>
+      <b>Лариса Пенигина</b> = поле «Центр продаж» — один из 11 зафиксированных ЦП (региональные представительства Калуга Астрал / Астрал-Софт).<br>
+      <b>Партнёры</b> = всё остальное, включая самый крупный ЦП компании.
+    </p>
+  </div>
+</section>
+
+<section class="block" id="b4">
+  <h2>Раздел «Коды ОФД»</h2>
+  <p>Единица счёта — код (PIN), вне привязки к тому, стал ли из него реальный клиент.</p>
+
+  <div class="widget-card">
+    <h4>Неактивированные коды по годам</h4>
+    <div class="meta"><span class="chip">график, раскрывается</span><span class="chip">as-of</span></div>
+    <p><b>Считаем коды (PIN) в резерве, по году создания.</b> Клик на год → месяцы → клик на месяц → партнёры, создавшие коды в этом месяце. Экспорт доступен всегда: без раскрытия — весь резерв по всем партнёрам за всё время, после клика на месяц — экспорт переключается на этот месяц.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Отозванные коды</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip period">период</span></div>
+    <p><b>Считаем коды (PIN) со статусом «Отозвано», созданные за период.</b> Больше нигде не учитывается.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Общая воронка</h4>
+    <div class="meta"><span class="chip">график</span><span class="chip period">период</span></div>
+    <p><b>Считаем коды (PIN), созданные за период.</b> Создано → делится на три непересекающихся столбца: Активировано (клиент привязал код к себе, статус «Зарегистрировано»), Неактивировано (до сих пор в резерве партнёра, статус Новый/Выдан), Отозвано. Активировано + Неактивировано + Отозвано = Создано. Плюс среднее время от создания кода до активации.</p>
+  </div>
+
+  <div class="widget-card">
+    <h4>Доля кодов «впрок»</h4>
+    <div class="meta"><span class="chip">карточка</span><span class="chip period">период</span></div>
+    <p><b>Считаем коды (PIN), созданные за период.</b> Доля тех, что на as-of дату всё ещё без клиента (в резерве партнёра).</p>
+  </div>
+</section>
+
+<footer class="note">
+  Вопросы по логике расчётов — к Диме. Если что-то в цифрах выглядит странно, сначала проверь: выбран ли нужный период, и не путается ли «период» с «as-of» — это самая частая причина «не той» цифры.
+</footer>
+
+</div>

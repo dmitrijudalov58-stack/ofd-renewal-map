@@ -90,10 +90,47 @@ OFD_TEST_FILE="/путь/к/реальной/выгрузке.xlsx" npm test
 3. Только после зелёного smoke — `git add` конкретных файлов (никогда `-A` не глядя, проверять что не затянуло xlsx), commit, push
 4. После push — дождаться `built` в Pages API, проверить фикс на живом URL curl'ом (не считать готовым по одному пушу)
 
-## Связанные материалы (Claude Artifacts, приватные ссылки Димы)
+## Связанные материалы
 
-- Полная спека бордов/виджетов/формул (00-B4): https://claude.ai/code/artifact/c96bb45e-7911-4657-9e6d-5237aab3d64f
-- Живой дизайн-макет (первая версия, демо-данные): https://claude.ai/code/artifact/6414ceb3-3a4d-4266-bdd5-b68433515348
-- Памятка для смежных отделов (актуальная, терминология Димы — клиент=ИНН/касса=РНМ/код=PIN, "Термин = определение"): https://claude.ai/code/artifact/e7ca4bf3-7e8a-48f3-9480-58fad0261e10
+Источник правды — файлы в репозитории (переживают сессию, в отличие от scratchpad и Claude Artifacts):
 
-При правках терминологии/описаний виджетов — держать в стиле памятки выше и в стиле заметки Димы `Stars/Исследование оттока/КОНТЕКСТ.md` в его Obsidian-vault (`~/Desktop/обсидиан`): короткие декларативные определения вида **Термин = определение**, без хеджирования, конкретные названия полей выгрузки в коде.
+- `docs/guide.html` — памятка для смежных отделов, терминология Димы (клиент=ИНН/касса=РНМ/код=PIN, стиль "Термин = определение"). Именно этот файл редактировать при правках памятки.
+- `docs/planning/spec.html` — полная спека бордов/виджетов/формул (00-B4), зафиксирована до начала разработки
+- `docs/planning/design-mockup.html` — первая версия живого дизайн-макета (демо-данные, одобрен Димой как визуальный язык)
+
+Зеркала на Claude Artifacts (та же сессия, могут не пережить время — не полагаться как на источник правды, полезны только для быстрой ссылки):
+- Спека: https://claude.ai/code/artifact/c96bb45e-7911-4657-9e6d-5237aab3d64f
+- Дизайн-макет: https://claude.ai/code/artifact/6414ceb3-3a4d-4266-bdd5-b68433515348
+- Памятка: https://claude.ai/code/artifact/e7ca4bf3-7e8a-48f3-9480-58fad0261e10
+
+При правках терминологии/описаний виджетов — держать стиль `docs/guide.html` и стиль заметки Димы `Stars/Исследование оттока/КОНТЕКСТ.md` в его Obsidian-vault (`~/Desktop/обсидиан`): короткие декларативные определения вида **Термин = определение**, без хеджирования, конкретные названия полей выгрузки в коде. После правки `docs/guide.html` — обновить и Artifact (Artifact tool, тот же file_path, публикует на тот же URL) и PDF (см. ниже), обе версии должны быть актуальны одновременно.
+
+## PDF-версия памятки (для рассылки без аккаунта Claude)
+
+На машине Димы нет ни Chrome, ни wkhtmltopdf — печать HTML→PDF через headless Chromium из пакета `puppeteer` (npm), не через скилл `make-pdf` (тот рассчитан на markdown-вход и тянет инфраструктуру gstack, которая тут не нужна).
+
+```bash
+mkdir -p /tmp/pdfgen && cd /tmp/pdfgen && npm init -y >/dev/null 2>&1 && npm install puppeteer
+
+node -e '
+const puppeteer = require("puppeteer");
+(async () => {
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  await page.goto("file://" + "/Users/dmitrij/Desktop/Агенты/ofd-renewal-map/docs/guide.html", { waitUntil: "networkidle0" });
+  await page.emulateMediaType("screen");
+  await page.pdf({
+    path: process.env.HOME + "/Downloads/Карта продлений ОФД — памятка.pdf",
+    format: "A4", printBackground: true,
+    margin: { top: "14mm", bottom: "16mm", left: "12mm", right: "12mm" },
+  });
+  await browser.close();
+})();
+'
+```
+
+Результат уже лежит в `~/Downloads/Карта продлений ОФД — памятка.pdf` (8 страниц, кириллица проверена через `pdftotext`). Перегенерировать этим же рецептом после любой правки `docs/guide.html`.
+
+## Статус на конец сессии (2026-08-03)
+
+Всё сделано и задеплоено: сайт на GitHub Pages (проверен curl, 200 OK), 25 виджетов, все фидбэк-раунды закрыты (фастфильтры, воронка, каналы, barList на SVG, hover на нетто-приросте), памятка в терминологии Димы — и как Artifact, и как файл в репо, и как PDF в Downloads. Следующая сессия начинает не с нуля — весь контекст в этом файле.
