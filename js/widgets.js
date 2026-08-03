@@ -28,19 +28,27 @@
   // однотонный горизонтальный список (для сравнимых по величине корзин с прямыми подписями).
   // Серая полоса — не отдельные данные, а шкала: длина закрашенной части = доля от максимума
   // в списке. Подпись под списком поясняет это явно, плюс opts.caption для доп. контекста единиц.
+  // Настоящий горизонтальный бар-чарт (SVG), не div-полоски с бледной заливкой —
+  // на светло-сером фоне пастельные оттенки почти не читались, особенно на малых процентах.
   function barList(rows, opts) {
     opts = opts || {};
     var max = Math.max.apply(null, rows.map(function (r) { return r.value; }).concat([1]));
-    var color = opts.color || "var(--brand)";
-    var html = rows.map(function (r) {
-      var pct = Math.max(2, (r.value / max) * 100);
-      var c = r.color || color;
-      return '<div class="chan-row"><span class="chan-name">' + esc(r.label) + '</span>' +
-        '<span class="chan-bar-track"><span class="chan-bar-fill" style="width:' + pct + '%;background:' + c + '"></span></span>' +
-        '<span class="chan-val">' + fmtNum(r.value) + '</span></div>';
-    }).join("");
-    var caption = '<div class="stat-label" style="margin-top:4px">' + (opts.caption ? opts.caption + " · " : "") + 'серая полоса — доля от максимума в списке, число справа — точное значение</div>';
-    return '<div>' + html + caption + '</div>';
+    var defaultColor = opts.color || "var(--s1)";
+    var labelW = 128, rowH = 30, padTop = 6, padRight = 66, w = 520;
+    var barAreaW = w - labelW - padRight;
+    var h = rows.length * rowH + padTop * 2;
+    var parts = [];
+    parts.push('<line class="baseline" x1="' + labelW + '" y1="' + padTop + '" x2="' + labelW + '" y2="' + (h - padTop) + '"></line>');
+    rows.forEach(function (r, i) {
+      var y = padTop + i * rowH + rowH / 2;
+      var barW = Math.max(3, (r.value / max) * barAreaW);
+      var color = r.color || defaultColor;
+      parts.push('<text class="row-label" x="' + (labelW - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + esc(r.label) + '</text>');
+      parts.push('<rect x="' + labelW + '" y="' + (y - 7) + '" width="' + barW.toFixed(1) + '" height="14" rx="3" fill="' + color + '"><title>' + esc(r.label) + ': ' + fmtNum(r.value) + '</title></rect>');
+      parts.push('<text class="value-label" x="' + (labelW + barW + 8).toFixed(1) + '" y="' + (y + 4) + '">' + fmtNum(r.value) + '</text>');
+    });
+    var svg = '<svg class="chart-svg" viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '" role="img" aria-label="' + (opts.caption || 'распределение') + '">' + parts.join("") + '</svg>';
+    return opts.caption ? svg + '<div class="stat-label" style="margin-top:6px">' + opts.caption + '</div>' : svg;
   }
 
   // Таблица касс с фастфильтрами (партнёр / тариф / статус / ИНН клиента / мин. продлений) —
@@ -295,9 +303,9 @@
       var s = ctx.M.computeSnapshot(model, ctx.asOf);
       var b = s.kassaCountBuckets;
       return barList([
-        { label: "1 касса", value: b["1"], color: "#86b6ef" },
-        { label: "2–3 кассы", value: b["2-3"], color: "#5598e7" },
-        { label: "4–9 касс", value: b["4-9"], color: "#256abf" },
+        { label: "1 касса", value: b["1"], color: "#3987e5" },
+        { label: "2–3 кассы", value: b["2-3"], color: "#256abf" },
+        { label: "4–9 касс", value: b["4-9"], color: "#184f95" },
         { label: "10+ касс", value: b["10+"], color: "#104281" },
       ]);
     },
@@ -355,9 +363,9 @@
     render: function (model, ctx) {
       var s = ctx.M.computeSnapshot(model, ctx.asOf);
       return barList([
-        { label: "старше 1 года", value: s.ageBuckets["1y"], color: "#86b6ef" },
-        { label: "старше 2 лет", value: s.ageBuckets["2y"], color: "#5598e7" },
-        { label: "старше 3 лет", value: s.ageBuckets["3y"], color: "#256abf" },
+        { label: "старше 1 года", value: s.ageBuckets["1y"], color: "#3987e5" },
+        { label: "старше 2 лет", value: s.ageBuckets["2y"], color: "#256abf" },
+        { label: "старше 3 лет", value: s.ageBuckets["3y"], color: "#104281" },
       ]);
     },
   };
@@ -400,9 +408,9 @@
       var s = ctx.M.computeSnapshot(model, ctx.asOf);
       var b = s.renewalBuckets;
       var chart = barList([
-        { label: "0 продлений", value: b["0"], color: "#86b6ef" },
-        { label: "1–2", value: b["1-2"], color: "#5598e7" },
-        { label: "3–5", value: b["3-5"], color: "#256abf" },
+        { label: "0 продлений", value: b["0"], color: "#3987e5" },
+        { label: "1–2", value: b["1-2"], color: "#256abf" },
+        { label: "3–5", value: b["3-5"], color: "#184f95" },
         { label: "6+", value: b["6+"], color: "#104281" },
       ], { caption: "число касс в каждой корзине" });
       var arr = Array.from(model.kassas.values());
