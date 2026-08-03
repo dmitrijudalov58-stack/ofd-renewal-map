@@ -142,8 +142,18 @@
         svgParts.push('<path class="mark-area" style="fill:' + s.color + '" d="' + areaD + '"></path>');
       }
       svgParts.push('<path class="mark-line" style="stroke:' + s.color + '" d="' + d + '"></path>');
+
+      // точка + подсказка на каждый месяц (не только на последней) — крупный прозрачный
+      // круг под маленькой видимой точкой расширяет зону наведения
+      s.values.forEach(function (v, i) {
+        var cx = x(i).toFixed(1), cy = y(v).toFixed(1);
+        var tip = (s.tooltips && s.tooltips[i]) ? s.tooltips[i] : (MONTHS_SHORT[months[i].getMonth()] + " " + months[i].getFullYear() + ": " + fmtNum(v));
+        svgParts.push('<circle cx="' + cx + '" cy="' + cy + '" r="9" fill="transparent" style="cursor:pointer"><title>' + esc(tip) + '</title></circle>');
+        svgParts.push('<circle class="mark-dot" style="fill:' + s.color + '" cx="' + cx + '" cy="' + cy + '" r="2.5" pointer-events="none"></circle>');
+      });
+
       var lastI = n - 1;
-      svgParts.push('<circle class="mark-dot" style="fill:' + s.color + '" cx="' + x(lastI).toFixed(1) + '" cy="' + y(s.values[lastI]).toFixed(1) + '" r="3.5"><title>' + s.label + ": " + fmtNum(s.values[lastI]) + '</title></circle>');
+      svgParts.push('<circle class="mark-dot" style="fill:' + s.color + '" cx="' + x(lastI).toFixed(1) + '" cy="' + y(s.values[lastI]).toFixed(1) + '" r="3.5" pointer-events="none"></circle>');
       svgParts.push('<text class="value-label" x="' + (x(lastI) + 6).toFixed(1) + '" y="' + (y(s.values[lastI]) - 6).toFixed(1) + '">' + fmtNum(s.values[lastI]) + '</text>');
     });
 
@@ -291,9 +301,31 @@
     title: "Нетто-прирост базы", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd);
-      var cum = [], acc = 0;
-      for (var i = 0; i < series.months.length; i++) { acc += series.newByMonth[i] - series.churnByMonth[i]; cum.push(acc); }
-      return lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)" }], { area: true });
+      var cum = [], net = [], acc = 0;
+      for (var i = 0; i < series.months.length; i++) {
+        var n = series.newByMonth[i] - series.churnByMonth[i];
+        net.push(n); acc += n; cum.push(acc);
+      }
+      var tooltips = series.months.map(function (m, i) {
+        var sign = net[i] > 0 ? "+" : "";
+        return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
+      });
+      var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
+
+      var rows = series.months.map(function (m, i) {
+        var sign = net[i] > 0 ? "+" : "";
+        return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), series.newByMonth[i], series.churnByMonth[i], sign + fmtNum(net[i])];
+      });
+      var table = makeSortableTable(
+        [{ label: "Месяц" }, { label: "Новые", num: true }, { label: "Отток", num: true }, { label: "Нетто", num: true }],
+        rows
+      );
+      var wrap = el("<div></div>");
+      wrap.appendChild(el('<div>' + chart + '</div>'));
+      var tableHolder = el('<div style="margin-top:14px"></div>');
+      tableHolder.appendChild(table);
+      wrap.appendChild(tableHolder);
+      return wrap;
     },
   };
 
