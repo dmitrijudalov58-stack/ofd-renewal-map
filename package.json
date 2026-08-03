@@ -1,0 +1,15 @@
+{
+  "name": "ofd-renewal-map",
+  "version": "1.0.0",
+  "description": "Карта продлений ОФД — статический BI-инструмент, dev-зависимости нужны только для локальных тестов, сайт их не использует",
+  "private": true,
+  "scripts": {
+    "test": "node test/smoke.js && node test/browser-smoke.js"
+  },
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "xlsx": "^0.18.5"
+  }
+}

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Карта продлений ОФД</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧾</text></svg>">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand"><span class="mark">🧾</span>Карта продлений ОФД</div>
+  <div class="range">
+    <span>период</span>
+    <input type="date" id="periodStart" aria-label="начало периода">
+    <span class="sep">—</span>
+    <input type="date" id="periodEnd" aria-label="конец периода">
+    <button class="btn" id="applyRange" disabled>Применить</button>
+  </div>
+  <div class="spacer"></div>
+  <span class="load-status" id="loadStatus">Файл не загружен</span>
+  <span class="asof" id="asofStamp" style="display:none;"></span>
+  <label class="btn primary" style="cursor:pointer;">
+    Загрузить XLSX
+    <input type="file" id="fileInput" accept=".xlsx" style="display:none;">
+  </label>
+  <span class="filename" id="filenameLabel"></span>
+</div>
+
+<div class="shell">
+
+  <aside class="rail">
+    <p class="rail-title">Библиотека виджетов</p>
+
+    <details class="board-group" open>
+      <summary><span class="code">B1</span>Клиенты</summary>
+      <div class="lib-item" draggable="true" data-widget="b1-active"><span class="grip">⋮⋮</span>Активные клиенты сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-new"><span class="grip">⋮⋮</span>Новые клиенты за период<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-churn"><span class="grip">⋮⋮</span>Отток клиентов за период<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-reanim"><span class="grip">⋮⋮</span>Реанимированные клиенты<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-netgrowth"><span class="grip">⋮⋮</span>Нетто-прирост базы<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-kassdist"><span class="grip">⋮⋮</span>Распределение по числу касс<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-risk"><span class="grip">⋮⋮</span>Клиенты «под риском»<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-age"><span class="grip">⋮⋮</span>Возрастная структура базы<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B2</span>Кассы</summary>
+      <div class="lib-item" draggable="true" data-widget="b2-active"><span class="grip">⋮⋮</span>Активные кассы сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-flow"><span class="grip">⋮⋮</span>Новые / отток / реанимация касс<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-renewals"><span class="grip">⋮⋮</span>Кассы и продления<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-renewdist"><span class="grip">⋮⋮</span>Распределение продлений<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-tariff"><span class="grip">⋮⋮</span>Распределение по сроку тарифа<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-risk"><span class="grip">⋮⋮</span>Кассы «под риском»<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-summary"><span class="grip">⋮⋮</span>Сводка клиенты vs кассы<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B3</span>Партнёры</summary>
+      <div class="lib-item" draggable="true" data-widget="b3-active"><span class="grip">⋮⋮</span>Действующие партнёры сейчас<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-table"><span class="grip">⋮⋮</span>Таблица по партнёрам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-top"><span class="grip">⋮⋮</span>Топ партнёров по объёму<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-reserve"><span class="grip">⋮⋮</span>Топ по зависшему резерву<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-channels"><span class="grip">⋮⋮</span>Разбивка по каналам<span class="lchip">as-of</span></div>
+    </details>
+
+    <details class="board-group">
+      <summary><span class="code">B4</span>Коды ОФД</summary>
+      <div class="lib-item" draggable="true" data-widget="b4-years"><span class="grip">⋮⋮</span>Неактивированные коды по годам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b4-partners"><span class="grip">⋮⋮</span>Неактивированные коды по партнёрам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b4-revoked"><span class="grip">⋮⋮</span>Отозванные коды<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b4-funnel"><span class="grip">⋮⋮</span>Общая воронка<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b4-reserve-share"><span class="grip">⋮⋮</span>Доля кодов «впрок»<span class="lchip">период</span></div>
+    </details>
+  </aside>
+
+  <div class="canvas-wrap">
+    <div class="demo-banner" id="demoBanner">Загрузи XLSX-выгрузку ОФД справа сверху — после разбора файла здесь появятся реальные цифры. Обработка идёт целиком в браузере, файл никуда не отправляется.</div>
+    <div id="canvas"><div class="empty-state" id="emptyState">Загрузи файл и перетащи виджет из библиотеки слева</div></div>
+  </div>
+
+</div>
+
+<script src="js/parser.js"></script>
+<script src="js/metrics.js"></script>
+<script src="js/widgets.js"></script>
+<script src="js/dnd.js"></script>
+<script src="js/export.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
