@@ -8,13 +8,14 @@
   // strict (default true) = "рокировка": ориентируемся только на клиентов/кассы с
   // действующим кодом ОФД. rows хранится отдельно, чтобы переключатель мог перестроить
   // модель без повторной загрузки файла.
-  window.OFDState = { model: null, ctx: null, rows: null, strict: true };
+  window.OFDState = { model: null, ctx: null, rows: null, strict: true, freshness: null };
 
   var fileInput = document.getElementById("fileInput");
   var filenameLabel = document.getElementById("filenameLabel");
   var loadStatus = document.getElementById("loadStatus");
   var asofStamp = document.getElementById("asofStamp");
   var demoBanner = document.getElementById("demoBanner");
+  var freshnessBanner = document.getElementById("freshnessBanner");
   var periodStartInput = document.getElementById("periodStart");
   var periodEndInput = document.getElementById("periodEnd");
   var applyBtn = document.getElementById("applyRange");
@@ -54,6 +55,34 @@
   function updateAsofStamp(asOf) {
     asofStamp.style.display = "";
     asofStamp.textContent = "as-of · " + asOf.toLocaleDateString("ru-RU") + " " + asOf.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Свежесть выгрузки = самая поздняя дата, которую файл вообще видел (created/activated
+  // по всем строкам). Если as-of уходит дальше неё — "отток" для месяцев после этой даты
+  // не факт, а допущение поверх дыры в данных (нет renewal-событий, потому что выгрузка
+  // их просто ещё не застала). Дима согласился жить с этим допущением, но баннер должен
+  // об этом явно предупреждать каждый раз.
+  function computeFreshness(rows) {
+    var max = null;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.created instanceof Date && (!max || r.created > max)) max = r.created;
+      if (r.activated instanceof Date && (!max || r.activated > max)) max = r.activated;
+    }
+    return max;
+  }
+
+  function updateFreshnessBanner() {
+    var freshness = window.OFDState.freshness;
+    var asOf = window.OFDState.asOf;
+    if (!freshness || !asOf || asOf <= freshness) {
+      freshnessBanner.classList.add("hidden");
+      return;
+    }
+    freshnessBanner.classList.remove("hidden");
+    freshnessBanner.textContent = "⚠ as-of (" + asOf.toLocaleDateString("ru-RU") + ") дальше свежести выгрузки (" + freshness.toLocaleDateString("ru-RU") +
+      ") — для дат после " + freshness.toLocaleDateString("ru-RU") + " в файле физически нет событий продления. " +
+      "Отток за этот период — предположение поверх дыры в данных (клиент мог продлиться позже даты выгрузки, файл этого ещё не увидел), не факт.";
   }
 
   function updateStrictButton() {
@@ -99,6 +128,7 @@
         window.OFDState.model = model;
         window.OFDState.rows = parsed.rows;
         window.OFDState.asOf = asOf;
+        window.OFDState.freshness = computeFreshness(parsed.rows);
 
         var yearStart = new Date(asOf.getFullYear(), 0, 1);
         periodStartInput.value = fmtInputDate(yearStart);
@@ -112,6 +142,7 @@
         window.OFDState.ctx = currentCtx();
 
         updateAsofStamp(asOf);
+        updateFreshnessBanner();
         demoBanner.classList.add("hidden");
         if (!parsed.headerIssues.length) {
           setStatus(window.OFDWidgets.fmtNum(parsed.rows.length) + " строк · " + window.OFDWidgets.fmtNum(model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
@@ -127,22 +158,33 @@
       });
   });
 
+  // Конец периода двигает as-of вслед за собой — Дима хочет "выставил диапазон до 30
+  // сентября -> вижу отток за август/июль", без ручной синхронизации двух разных полей.
+  // Ручное поле as-of (ниже) остаётся отдельной кнопкой — если нужно сознательно
+  // разъединить период и as-of, применяешь его ПОСЛЕ периода, оно её переопределит.
   applyBtn.addEventListener("click", function () {
     if (!window.OFDState.model) return;
+    var asOf = new Date(periodEndInput.value + "T23:59:59");
+    window.OFDState.asOf = asOf;
+    asOfInput.value = periodEndInput.value;
+    updateAsofStamp(asOf);
     window.OFDState.ctx = currentCtx();
+    updateFreshnessBanner();
     window.OFDCanvas.rerenderAll();
   });
 
   // as-of по умолчанию = момент загрузки файла (реальное "сейчас"), но выгрузка могла
   // быть снята раньше — тогда данные о продлениях за последние дни в файле попросту
   // отсутствуют, и ретроспективная логика оттока (30/31/91 день) должна отталкиваться
-  // от даты снятия выгрузки, а не от текущих часов браузера. Даём переопределить вручную.
+  // от даты снятия выгрузки, а не от текущих часов браузера. Даём переопределить вручную
+  // независимо от конца периода (например, посмотреть на диапазон "глазами" другой даты).
   applyAsOfBtn.addEventListener("click", function () {
     if (!window.OFDState.model || !asOfInput.value) return;
     var asOf = new Date(asOfInput.value + "T23:59:59");
     window.OFDState.asOf = asOf;
     window.OFDState.ctx = currentCtx();
     updateAsofStamp(asOf);
+    updateFreshnessBanner();
     window.OFDCanvas.rerenderAll();
   });
 
