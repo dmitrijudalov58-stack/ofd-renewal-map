@@ -381,9 +381,15 @@
       var days = (asOf - appearance) / 86400000;
       return days < 365 ? "0-1y" : days < 730 ? "1-2y" : days < 1095 ? "2-3y" : "3y+";
     }
+    // "Действующий" = код реально покрывает СЕЙЧАС (!clientLapsedAt) -- не "ещё не
+    // подтверждён как отток" (churnStatus, тот даёт 30-дневный грейс). Уточнено Димой
+    // 2026-08-06: "только действующие клиенты и кассы у которых есть действующий код,
+    // отток/возвращённые/прочее сюда не входят" -- тот же чек, что уже использует
+    // "Активные клиенты сейчас" (computeSnapshot), просто не завязан на переключатель
+    // "Режим" (strict/legacy), из-за которого раньше путались числа 150648/151151.
     model.clients.forEach(function (c) {
       if (c.phys) return;
-      if (clientChurnStatus(c, asOf) === "churned") return;
+      if (clientLapsedAt(c, asOf)) return;
       activeClients++;
       var n = c.kassas.length;
       kassaCountBuckets[n === 1 ? "1" : n <= 3 ? "2-3" : n <= 9 ? "4-9" : "10+"]++;
@@ -393,7 +399,7 @@
     var activeKassas = 0;
     var kassaAgeBuckets = { "0-1y": 0, "1-2y": 0, "2-3y": 0, "3y+": 0 };
     model.kassas.forEach(function (k) {
-      if (kassaChurnStatus(k, asOf) === "churned") return;
+      if (kassaLapsedAt(k, asOf)) return;
       activeKassas++;
       if (k.appearance) kassaAgeBuckets[ageBucketOf(k.appearance)]++;
     });
