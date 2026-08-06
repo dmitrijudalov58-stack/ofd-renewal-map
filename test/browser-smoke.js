@@ -105,7 +105,7 @@ async function main() {
   if (detailHTML.length <= 20) ok = false;
 
   // 5) сортировка таблицы по клику на заголовок "Продлений" (колонка 3 в kassaDetailTable)
-  const renewNode = win.document.querySelector('[data-widget-id="b2-renewals"]');
+  const renewNode = win.document.querySelector('[data-widget-id="b2-tariff"]'); // b2-renewals удалён (п.16)
   const th = renewNode.querySelectorAll("th")[3];
   const firstBefore = renewNode.querySelector("tbody tr td:nth-child(4)").textContent;
   th.dispatchEvent(new win.Event("click", { bubbles: true }));

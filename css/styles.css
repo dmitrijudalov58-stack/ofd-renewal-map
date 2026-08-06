@@ -170,6 +170,14 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   border-radius: 0; padding: 5px 11px; cursor: pointer; font-family: var(--sans);
 }
 .export-btn:hover { background: var(--brand); color: #fff; }
+/* тот же вид что у .export-btn, но ОТДЕЛЬНЫЙ класс -- иначе dnd.js вешает CSV-экспорт
+   на первую .export-btn в DOM и перехватывает клик у кнопки рефреша графика */
+.refresh-chart-btn {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  border: 1px solid var(--ink); color: var(--ink); background: transparent;
+  border-radius: 0; padding: 5px 11px; cursor: pointer; font-family: var(--sans);
+}
+.refresh-chart-btn:hover { background: var(--ink); color: var(--paper); }
 
 /* stat tile */
 .stat-value {

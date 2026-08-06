@@ -92,8 +92,10 @@
         overallEnd: last.overallEnd || null,
         tariff: last.tariff,
         partner: last.partner,
+        partnerInn: last.partnerInn,
         salesCenter: last.salesCenter,
         clientKey: last.innOrg || last.innPhys || null,
+        org: last.org,
         channel: classifyChannel(last.partner, last.salesCenter),
       });
     });
@@ -125,6 +127,8 @@
           key: key, kassas: [], phys: true,
           appearance: list[0].created,
           partner: list[list.length - 1].partner,
+          partnerInn: list[list.length - 1].partnerInn,
+          org: list[list.length - 1].org,
         });
       });
     }
@@ -140,6 +144,8 @@
       c.appearance = appearance;
       c.currentEnd = currentEnd;
       c.partner = lastRow ? lastRow.partner : null;
+      c.partnerInn = lastRow ? lastRow.partnerInn : null;
+      c.org = lastRow ? lastRow.org : null;
     });
 
     return { kassas: kassas, clients: clients, reserveRows: reserveRows, revokedRows: revokedRows };
@@ -196,33 +202,67 @@
   // computeMonthlySeries(Kassas), список "к продлению после окончания", борды по партнёрам.
   var CHURN_GRACE_DAYS = 30;
   var REANIM_WINDOW_START_DAYS = 31;
-  var REANIM_WINDOW_END_DAYS = 91;
 
-  function churnStatusFromEnd(end, asOf, lapsedAtFn, intervalsForReanim) {
+  // ПРИМЕЧАНИЕ (2026-08-06): раньше здесь была ветка "reanimated" — сравнивала интервалы с
+  // overallEnd/currentEnd в поисках чего-то, начавшегося позже. Она была МЁРТВОЙ КОДОМ:
+  // overallEnd/currentEnd — это ВСЕГДА максимум по всей цепочке (включая сам возврат, если
+  // он был), поэтому "что-то начавшееся позже максимума" математически не могло найтись
+  // никогда — проверено эмпирически на реальных данных (0 из 263675 касс, 0 из 150648
+  // клиентов). Отток (30/31 день) это не задевало — реанимация была отдельной веткой,
+  // отток всегда падал в "churned". Реанимация/возврат теперь отдельная метрика — см.
+  // findReturn() ниже, использует правильное сравнение (последний интервал против
+  // максимума ВСЕХ ОСТАЛЬНЫХ, не включая его самого).
+  function churnStatusFromEnd(end, asOf, lapsedAtFn) {
     if (!end) return null;
     var graceDeadline = addDays(end, CHURN_GRACE_DAYS); // день 30 — последний день, когда продление ещё спасает
     var resolveAt = addDays(end, REANIM_WINDOW_START_DAYS); // день 31 — судьба уже известна
     if (asOf < resolveAt) return "pending";
-    if (!lapsedAtFn(graceDeadline)) return "safe"; // продлились не позже дня 30
-    var reanimDeadline = addDays(end, REANIM_WINDOW_END_DAYS); // день 91
-    var reanimated = false;
-    for (var i = 0; i < intervalsForReanim.length; i++) {
-      var s = intervalsForReanim[i].start;
-      if (s > end && s <= reanimDeadline) { reanimated = true; break; }
-    }
-    return reanimated ? "reanimated" : "churned";
+    return lapsedAtFn(graceDeadline) ? "churned" : "safe";
   }
 
   function kassaChurnStatus(kassa, asOf) {
-    return churnStatusFromEnd(kassa.overallEnd, asOf, function (d) { return kassaLapsedAt(kassa, d); }, kassa.intervals);
+    return churnStatusFromEnd(kassa.overallEnd, asOf, function (d) { return kassaLapsedAt(kassa, d); });
   }
 
   function clientChurnStatus(client, asOf) {
     if (client.phys) return null;
+    return churnStatusFromEnd(client.currentEnd, asOf, function (d) { return clientLapsedAt(client, d); });
+  }
+
+  // ---------- возврат после оттока (не влияет на отток 30/31 — отдельная метка) ----------
+  //
+  // Правильное сравнение: берём САМЫЙ ПОЗДНО НАЧАВШИЙСЯ интервал, сравниваем его начало с
+  // максимумом ОКОНЧАНИЙ ВСЕХ ОСТАЛЬНЫХ интервалов (не включая его самого) — если между
+  // ними разрыв, это и есть возврат. Раньше сравнивали с overallEnd/currentEnd (= максимум
+  // ВКЛЮЧАЯ сам возврат) — от этого сравнение было тавтологией, всегда false.
+  var RETURN_TAG_MAX_DAYS = 1095; // 3 года — дальше просто новый клиент, без пометки
+
+  function findReturn(intervals) {
+    if (intervals.length < 2) return null;
+    var sorted = intervals.slice().sort(function (a, b) { return a.start - b.start; });
+    var last = sorted[sorted.length - 1];
+    var priorMaxEnd = null;
+    for (var i = 0; i < sorted.length - 1; i++) {
+      var e = sorted[i].end;
+      if (e && (priorMaxEnd === null || e > priorMaxEnd)) priorMaxEnd = e;
+    }
+    if (!priorMaxEnd || last.start <= priorMaxEnd) return null; // разрыва не было -- непрерывная цепочка
+    var days = daysBetween(priorMaxEnd, last.start);
+    if (days > RETURN_TAG_MAX_DAYS) return null; // 3+ года -- просто новый, без пометки
+    return { returnDate: last.start, gapEnd: priorMaxEnd, days: days, tag: days <= 90 ? "вернувшийся" : "возвращённый" };
+  }
+
+  function clientReturnInfo(client) {
+    if (client.phys) return null;
     var allIntervals = [];
     client.kassas.forEach(function (k) { allIntervals = allIntervals.concat(k.intervals); });
-    return churnStatusFromEnd(client.currentEnd, asOf, function (d) { return clientLapsedAt(client, d); }, allIntervals);
+    return findReturn(allIntervals);
   }
+
+  function kassaReturnInfo(kassa) {
+    return findReturn(kassa.intervals);
+  }
+
 
   // ---------- потоковые метрики (период) ----------
 
@@ -231,44 +271,34 @@
   function computeFlow(model, periodStart, periodEnd, asOf) {
     asOf = asOf || periodEnd; // обратная совместимость со старыми вызовами (напр. test/smoke.js)
 
-    var newClients = 0, churnedClients = 0, reanimClients = 0;
+    var newClients = 0, churnedClients = 0, returnedClients = 0;
     model.clients.forEach(function (c) {
       if (inRange(c.appearance, periodStart, periodEnd)) newClients++;
-      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd)) {
-        var cs = clientChurnStatus(c, asOf);
-        if (cs === "churned") churnedClients++;
-        else if (cs === "reanimated") reanimClients++;
+      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "churned") {
+        churnedClients++;
+      }
+      // "вернувшиеся" (0-90 дней) -- считаем по дате самого ВОЗВРАТА в периоде, не по дате
+      // окончания. Не пересекается с churnedClients (тот считает по дате окончания).
+      if (!c.phys) {
+        var ri = clientReturnInfo(c);
+        if (ri && ri.tag === "вернувшийся" && inRange(ri.returnDate, periodStart, periodEnd)) returnedClients++;
       }
     });
 
-    var newKassas = 0, churnedKassas = 0, reanimKassas = 0;
+    var newKassas = 0, churnedKassas = 0, returnedKassas = 0;
     model.kassas.forEach(function (k) {
       if (inRange(k.appearance, periodStart, periodEnd)) newKassas++;
-      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd)) {
-        var ks = kassaChurnStatus(k, asOf);
-        if (ks === "churned") churnedKassas++;
-        else if (ks === "reanimated") reanimKassas++;
+      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd) && kassaChurnStatus(k, asOf) === "churned") {
+        churnedKassas++;
       }
+      var kri = kassaReturnInfo(k);
+      if (kri && kri.tag === "вернувшийся" && inRange(kri.returnDate, periodStart, periodEnd)) returnedKassas++;
     });
 
     return {
-      clients: { new: newClients, churn: churnedClients, reanim: reanimClients },
-      kassas: { new: newKassas, churn: churnedKassas, reanim: reanimKassas },
+      clients: { new: newClients, churn: churnedClients, reanim: returnedClients },
+      kassas: { new: newKassas, churn: churnedKassas, reanim: returnedKassas },
     };
-  }
-
-  // Клиенты, которые ПРЯМО СЕЙЧАС (as-of) подтверждённо в оттоке по новой формуле — не
-  // путать с clientsAtRisk (тем, кому окончание ещё только предстоит). Для борда-списка
-  // "клиенты к продлению после окончания".
-  function clientsChurned(model, asOf) {
-    var out = [];
-    model.clients.forEach(function (c) {
-      if (c.phys || !c.currentEnd) return;
-      if (clientChurnStatus(c, asOf) === "churned") {
-        out.push({ key: c.key, partner: c.partner, kassaCount: c.kassas.length, end: c.currentEnd, daysLapsed: daysBetween(c.currentEnd, asOf) });
-      }
-    });
-    return out;
   }
 
   function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
@@ -280,7 +310,7 @@
     var byPartner = new Map();
     function bucket(name) {
       var p = byPartner.get(name);
-      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, baseAtStart: 0 }; byPartner.set(name, p); }
+      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, baseAtStart: 0, baseAtEnd: 0 }; byPartner.set(name, p); }
       return p;
     }
     model.clients.forEach(function (c) {
@@ -294,11 +324,15 @@
       if (c.appearance && c.appearance < periodStart && !clientLapsedAt(c, periodStart)) {
         bucket(name).baseAtStart++;
       }
+      // база "на конец периода" (п.23, 2026-08-06) — сколько осталось: пришло + было, минус ушедшие
+      if (c.appearance && c.appearance <= periodEnd && !clientLapsedAt(c, periodEnd)) {
+        bucket(name).baseAtEnd++;
+      }
     });
     var rows = [];
     byPartner.forEach(function (p) {
       var retention = p.baseAtStart > 0 ? 1 - (p.churnedClients / p.baseAtStart) : null;
-      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, baseAtStart: p.baseAtStart, retention: retention });
+      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, baseAtStart: p.baseAtStart, baseAtEnd: p.baseAtEnd, retention: retention });
     });
     return rows;
   }
@@ -332,6 +366,40 @@
   }
 
   // ---------- снэпшот-метрики (as-of) ----------
+
+  // "Действующий" = НЕ в оттоке по новой формуле (churnStatus !== "churned") -- НЕ зависит
+  // от переключателя "Режим" (strict/legacy), в отличие от computeSnapshot ниже. Используется
+  // в "Распределение по числу касс" и "Возрастная структура базы" — эти борды путали людей,
+  // когда легаси-режим случайно включён (см. находка 2026-08-06: 150648/151151 — суммы под
+  // strict:false, а не баг формулы). Клиент/касса выпадает из "действующих" ровно на 31-й
+  // день после окончания, когда статус становится "churned".
+  function computeActiveSnapshot(model, asOf) {
+    var activeClients = 0;
+    var kassaCountBuckets = { "1": 0, "2-3": 0, "4-9": 0, "10+": 0 };
+    var ageBuckets = { "0-1y": 0, "1-2y": 0, "2-3y": 0, "3y+": 0 };
+    function ageBucketOf(appearance) {
+      var days = (asOf - appearance) / 86400000;
+      return days < 365 ? "0-1y" : days < 730 ? "1-2y" : days < 1095 ? "2-3y" : "3y+";
+    }
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      if (clientChurnStatus(c, asOf) === "churned") return;
+      activeClients++;
+      var n = c.kassas.length;
+      kassaCountBuckets[n === 1 ? "1" : n <= 3 ? "2-3" : n <= 9 ? "4-9" : "10+"]++;
+      if (c.appearance) ageBuckets[ageBucketOf(c.appearance)]++;
+    });
+
+    var activeKassas = 0;
+    var kassaAgeBuckets = { "0-1y": 0, "1-2y": 0, "2-3y": 0, "3y+": 0 };
+    model.kassas.forEach(function (k) {
+      if (kassaChurnStatus(k, asOf) === "churned") return;
+      activeKassas++;
+      if (k.appearance) kassaAgeBuckets[ageBucketOf(k.appearance)]++;
+    });
+
+    return { activeClients: activeClients, kassaCountBuckets: kassaCountBuckets, ageBuckets: ageBuckets, activeKassas: activeKassas, kassaAgeBuckets: kassaAgeBuckets };
+  }
 
   function computeSnapshot(model, asOf, opts) {
     opts = opts || {};
@@ -408,7 +476,40 @@
       if (c.phys) return;
       var end = nearestAliveEnd(c.kassas, asOf, strict);
       if (end && deadlineFn(end)) {
-        out.push({ key: c.key, partner: c.partner, kassaCount: c.kassas.length, end: end });
+        var toRenew = c.kassas.filter(function (k) {
+          var d = kassaDeadline(k, asOf, strict);
+          return d && deadlineFn(d);
+        }).length;
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: toRenew, end: end });
+      }
+    });
+    return out;
+  }
+
+  // Клиенты, у которых ближайшая касса УЖЕ просрочена (окончание в прошлом относительно
+  // checkAsOf), просрочка в [minDays, maxDays] -- зеркало clientsAtRisk, но для прошлого,
+  // не будущего. Для борда "Клиенты к продлению после окончания" (окно 0-90 дней).
+  function clientsOverdue(model, checkAsOf, minDays, maxDays) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys || !c.currentEnd) return;
+      if (c.currentEnd >= checkAsOf) return;
+      var days = daysBetween(c.currentEnd, checkAsOf);
+      if (days < minDays || days > maxDays) return;
+      var toRenew = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd <= checkAsOf; }).length;
+      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: toRenew, end: c.currentEnd, daysOverdue: days });
+    });
+    return out;
+  }
+
+  // Возвращённые клиенты (91 день - 3 года) за период, по дате возврата.
+  function computeReturnedClients(model, periodStart, periodEnd) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var ri = clientReturnInfo(c);
+      if (ri && ri.tag === "возвращённый" && inRange(ri.returnDate, periodStart, periodEnd)) {
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, days: ri.days, kassaCount: c.kassas.length, returnDate: ri.returnDate });
       }
     });
     return out;
@@ -593,6 +694,49 @@
     return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth };
   }
 
+  // 3 градации оттока по месяцам (п.3.1, 2026-08-06) для "Прирост базы":
+  // - forecast (прогноз) -- дата окончания в будущем относительно asOf, просто счёт "сколько
+  //   кодов заканчивается в этом месяце", без статуса (ещё не наступило)
+  // - grace (не продлились) -- дата окончания уже прошла, 0-30 дней назад, и ПРЯМО СЕЙЧАС
+  //   (as-of) всё ещё нет покрытия (не путать с "pending"-статусом churnStatus — pending
+  //   формально держится весь грейс независимо от того, продлились уже или нет; grace здесь
+  //   строго "ещё не продлились на данный момент")
+  // - churned (факт. отток) -- подтверждённый отток (30/31 день), как и раньше
+  function computeChurnGradient(model, periodStart, periodEnd, asOf, byKassa) {
+    asOf = asOf || periodEnd;
+    var months = buildMonthRange(periodStart, periodEnd);
+    var newByMonth = months.map(function () { return 0; });
+    var churnByMonth = months.map(function () { return 0; });
+    var graceByMonth = months.map(function () { return 0; });
+    var forecastByMonth = months.map(function () { return 0; });
+
+    var coll = byKassa ? model.kassas : model.clients;
+    coll.forEach(function (e) {
+      if (!byKassa && e.phys) return;
+      var appearance = e.appearance;
+      var end = byKassa ? e.overallEnd : e.currentEnd;
+      if (inRange(appearance, periodStart, periodEnd)) {
+        var ni = monthIndexOf(months, appearance);
+        if (ni >= 0) newByMonth[ni]++;
+      }
+      if (!end || !inRange(end, periodStart, periodEnd)) return;
+      var mi = monthIndexOf(months, end);
+      if (mi < 0) return;
+      var daysSinceEnd = (asOf - end) / 86400000;
+      if (daysSinceEnd < 0) {
+        forecastByMonth[mi]++;
+      } else if (daysSinceEnd <= CHURN_GRACE_DAYS) {
+        var stillLapsed = byKassa ? kassaLapsedAt(e, asOf) : clientLapsedAt(e, asOf);
+        if (stillLapsed) graceByMonth[mi]++;
+      } else {
+        var status = byKassa ? kassaChurnStatus(e, asOf) : clientChurnStatus(e, asOf);
+        if (status === "churned") churnByMonth[mi]++;
+      }
+    });
+
+    return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth, graceByMonth: graceByMonth, forecastByMonth: forecastByMonth };
+  }
+
   // топ партнёров по объёму ЗА ПЕРИОД: новые клиенты / новые кассы / продления
   // Воронка кодов, созданных за период. "Активировано" = клиент привязал код к себе
   // (статус "Зарегистрировано" — по факту эквивалентно "есть ИНН клиента"), "Неактивировано" =
@@ -662,6 +806,7 @@
     buildModel: buildModel,
     computeFlow: computeFlow,
     computeSnapshot: computeSnapshot,
+    computeActiveSnapshot: computeActiveSnapshot,
     clientsAtRisk: clientsAtRisk,
     kassasAtRisk: kassasAtRisk,
     daysThresholdFn: daysThresholdFn,
@@ -674,10 +819,14 @@
     computeReservePartnersForMonth: computeReservePartnersForMonth,
     computeMonthlySeries: computeMonthlySeries,
     computeMonthlySeriesKassas: computeMonthlySeriesKassas,
+    computeChurnGradient: computeChurnGradient,
     computeFunnel: computeFunnel,
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
-    clientsChurned: clientsChurned,
+    clientsOverdue: clientsOverdue,
+    computeReturnedClients: computeReturnedClients,
+    clientReturnInfo: clientReturnInfo,
+    kassaReturnInfo: kassaReturnInfo,
     computePartnerFlow: computePartnerFlow,
     computePartnerFlowKassas: computePartnerFlowKassas,
     monthResolved: monthResolved,

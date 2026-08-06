@@ -8,7 +8,7 @@
   // strict (default true) = "рокировка": ориентируемся только на клиентов/кассы с
   // действующим кодом ОФД. rows хранится отдельно, чтобы переключатель мог перестроить
   // модель без повторной загрузки файла.
-  window.OFDState = { model: null, ctx: null, rows: null, strict: true, freshness: null };
+  window.OFDState = { model: null, ctx: null, rows: null, strict: true, freshness: null, loadTimeAsOf: null };
 
   var fileInput = document.getElementById("fileInput");
   var filenameLabel = document.getElementById("filenameLabel");
@@ -49,7 +49,13 @@
   function currentCtx() {
     var start = new Date(periodStartInput.value + "T00:00:00");
     var end = new Date(periodEndInput.value + "T23:59:59");
-    return { M: window.OFDMetrics, periodStart: start, periodEnd: end, asOf: window.OFDState.asOf, strict: window.OFDState.strict };
+    return {
+      M: window.OFDMetrics, periodStart: start, periodEnd: end, asOf: window.OFDState.asOf, strict: window.OFDState.strict,
+      // loadAsOf -- зафиксирован при загрузке файла, НЕ меняется ни фильтром периода, ни
+      // ручным as-of. Для "Клиенты под риском"/"Клиенты к продлению" -- отдел продаж должен
+      // видеть факт на сегодня, без путаницы от чужих экспериментов с фильтрами.
+      loadAsOf: window.OFDState.loadTimeAsOf,
+    };
   }
 
   function updateAsofStamp(asOf) {
@@ -128,6 +134,7 @@
         window.OFDState.model = model;
         window.OFDState.rows = parsed.rows;
         window.OFDState.asOf = asOf;
+        window.OFDState.loadTimeAsOf = asOf; // зафиксирован раз и навсегда, для риск-бордов
         window.OFDState.freshness = computeFreshness(parsed.rows);
 
         var yearStart = new Date(asOf.getFullYear(), 0, 1);
@@ -148,7 +155,7 @@
           setStatus(window.OFDWidgets.fmtNum(parsed.rows.length) + " строк · " + window.OFDWidgets.fmtNum(model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
         }
 
-        ["b1-active", "b1-netgrowth", "b1-risk", "b3-channels", "b2-renewals"].forEach(function (id) {
+        ["b1-active", "b1-netgrowth", "b1-risk", "b3-channels", "b2-tariff"].forEach(function (id) {
           window.OFDCanvas.addWidget(id);
         });
       })
