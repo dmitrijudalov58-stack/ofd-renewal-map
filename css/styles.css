@@ -209,6 +209,9 @@ table.wtable th {
 table.wtable th:hover { color: var(--brand); }
 table.wtable td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .table-scroll { max-height: 260px; overflow-y: auto; overflow-x: auto; }
+/* панели раскрытия (история тарифов кассы, b4-партнёры/годы) — без лимита росли бы
+   бесконечно и обрезались бы .widget{overflow:hidden} при ручном ресайзе виджета */
+.expand-scroll { max-height: 240px; overflow-y: auto; }
 
 .status-pill {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 0;

@@ -76,7 +76,7 @@
       '</div>'
     );
     var tableHolder = el('<div></div>');
-    var expandArea = el('<div style="margin-top:10px"></div>');
+    var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
     wrap.appendChild(controls);
     wrap.appendChild(tableHolder);
     wrap.appendChild(expandArea);
@@ -223,6 +223,34 @@
     return '<svg class="chart-svg" viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '" role="img">' + parts.join("") + '</svg>';
   }
 
+  // Таблица Месяц/Новые/Отток/Нетто с пометкой "неполные" у месяцев, которые ещё не
+  // "дозрели" (см. metrics.js monthResolved — 31+ день от as-of с последнего дня месяца).
+  // Без этого недавние месяцы выглядят как "отток пропал", хотя на деле его ещё рано
+  // считать окончательным. Переиспользуется в netgrowth и партнёрских бордах.
+  function monthlyFlowTable(series, ctx) {
+    var anyPending = false;
+    var rows = series.months.map(function (m, i) {
+      var resolved = ctx.M.monthResolved(m, ctx.asOf);
+      if (!resolved) anyPending = true;
+      var net = series.newByMonth[i] - series.churnByMonth[i];
+      var sign = net > 0 ? "+" : "";
+      var churnText = fmtNum(series.churnByMonth[i]);
+      var netText = sign + fmtNum(net);
+      var churnCell = resolved ? churnText : '<span style="color:var(--muted)">' + churnText + ' <i style="font-style:normal">· неполные</i></span>';
+      var netCell = resolved ? netText : '<span style="color:var(--muted)">' + netText + '</span>';
+      return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), fmtNum(series.newByMonth[i]), churnCell, netCell];
+    });
+    var wrap = el("<div></div>");
+    if (anyPending) {
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Серым — месяц ещё не «дозрел» (с его последнего дня не прошло 31 день от as-of), отток за него ещё может увеличиться</div>'));
+    }
+    wrap.appendChild(makeSortableTable(
+      [{ label: "Месяц" }, { label: "Новые", num: true }, { label: "Отток", num: true, html: true }, { label: "Нетто", num: true, html: true }],
+      rows
+    ));
+    return wrap;
+  }
+
   function statBlock(value, label, small) {
     return '<div class="stat-value' + (small ? " small" : "") + '">' + value + '</div><div class="stat-label">' + label + '</div>';
   }
@@ -342,18 +370,10 @@
       });
       var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
 
-      var rows = series.months.map(function (m, i) {
-        var sign = net[i] > 0 ? "+" : "";
-        return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), series.newByMonth[i], series.churnByMonth[i], sign + fmtNum(net[i])];
-      });
-      var table = makeSortableTable(
-        [{ label: "Месяц" }, { label: "Новые", num: true }, { label: "Отток", num: true }, { label: "Нетто", num: true }],
-        rows
-      );
       var wrap = el("<div></div>");
       wrap.appendChild(el('<div>' + chart + '</div>'));
       var tableHolder = el('<div style="margin-top:14px"></div>');
-      tableHolder.appendChild(table);
+      tableHolder.appendChild(monthlyFlowTable(series, ctx));
       wrap.appendChild(tableHolder);
       return wrap;
     },
@@ -510,18 +530,10 @@
       });
       var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
 
-      var rows = series.months.map(function (m, i) {
-        var sign = net[i] > 0 ? "+" : "";
-        return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), series.newByMonth[i], series.churnByMonth[i], sign + fmtNum(net[i])];
-      });
-      var table = makeSortableTable(
-        [{ label: "Месяц" }, { label: "Новые", num: true }, { label: "Отток", num: true }, { label: "Нетто", num: true }],
-        rows
-      );
       var wrap = el("<div></div>");
       wrap.appendChild(el('<div>' + chart + '</div>'));
       var tableHolder = el('<div style="margin-top:14px"></div>');
-      tableHolder.appendChild(table);
+      tableHolder.appendChild(monthlyFlowTable(series, ctx));
       wrap.appendChild(tableHolder);
       return wrap;
     },
@@ -787,32 +799,41 @@
       rows = rows.filter(function (p) { return p.churnedClients > 0; });
       rows.sort(function (a, b) { return b.churnedClients - a.churnedClients; });
       var top = rows.slice(0, 100);
-      var body = top.map(function (p) { return [p.name, p.churnedClients, p.retention !== null ? fmtPct(p.retention) : "—"]; });
+      var body = top.map(function (p) { return [p.name, p.baseAtStart, p.churnedClients, p.retention !== null ? fmtPct(p.retention) : "—"]; });
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">retention = 1 − (отток / клиентов у партнёра на начало периода) · отток по формуле «не продлился 30+ дней»</div>'));
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН). Отток — не продлились 30+ дней (см. определение оттока). Retention = 1 − (отток / клиентов у партнёра на начало периода). Числа по всему периоду — последние ~30 дней периода обычно занижены, см. помесячную раскладку ниже.</div>'));
       wrap.appendChild(makeSortableTable(
-        [{ label: "Партнёр" }, { label: "Клиентов в оттоке", num: true }, { label: "Retention" }],
+        [{ label: "Партнёр" }, { label: "Клиентов на начало периода", num: true }, { label: "Клиентов в оттоке", num: true }, { label: "Retention" }],
         body
       ));
-      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, КлиентовВОттоке: p.churnedClients, Retention: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
+      wrap.appendChild(el('<div style="height:16px"></div>'));
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
+      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      wrap.appendChild(monthlyFlowTable(series, ctx));
+      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, КлиентовНаНачалоПериода: p.baseAtStart, КлиентовВОттоке: p.churnedClients, Retention: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
       return wrap;
     },
     exportable: true,
   };
 
   WIDGETS["b3-partner-eff"] = {
-    title: "Партнёр: новые / отток / % эффективности", type: "таблица", scope: "период", span: true,
+    title: "Партнёр: новые / отток / % эффективности (кассы)", type: "таблица", scope: "период", span: true,
     render: function (model, ctx) {
-      var rows = ctx.M.computePartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
-      rows.sort(function (a, b) { return b.newClients - a.newClients; });
+      var rows = ctx.M.computePartnerFlowKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      rows.sort(function (a, b) { return (b.retention === null ? -1 : b.retention) - (a.retention === null ? -1 : a.retention); });
       var top = rows.slice(0, 150);
-      var body = top.map(function (p) { return [p.name, p.newClients, p.churnedClients, p.retention !== null ? fmtPct(p.retention) : "—"]; });
+      var body = top.map(function (p) { return [p.name, p.baseAtStart, p.newKassas, p.churnedKassas, p.retention !== null ? fmtPct(p.retention) : "—"]; });
       var wrap = el('<div></div>');
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем кассы (РНМ), не клиентов. Отток — не продлились 30+ дней. Retention = 1 − (отток касс / касс у партнёра на начало периода). Отсортировано по убыванию retention. Числа по всему периоду — последние ~30 дней обычно занижены, см. помесячную раскладку ниже.</div>'));
       wrap.appendChild(makeSortableTable(
-        [{ label: "Партнёр" }, { label: "Новых", num: true }, { label: "Отток", num: true }, { label: "% эффективности (retention)" }],
+        [{ label: "Партнёр" }, { label: "Касс на начало периода", num: true }, { label: "Новых касс", num: true }, { label: "Отток касс", num: true }, { label: "% эффективности (retention)" }],
         body
       ));
-      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, Новых: p.newClients, Отток: p.churnedClients, Эффективность: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
+      wrap.appendChild(el('<div style="height:16px"></div>'));
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе касс (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
+      var series = ctx.M.computeMonthlySeriesKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      wrap.appendChild(monthlyFlowTable(series, ctx));
+      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, КассНаНачалоПериода: p.baseAtStart, НовыхКасс: p.newKassas, ОтТокКасс: p.churnedKassas, Эффективность: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
       return wrap;
     },
     exportable: true,
@@ -851,7 +872,7 @@
           detail.innerHTML = '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">' + y + ' по месяцам</div>';
           var monthChart = el(barChartVertical(monthItems, { color: "var(--s1)" }));
           detail.appendChild(monthChart);
-          var partnerArea = el('<div style="margin-top:10px"></div>');
+          var partnerArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
           detail.appendChild(partnerArea);
 
           monthChart.querySelectorAll(".mark-bar").forEach(function (mbar, mi) {
@@ -884,7 +905,7 @@
       var wrap = el('<div></div>');
       var tableWrap = makeSortableTable([{ label: "Партнёр" }, { label: "Неактивир. кодов", num: true }], top.map(function (p) { return [p.name, p.total]; }));
       wrap.appendChild(tableWrap);
-      var expandArea = el('<div style="margin-top:10px"></div>');
+      var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
       wrap.appendChild(expandArea);
       tableWrap.querySelectorAll("tbody tr").forEach(function (tr, i) {
         tr.style.cursor = "pointer";

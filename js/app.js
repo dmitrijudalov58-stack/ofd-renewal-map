@@ -18,6 +18,8 @@
   var periodStartInput = document.getElementById("periodStart");
   var periodEndInput = document.getElementById("periodEnd");
   var applyBtn = document.getElementById("applyRange");
+  var asOfInput = document.getElementById("asOfInput");
+  var applyAsOfBtn = document.getElementById("applyAsOf");
   var strictToggle = document.getElementById("strictToggle");
 
   var xlsxLoadPromise = null;
@@ -47,6 +49,11 @@
     var start = new Date(periodStartInput.value + "T00:00:00");
     var end = new Date(periodEndInput.value + "T23:59:59");
     return { M: window.OFDMetrics, periodStart: start, periodEnd: end, asOf: window.OFDState.asOf, strict: window.OFDState.strict };
+  }
+
+  function updateAsofStamp(asOf) {
+    asofStamp.style.display = "";
+    asofStamp.textContent = "as-of · " + asOf.toLocaleDateString("ru-RU") + " " + asOf.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
   }
 
   function updateStrictButton() {
@@ -97,13 +104,14 @@
         periodStartInput.value = fmtInputDate(yearStart);
         periodEndInput.value = fmtInputDate(asOf);
         applyBtn.disabled = false;
+        asOfInput.value = fmtInputDate(asOf);
+        applyAsOfBtn.disabled = false;
         strictToggle.disabled = false;
         updateStrictButton();
 
         window.OFDState.ctx = currentCtx();
 
-        asofStamp.style.display = "";
-        asofStamp.textContent = "as-of · " + asOf.toLocaleDateString("ru-RU") + " " + asOf.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        updateAsofStamp(asOf);
         demoBanner.classList.add("hidden");
         if (!parsed.headerIssues.length) {
           setStatus(window.OFDWidgets.fmtNum(parsed.rows.length) + " строк · " + window.OFDWidgets.fmtNum(model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
@@ -122,6 +130,19 @@
   applyBtn.addEventListener("click", function () {
     if (!window.OFDState.model) return;
     window.OFDState.ctx = currentCtx();
+    window.OFDCanvas.rerenderAll();
+  });
+
+  // as-of по умолчанию = момент загрузки файла (реальное "сейчас"), но выгрузка могла
+  // быть снята раньше — тогда данные о продлениях за последние дни в файле попросту
+  // отсутствуют, и ретроспективная логика оттока (30/31/91 день) должна отталкиваться
+  // от даты снятия выгрузки, а не от текущих часов браузера. Даём переопределить вручную.
+  applyAsOfBtn.addEventListener("click", function () {
+    if (!window.OFDState.model || !asOfInput.value) return;
+    var asOf = new Date(asOfInput.value + "T23:59:59");
+    window.OFDState.asOf = asOf;
+    window.OFDState.ctx = currentCtx();
+    updateAsofStamp(asOf);
     window.OFDCanvas.rerenderAll();
   });
 

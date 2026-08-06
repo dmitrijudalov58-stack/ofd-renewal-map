@@ -18,6 +18,11 @@
     <input type="date" id="periodEnd" aria-label="конец периода">
     <button class="btn" id="applyRange" disabled>Применить</button>
   </div>
+  <div class="range">
+    <span>as-of</span>
+    <input type="date" id="asOfInput" aria-label="дата отсчёта (as-of)">
+    <button class="btn" id="applyAsOf" disabled title="Пересчитать всё относительно этой даты — по умолчанию момент загрузки файла, но выгрузка могла быть снята раньше">Применить</button>
+  </div>
   <button class="btn" id="strictToggle" disabled>Режим</button>
   <div class="spacer"></div>
   <span class="load-status" id="loadStatus">Файл не загружен</span>

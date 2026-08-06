@@ -303,6 +303,34 @@
     return rows;
   }
 
+  // То же самое, но по кассам (РНМ) вместо клиентов (ИНН) — для борда "Партнёр: новые/
+  // отток/% эффективности" (сместили фокус с клиентов на кассы 2026-08-06).
+  function computePartnerFlowKassas(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd;
+    var byPartner = new Map();
+    function bucket(name) {
+      var p = byPartner.get(name);
+      if (!p) { p = { name: name, newKassas: 0, churnedKassas: 0, baseAtStart: 0 }; byPartner.set(name, p); }
+      return p;
+    }
+    model.kassas.forEach(function (k) {
+      var name = k.partner || "—";
+      if (inRange(k.appearance, periodStart, periodEnd)) bucket(name).newKassas++;
+      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd) && kassaChurnStatus(k, asOf) === "churned") {
+        bucket(name).churnedKassas++;
+      }
+      if (k.appearance && k.appearance < periodStart && !kassaLapsedAt(k, periodStart)) {
+        bucket(name).baseAtStart++;
+      }
+    });
+    var rows = [];
+    byPartner.forEach(function (p) {
+      var retention = p.baseAtStart > 0 ? 1 - (p.churnedKassas / p.baseAtStart) : null;
+      rows.push({ name: p.name, newKassas: p.newKassas, churnedKassas: p.churnedKassas, baseAtStart: p.baseAtStart, retention: retention });
+    });
+    return rows;
+  }
+
   // ---------- снэпшот-метрики (as-of) ----------
 
   function computeSnapshot(model, asOf, opts) {
@@ -508,6 +536,15 @@
     while (cursor <= end) { months.push(new Date(cursor)); cursor = addMonths(cursor, 1); }
     return months;
   }
+  // Месяц полностью "дозрел" (отток за него уже не может измениться), только когда с
+  // ПОСЛЕДНЕГО дня месяца прошло 31+ день от as-of — иначе часть кодов месяца ещё в грейсе,
+  // а часть уже нет, и смешивать их в одну цифру нечестно. Используется для пометки
+  // "данные неполные" в помесячных таблицах (netgrowth, партнёрские борды).
+  function monthResolved(monthDate, asOf) {
+    var lastDay = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0, 23, 59, 59);
+    return asOf >= addDays(lastDay, REANIM_WINDOW_START_DAYS);
+  }
+
   function monthIndexOf(months, date) {
     for (var i = 0; i < months.length; i++) {
       if (date.getFullYear() === months[i].getFullYear() && date.getMonth() === months[i].getMonth()) return i;
@@ -642,6 +679,8 @@
     clientChurnStatus: clientChurnStatus,
     clientsChurned: clientsChurned,
     computePartnerFlow: computePartnerFlow,
+    computePartnerFlowKassas: computePartnerFlowKassas,
+    monthResolved: monthResolved,
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
     classifyChannel: classifyChannel,
