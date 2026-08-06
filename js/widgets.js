@@ -265,6 +265,39 @@
   // не продлились (0-30 дней, оранжевым в скобках рядом с фактическим — п.3.2), прогноз
   // (будущие месяцы, серым — просто счёт кодов, статус ещё не известен). Тумблер % —
   // делит на activeTotal ("Активные клиенты сейчас"), п.3.4.
+  // Столбчатый график + таблица Месяц/Число по месяцам, опционально с раскрытием по
+  // клику на строку (список клиентов за этот месяц). Для вкладок "Новые"/"Отток"/
+  // "Возвращённые" внутри "Прирост базы" (п.3.5, 2026-08-06).
+  function monthlyCountBoard(months, counts, countLabel, color, drilldownFn) {
+    var wrap = el("<div></div>");
+    var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
+    wrap.appendChild(el(barChartVertical(items, { color: color })));
+    var tableHolder = el('<div style="margin-top:10px"></div>');
+    var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
+    var rowsData = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), month: m, count: counts[i] }; });
+    var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r) { return [r.label, r.count]; }));
+    tableHolder.appendChild(tableWrap);
+    wrap.appendChild(tableHolder);
+    wrap.appendChild(expandArea);
+    if (drilldownFn) {
+      wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список клиентов за этот месяц</div>'));
+      tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function () {
+          var label = tr.children[0].textContent;
+          var r = rowsData.find(function (x) { return x.label === label; });
+          if (!r) return;
+          var list = drilldownFn(r.month);
+          var lines = list.map(function (c) {
+            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' + esc(c.key) + ' · ' + esc(c.org || "—") + ' · партнёр ' + esc(c.partnerInn || "—") + ' ' + esc(c.partner || "—") + ' · активных касс: ' + c.activeKassas + '</div>';
+          });
+          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>' + esc(label) + '</b> · клиентов: ' + fmtNum(list.length) + '</div>' + (lines.join("") || '<div style="padding:6px 0;color:var(--muted)">нет данных</div>');
+        });
+      });
+    }
+    return wrap;
+  }
+
   function gradientFlowTable(series, activeTotal, unitLabel) {
     var wrap = el("<div></div>");
     var toggle = el(
@@ -435,28 +468,64 @@
 
   WIDGETS["b1-netgrowth"] = {
     // Переименован "Нетто-прирост базы" -> "Прирост базы" (п.3.3). 3 градации оттока +
-    // тумблер % (п.3.1/3.2/3.4, 2026-08-06). Накопительная кривая — по подтверждённому
-    // оттоку (не трогает не продлившихся/прогноз, те ещё не факт).
+    // тумблер % (п.3.1/3.2/3.4). Накопительная кривая — по подтверждённому оттоку (не
+    // трогает не продлившихся/прогноз, те ещё не факт). Вкладки Новые/Отток/Возвращённые
+    // (п.3.5, 2026-08-06) — существующий накопительный график НЕ тронут, стал одной из
+    // вкладок (первой, по умолчанию). Только клиенты (ИНН) — не кассы, п.3.5 про них.
     title: "Прирост базы", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
-      var cum = [], net = [], acc = 0;
-      for (var i = 0; i < series.months.length; i++) {
-        var n = series.newByMonth[i] - series.churnByMonth[i];
-        net.push(n); acc += n; cum.push(acc);
-      }
-      var tooltips = series.months.map(function (m, i) {
-        var sign = net[i] > 0 ? "+" : "";
-        return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
-      });
-      var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
-
       var activeTotal = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict }).activeClients;
+      var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
+
       var wrap = el("<div></div>");
-      wrap.appendChild(el('<div>' + chart + '</div>'));
-      var tableHolder = el('<div style="margin-top:14px"></div>');
-      tableHolder.appendChild(gradientFlowTable(series, activeTotal, "клиентов"));
-      wrap.appendChild(tableHolder);
+      var tabs = el(
+        '<div class="threshold-row" style="margin-bottom:10px">' +
+        '<label><input type="radio" name="ngview" value="cum" checked> Накопительно</label>' +
+        '<label><input type="radio" name="ngview" value="new"> Новые клиенты</label>' +
+        '<label><input type="radio" name="ngview" value="churn"> Отток клиентов</label>' +
+        '<label><input type="radio" name="ngview" value="returned"> Возвращённые клиенты</label>' +
+        '</div>'
+      );
+      var viewHolder = el('<div></div>');
+      wrap.appendChild(tabs);
+      wrap.appendChild(viewHolder);
+
+      function renderCumView() {
+        var cum = [], net = [], acc = 0;
+        for (var i = 0; i < series.months.length; i++) {
+          var n = series.newByMonth[i] - series.churnByMonth[i];
+          net.push(n); acc += n; cum.push(acc);
+        }
+        var tooltips = series.months.map(function (m, i) {
+          var sign = net[i] > 0 ? "+" : "";
+          return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
+        });
+        var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
+        var v = el("<div></div>");
+        v.appendChild(el('<div>' + chart + '</div>'));
+        var tableHolder = el('<div style="margin-top:14px"></div>');
+        tableHolder.appendChild(gradientFlowTable(series, activeTotal, "клиентов"));
+        v.appendChild(tableHolder);
+        return v;
+      }
+
+      function renderView() {
+        var v = tabs.querySelector('input:checked').value;
+        viewHolder.innerHTML = "";
+        if (v === "cum") {
+          viewHolder.appendChild(renderCumView());
+        } else if (v === "new") {
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }));
+        } else if (v === "churn") {
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", null));
+        } else if (v === "returned") {
+          if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }));
+        }
+      }
+      tabs.addEventListener("change", renderView);
+      renderView();
       return wrap;
     },
   };

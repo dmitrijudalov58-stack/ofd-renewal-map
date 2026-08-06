@@ -521,6 +521,56 @@
     return out;
   }
 
+  // Помесячный счёт "возвращённых" (91д-3г, по дате возврата) — для вкладки "Возвращённые
+  // клиенты" внутри "Прирост базы" (п.3.5, 2026-08-06). Отдельно от computeFlow.reanim
+  // (тот — "вернувшиеся", 0-90 дней) и от computeReturnedClients (тот — плоский список).
+  function computeReturnedByMonth(model, periodStart, periodEnd) {
+    var months = buildMonthRange(periodStart, periodEnd);
+    var countByMonth = months.map(function () { return 0; });
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var ri = clientReturnInfo(c);
+      if (!ri || ri.tag !== "возвращённый" || !inRange(ri.returnDate, periodStart, periodEnd)) return;
+      var i = monthIndexOf(months, ri.returnDate);
+      if (i >= 0) countByMonth[i]++;
+    });
+    return { months: months, countByMonth: countByMonth };
+  }
+
+  function activeKassaCountOf(client, asOf) {
+    return client.kassas.filter(function (k) { return !kassaLapsedAt(k, asOf); }).length;
+  }
+
+  // Раскрытие для вкладки "Новые клиенты" в "Прирост базы" — список тех, чьё первое
+  // появление попало в конкретный месяц.
+  function clientsNewInMonth(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys || !c.appearance) return;
+      if (c.appearance.getFullYear() === y && c.appearance.getMonth() === m) {
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf) });
+      }
+    });
+    return out;
+  }
+
+  // Раскрытие для вкладки "Возвращённые клиенты" в "Прирост базы" — список тех, чей
+  // возврат (91д-3г) попал в конкретный месяц.
+  function clientsReturnedInMonth(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var ri = clientReturnInfo(c);
+      if (!ri || ri.tag !== "возвращённый") return;
+      if (ri.returnDate.getFullYear() === y && ri.returnDate.getMonth() === m) {
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf) });
+      }
+    });
+    return out;
+  }
+
   function kassasAtRisk(model, asOf, deadlineFn, opts) {
     opts = opts || {};
     var strict = opts.strict !== false;
@@ -826,6 +876,9 @@
     computeMonthlySeries: computeMonthlySeries,
     computeMonthlySeriesKassas: computeMonthlySeriesKassas,
     computeChurnGradient: computeChurnGradient,
+    computeReturnedByMonth: computeReturnedByMonth,
+    clientsNewInMonth: clientsNewInMonth,
+    clientsReturnedInMonth: clientsReturnedInMonth,
     computeFunnel: computeFunnel,
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
