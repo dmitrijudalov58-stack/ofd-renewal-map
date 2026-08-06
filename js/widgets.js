@@ -268,7 +268,19 @@
   // Столбчатый график + таблица Месяц/Число по месяцам, опционально с раскрытием по
   // клику на строку (список клиентов за этот месяц). Для вкладок "Новые"/"Отток"/
   // "Возвращённые" внутри "Прирост базы" (п.3.5, 2026-08-06).
-  function monthlyCountBoard(months, counts, countLabel, color, drilldownFn) {
+  function clientDrillLine(c) {
+    return esc(c.key) + ' · ' + esc(c.org || "—") + ' · партнёр ' + esc(c.partnerInn || "—") + ' ' + esc(c.partner || "—") + ' · активных касс: ' + c.activeKassas;
+  }
+  function kassaDrillLine(k) {
+    return 'РНМ ' + esc(k.rnm) + ' · ИНН клиента ' + esc(k.clientKey || "—") + ' (' + esc(k.org || "—") + ') · партнёр ' + esc(k.partnerInn || "—") + ' ' + esc(k.partner || "—") + ' · тариф «' + esc(k.tariff || "—") + '»';
+  }
+
+  // opts: { entityLabel: "клиентов"|"касс", renderLine: fn(item)->html } -- renderLine по
+  // умолчанию clientDrillLine (обратная совместимость со старыми вызовами).
+  function monthlyCountBoard(months, counts, countLabel, color, drilldownFn, opts) {
+    opts = opts || {};
+    var entityLabel = opts.entityLabel || "клиентов";
+    var renderLine = opts.renderLine || clientDrillLine;
     var wrap = el("<div></div>");
     var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
     wrap.appendChild(el(barChartVertical(items, { color: color })));
@@ -280,7 +292,7 @@
     wrap.appendChild(tableHolder);
     wrap.appendChild(expandArea);
     if (drilldownFn) {
-      wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список клиентов за этот месяц</div>'));
+      wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список ' + entityLabel + ' за этот месяц</div>'));
       tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
         tr.style.cursor = "pointer";
         tr.addEventListener("click", function () {
@@ -288,10 +300,10 @@
           var r = rowsData.find(function (x) { return x.label === label; });
           if (!r) return;
           var list = drilldownFn(r.month);
-          var lines = list.map(function (c) {
-            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' + esc(c.key) + ' · ' + esc(c.org || "—") + ' · партнёр ' + esc(c.partnerInn || "—") + ' ' + esc(c.partner || "—") + ' · активных касс: ' + c.activeKassas + '</div>';
+          var lines = list.map(function (item) {
+            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' + renderLine(item) + '</div>';
           });
-          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>' + esc(label) + '</b> · клиентов: ' + fmtNum(list.length) + '</div>' + (lines.join("") || '<div style="padding:6px 0;color:var(--muted)">нет данных</div>');
+          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>' + esc(label) + '</b> · ' + entityLabel + ': ' + fmtNum(list.length) + '</div>' + (lines.join("") || '<div style="padding:6px 0;color:var(--muted)">нет данных</div>');
         });
       });
     }
@@ -300,10 +312,13 @@
 
   function gradientFlowTable(series, activeTotal, unitLabel) {
     var wrap = el("<div></div>");
+    // случайный суффикс -- клиентская и кассовая версии "Прирост базы" обычно на холсте
+    // ОДНОВРЕМЕННО, статичный name конфликтовал бы между двумя виджетами сразу
+    var pvId = "pctview-" + Math.random().toString(36).slice(2, 7);
     var toggle = el(
       '<div class="threshold-row" style="margin-bottom:8px">' +
-      '<label><input type="radio" name="pctview" value="abs" checked> Числа</label>' +
-      '<label><input type="radio" name="pctview" value="pct"> % от активных ' + unitLabel + ' (' + fmtNum(activeTotal) + ')</label>' +
+      '<label><input type="radio" name="' + pvId + '" value="abs" checked> Числа</label>' +
+      '<label><input type="radio" name="' + pvId + '" value="pct"> % от активных ' + unitLabel + ' (' + fmtNum(activeTotal) + ')</label>' +
       '</div>'
     );
     var tableHolder = el('<div></div>');
@@ -479,12 +494,15 @@
       var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
 
       var wrap = el("<div></div>");
+      // случайный суффикс в name -- если тот же виджет перетащат на холст дважды, radio-группы
+      // не должны конфликтовать между инстансами (иначе клик в одном снимет выбор в другом)
+      var ngId = "ngview-" + Math.random().toString(36).slice(2, 7);
       var tabs = el(
         '<div class="threshold-row" style="margin-bottom:10px">' +
-        '<label><input type="radio" name="ngview" value="cum" checked> Накопительно</label>' +
-        '<label><input type="radio" name="ngview" value="new"> Новые клиенты</label>' +
-        '<label><input type="radio" name="ngview" value="churn"> Отток клиентов</label>' +
-        '<label><input type="radio" name="ngview" value="returned"> Возвращённые клиенты</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="cum" checked> Накопительно</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="new"> Новые клиенты</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="churn"> Отток клиентов</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="returned"> Возвращённые клиенты</label>' +
         '</div>'
       );
       var viewHolder = el('<div></div>');
@@ -648,10 +666,11 @@
     render: function (model, ctx) {
       var s = ctx.M.computeActiveSnapshot(model, ctx.asOf);
       var wrap = el('<div></div>');
+      var avId = "ageview-" + Math.random().toString(36).slice(2, 7);
       var toggle = el(
         '<div class="threshold-row" style="margin-bottom:8px">' +
-        '<label><input type="radio" name="ageview" value="clients" checked> Клиенты (ИНН)</label>' +
-        '<label><input type="radio" name="ageview" value="kassas"> Кассы (РНМ)</label>' +
+        '<label><input type="radio" name="' + avId + '" value="clients" checked> Клиенты (ИНН)</label>' +
+        '<label><input type="radio" name="' + avId + '" value="kassas"> Кассы (РНМ)</label>' +
         '</div>'
       );
       var chartHolder = el('<div></div>');
@@ -756,27 +775,64 @@
 
   WIDGETS["b2-netgrowth"] = {
     // Переименован "Нетто-прирост базы (кассы)" -> "Прирост базы (кассы)" (п.3.3). Те же
-    // 3 градации + тумблер %, что и в клиентской версии (п.3.1/3.2/3.4, 2026-08-06).
+    // 3 градации + тумблер % (п.3.1/3.2/3.4) и те же вкладки Новые/Отток/Возвращённые
+    // (п.3.5), что и в клиентской версии — зеркально, но раскрытие по кассам/РНМ вместо
+    // клиентов (2026-08-06).
     title: "Прирост базы (кассы)", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
-      var cum = [], net = [], acc = 0;
-      for (var i = 0; i < series.months.length; i++) {
-        var n = series.newByMonth[i] - series.churnByMonth[i];
-        net.push(n); acc += n; cum.push(acc);
-      }
-      var tooltips = series.months.map(function (m, i) {
-        var sign = net[i] > 0 ? "+" : "";
-        return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
-      });
-      var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
-
       var activeTotal = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict }).activeKassas;
+      var returnedSeries = null;
+
       var wrap = el("<div></div>");
-      wrap.appendChild(el('<div>' + chart + '</div>'));
-      var tableHolder = el('<div style="margin-top:14px"></div>');
-      tableHolder.appendChild(gradientFlowTable(series, activeTotal, "касс"));
-      wrap.appendChild(tableHolder);
+      var ngId = "ngviewk-" + Math.random().toString(36).slice(2, 7);
+      var tabs = el(
+        '<div class="threshold-row" style="margin-bottom:10px">' +
+        '<label><input type="radio" name="' + ngId + '" value="cum" checked> Накопительно</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="new"> Новые кассы</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="churn"> Отток касс</label>' +
+        '<label><input type="radio" name="' + ngId + '" value="returned"> Возвращённые кассы</label>' +
+        '</div>'
+      );
+      var viewHolder = el('<div></div>');
+      wrap.appendChild(tabs);
+      wrap.appendChild(viewHolder);
+
+      function renderCumView() {
+        var cum = [], net = [], acc = 0;
+        for (var i = 0; i < series.months.length; i++) {
+          var n = series.newByMonth[i] - series.churnByMonth[i];
+          net.push(n); acc += n; cum.push(acc);
+        }
+        var tooltips = series.months.map(function (m, i) {
+          var sign = net[i] > 0 ? "+" : "";
+          return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
+        });
+        var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
+        var v = el("<div></div>");
+        v.appendChild(el('<div>' + chart + '</div>'));
+        var tableHolder = el('<div style="margin-top:14px"></div>');
+        tableHolder.appendChild(gradientFlowTable(series, activeTotal, "касс"));
+        v.appendChild(tableHolder);
+        return v;
+      }
+
+      function renderView() {
+        var v = tabs.querySelector('input:checked').value;
+        viewHolder.innerHTML = "";
+        if (v === "cum") {
+          viewHolder.appendChild(renderCumView());
+        } else if (v === "new") {
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, { entityLabel: "касс", renderLine: kassaDrillLine }));
+        } else if (v === "churn") {
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", null));
+        } else if (v === "returned") {
+          if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, { entityLabel: "касс", renderLine: kassaDrillLine }));
+        }
+      }
+      tabs.addEventListener("change", renderView);
+      renderView();
       return wrap;
     },
   };

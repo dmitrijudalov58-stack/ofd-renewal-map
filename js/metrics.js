@@ -571,6 +571,47 @@
     return out;
   }
 
+  // Кассовые зеркала трёх функций выше — для вкладок Новые/Отток/Возвращённые в "Прирост
+  // базы (кассы)" (зеркало п.3.5, 2026-08-06). Отток без раскрытия (как и у клиентов), тут
+  // не нужен.
+  function computeReturnedByMonthKassas(model, periodStart, periodEnd) {
+    var months = buildMonthRange(periodStart, periodEnd);
+    var countByMonth = months.map(function () { return 0; });
+    model.kassas.forEach(function (k) {
+      var ri = kassaReturnInfo(k);
+      if (!ri || ri.tag !== "возвращённый" || !inRange(ri.returnDate, periodStart, periodEnd)) return;
+      var i = monthIndexOf(months, ri.returnDate);
+      if (i >= 0) countByMonth[i]++;
+    });
+    return { months: months, countByMonth: countByMonth };
+  }
+
+  function kassaRowFor(k, model) {
+    var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+    return { rnm: k.rnm, clientKey: k.clientKey || "—", org: client ? client.org : null, partner: k.partner, partnerInn: k.partnerInn, tariff: k.tariff };
+  }
+
+  function kassasNewInMonth(model, monthDate) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.kassas.forEach(function (k) {
+      if (!k.appearance) return;
+      if (k.appearance.getFullYear() === y && k.appearance.getMonth() === m) out.push(kassaRowFor(k, model));
+    });
+    return out;
+  }
+
+  function kassasReturnedInMonth(model, monthDate) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.kassas.forEach(function (k) {
+      var ri = kassaReturnInfo(k);
+      if (!ri || ri.tag !== "возвращённый") return;
+      if (ri.returnDate.getFullYear() === y && ri.returnDate.getMonth() === m) out.push(kassaRowFor(k, model));
+    });
+    return out;
+  }
+
   function kassasAtRisk(model, asOf, deadlineFn, opts) {
     opts = opts || {};
     var strict = opts.strict !== false;
@@ -879,6 +920,9 @@
     computeReturnedByMonth: computeReturnedByMonth,
     clientsNewInMonth: clientsNewInMonth,
     clientsReturnedInMonth: clientsReturnedInMonth,
+    computeReturnedByMonthKassas: computeReturnedByMonthKassas,
+    kassasNewInMonth: kassasNewInMonth,
+    kassasReturnedInMonth: kassasReturnedInMonth,
     computeFunnel: computeFunnel,
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
