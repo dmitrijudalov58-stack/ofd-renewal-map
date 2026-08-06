@@ -53,7 +53,11 @@
 
   // ---------- построение модели сущностей из нормализованных строк ----------
 
-  function buildModel(rows) {
+  function buildModel(rows, opts) {
+    opts = opts || {};
+    // strict (по умолчанию true) = "рокировка": ориентируемся только на клиентов с
+    // действующим кодом ОФД. opts.strict:false — прежний формат, для сверки/отката.
+    var strict = opts.strict !== false;
     var kassaRows = new Map(); // РНМ -> [registered rows]
     var reserveRows = []; // Новый / Выдан
     var revokedRows = []; // Отозвано
@@ -102,24 +106,28 @@
       c.kassas.push(k);
     });
 
-    // резервный резерв: ИНН физлица без ИНН организации, без единой зарегистрированной кассы —
-    // считаем клиентом от даты создания (см. решение по 892 строкам).
-    var reserveByKey = new Map();
-    reserveRows.forEach(function (r) {
-      var key = r.innOrg || r.innPhys || null;
-      if (!key || clients.has(key)) return;
-      var list = reserveByKey.get(key);
-      if (!list) { list = []; reserveByKey.set(key, list); }
-      list.push(r);
-    });
-    reserveByKey.forEach(function (list, key) {
-      list.sort(function (a, b) { return a.created - b.created; });
-      clients.set(key, {
-        key: key, kassas: [], phys: true,
-        appearance: list[0].created,
-        partner: list[list.length - 1].partner,
+    // Легаси-режим (opts.strict:false): ИНН физлица без ИНН организации, без единой
+    // зарегистрированной кассы — считаем клиентом от даты создания кода (решение по 892 строкам).
+    // В строгом режиме (default) — это НЕ клиент: код в резерве (Новый/Выдан) ещё не
+    // "действующий", клиент появляется только когда есть код со статусом "Зарегистрировано".
+    if (!strict) {
+      var reserveByKey = new Map();
+      reserveRows.forEach(function (r) {
+        var key = r.innOrg || r.innPhys || null;
+        if (!key || clients.has(key)) return;
+        var list = reserveByKey.get(key);
+        if (!list) { list = []; reserveByKey.set(key, list); }
+        list.push(r);
       });
-    });
+      reserveByKey.forEach(function (list, key) {
+        list.sort(function (a, b) { return a.created - b.created; });
+        clients.set(key, {
+          key: key, kassas: [], phys: true,
+          appearance: list[0].created,
+          partner: list[list.length - 1].partner,
+        });
+      });
+    }
 
     clients.forEach(function (c) {
       if (c.phys) return;
@@ -156,41 +164,90 @@
     return true;
   }
 
+  // Единое определение "действующая касса" (рокировка на "только действующие").
+  // strict=true (default): касса жива, если atDate покрыта интервалом какого-то из её
+  // кодов — учитывает разрывы между кодами. strict=false: легаси-формула по "Общей дате
+  // окончания" (финальный срок, без учёта разрывов) — для отката/сверки.
+  function isKassaAlive(kassa, atDate, strict) {
+    if (strict === false) return !!(kassa.overallEnd && kassa.overallEnd >= atDate);
+    return !kassaLapsedAt(kassa, atDate);
+  }
+
+  // Дедлайн кассы по тому же определению — не просто "жива/не жива", а конкретная дата,
+  // нужна риск-листам ("сколько дней осталось") и статус-пилюлям.
+  function kassaDeadline(kassa, atDate, strict) {
+    if (strict === false) return kassa.overallEnd && kassa.overallEnd >= atDate ? kassa.overallEnd : null;
+    for (var i = 0; i < kassa.intervals.length; i++) {
+      var iv = kassa.intervals[i];
+      if (iv.start <= atDate && (!iv.end || atDate <= iv.end)) return iv.end;
+    }
+    return null;
+  }
+
+  // ---------- отток / реанимация (новая формула, согласована с Димой 2026-08-06) ----------
+  //
+  // Касса/клиент "спасены", если продлились не позже 30-го дня включительно после своей
+  // даты окончания. С 31-го дня, если покрытия так и нет — отток. Реанимация — новый код
+  // активировался в окне 31-91 день (включительно) после даты окончания; после 91-го дня
+  // без продления — потеряна окончательно. Статус относится к месяцу ДАТЫ ОКОНЧАНИЯ
+  // (ретроспективно), но становится известным только когда с этой даты прошло 31+ дней
+  // от asOf — до этого статус "pending", в отток/реанимацию не засчитывается нигде.
+  // ЗАМЕНЯЕТ старую формулу ("Общая дата окончания" в периоде) везде: computeFlow,
+  // computeMonthlySeries(Kassas), список "к продлению после окончания", борды по партнёрам.
+  var CHURN_GRACE_DAYS = 30;
+  var REANIM_WINDOW_START_DAYS = 31;
+  var REANIM_WINDOW_END_DAYS = 91;
+
+  function churnStatusFromEnd(end, asOf, lapsedAtFn, intervalsForReanim) {
+    if (!end) return null;
+    var graceDeadline = addDays(end, CHURN_GRACE_DAYS); // день 30 — последний день, когда продление ещё спасает
+    var resolveAt = addDays(end, REANIM_WINDOW_START_DAYS); // день 31 — судьба уже известна
+    if (asOf < resolveAt) return "pending";
+    if (!lapsedAtFn(graceDeadline)) return "safe"; // продлились не позже дня 30
+    var reanimDeadline = addDays(end, REANIM_WINDOW_END_DAYS); // день 91
+    var reanimated = false;
+    for (var i = 0; i < intervalsForReanim.length; i++) {
+      var s = intervalsForReanim[i].start;
+      if (s > end && s <= reanimDeadline) { reanimated = true; break; }
+    }
+    return reanimated ? "reanimated" : "churned";
+  }
+
+  function kassaChurnStatus(kassa, asOf) {
+    return churnStatusFromEnd(kassa.overallEnd, asOf, function (d) { return kassaLapsedAt(kassa, d); }, kassa.intervals);
+  }
+
+  function clientChurnStatus(client, asOf) {
+    if (client.phys) return null;
+    var allIntervals = [];
+    client.kassas.forEach(function (k) { allIntervals = allIntervals.concat(k.intervals); });
+    return churnStatusFromEnd(client.currentEnd, asOf, function (d) { return clientLapsedAt(client, d); }, allIntervals);
+  }
+
   // ---------- потоковые метрики (период) ----------
 
   function inRange(date, start, end) { return date && date >= start && date <= end; }
 
-  function computeFlow(model, periodStart, periodEnd) {
-    var reanimWindowEnd = addMonths(periodEnd, 3);
+  function computeFlow(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd; // обратная совместимость со старыми вызовами (напр. test/smoke.js)
 
     var newClients = 0, churnedClients = 0, reanimClients = 0;
     model.clients.forEach(function (c) {
       if (inRange(c.appearance, periodStart, periodEnd)) newClients++;
-      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd)) churnedClients++;
-      if (clientLapsedAt(c, periodEnd)) {
-        var reanimated = false;
-        if (!c.phys) {
-          for (var i = 0; i < c.kassas.length && !reanimated; i++) {
-            var k = c.kassas[i];
-            for (var j = 0; j < k.intervals.length; j++) {
-              var s = k.intervals[j].start;
-              if (s > periodEnd && s <= reanimWindowEnd) { reanimated = true; break; }
-            }
-          }
-        }
-        if (reanimated) reanimClients++;
+      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd)) {
+        var cs = clientChurnStatus(c, asOf);
+        if (cs === "churned") churnedClients++;
+        else if (cs === "reanimated") reanimClients++;
       }
     });
 
     var newKassas = 0, churnedKassas = 0, reanimKassas = 0;
     model.kassas.forEach(function (k) {
       if (inRange(k.appearance, periodStart, periodEnd)) newKassas++;
-      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd)) churnedKassas++;
-      if (kassaLapsedAt(k, periodEnd)) {
-        for (var j = 0; j < k.intervals.length; j++) {
-          var s = k.intervals[j].start;
-          if (s > periodEnd && s <= reanimWindowEnd) { reanimKassas++; break; }
-        }
+      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd)) {
+        var ks = kassaChurnStatus(k, asOf);
+        if (ks === "churned") churnedKassas++;
+        else if (ks === "reanimated") reanimKassas++;
       }
     });
 
@@ -200,28 +257,79 @@
     };
   }
 
+  // Клиенты, которые ПРЯМО СЕЙЧАС (as-of) подтверждённо в оттоке по новой формуле — не
+  // путать с clientsAtRisk (тем, кому окончание ещё только предстоит). Для борда-списка
+  // "клиенты к продлению после окончания".
+  function clientsChurned(model, asOf) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys || !c.currentEnd) return;
+      if (clientChurnStatus(c, asOf) === "churned") {
+        out.push({ key: c.key, partner: c.partner, kassaCount: c.kassas.length, end: c.currentEnd, daysLapsed: daysBetween(c.currentEnd, asOf) });
+      }
+    });
+    return out;
+  }
+
+  function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
+
+  // Отток/новые по партнёрам за период + retention (1 - отток/база на начало периода) —
+  // общая функция для борда "топ оттока по партнёрам" и борда "партнёр: новые/отток/%".
+  function computePartnerFlow(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd;
+    var byPartner = new Map();
+    function bucket(name) {
+      var p = byPartner.get(name);
+      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, baseAtStart: 0 }; byPartner.set(name, p); }
+      return p;
+    }
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var name = c.partner || "—";
+      if (inRange(c.appearance, periodStart, periodEnd)) bucket(name).newClients++;
+      if (c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "churned") {
+        bucket(name).churnedClients++;
+      }
+      // база "на начало периода" — клиент уже существовал и был жив на дату начала периода
+      if (c.appearance && c.appearance < periodStart && !clientLapsedAt(c, periodStart)) {
+        bucket(name).baseAtStart++;
+      }
+    });
+    var rows = [];
+    byPartner.forEach(function (p) {
+      var retention = p.baseAtStart > 0 ? 1 - (p.churnedClients / p.baseAtStart) : null;
+      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, baseAtStart: p.baseAtStart, retention: retention });
+    });
+    return rows;
+  }
+
   // ---------- снэпшот-метрики (as-of) ----------
 
-  function computeSnapshot(model, asOf) {
+  function computeSnapshot(model, asOf, opts) {
+    opts = opts || {};
+    var strict = opts.strict !== false;
     var activeClients = 0, phys = 0;
     var kassaCountBuckets = { "1": 0, "2-3": 0, "4-9": 0, "10+": 0 };
-    var ageBuckets = { "1y": 0, "2y": 0, "3y": 0 };
+    // эксклюзивные когорты (не пересекаются, сумма = totalReal) — раньше были кумулятивные
+    // ("старше 1 года" включало и "старше 3 лет"), что читалось неоднозначно
+    var ageBuckets = { "0-1y": 0, "1-2y": 0, "2-3y": 0, "3y+": 0 };
 
     model.clients.forEach(function (c) {
       var alive = !clientLapsedAt(c, asOf);
       if (alive) activeClients++;
       if (c.phys) phys++;
 
-      if (!c.phys) {
+      // структурные срезы базы (число касс на клиента, возраст) — в строгом режиме
+      // это срез ТОЛЬКО действующих клиентов, в легаси — вся историческая база
+      if (!c.phys && (!strict || alive)) {
         var n = c.kassas.length;
         var bucket = n === 1 ? "1" : n <= 3 ? "2-3" : n <= 9 ? "4-9" : "10+";
         kassaCountBuckets[bucket]++;
       }
-      if (c.appearance) {
+      if (c.appearance && (!strict || alive)) {
         var ageDays = (asOf - c.appearance) / 86400000;
-        if (ageDays >= 365) ageBuckets["1y"]++;
-        if (ageDays >= 730) ageBuckets["2y"]++;
-        if (ageDays >= 1095) ageBuckets["3y"]++;
+        var ageBucket = ageDays < 365 ? "0-1y" : ageDays < 730 ? "1-2y" : ageDays < 1095 ? "2-3y" : "3y+";
+        ageBuckets[ageBucket]++;
       }
     });
 
@@ -229,12 +337,15 @@
     var renewalBuckets = { "0": 0, "1-2": 0, "3-5": 0, "6+": 0 };
     var tariffBuckets = {};
     model.kassas.forEach(function (k) {
-      if (k.overallEnd && k.overallEnd >= asOf) activeKassas++;
-      var r = k.renewals;
-      var rb = r === 0 ? "0" : r <= 2 ? "1-2" : r <= 5 ? "3-5" : "6+";
-      renewalBuckets[rb]++;
-      var t = k.tariff || "—";
-      tariffBuckets[t] = (tariffBuckets[t] || 0) + 1;
+      var kAlive = isKassaAlive(k, asOf, strict);
+      if (kAlive) activeKassas++;
+      if (!strict || kAlive) {
+        var r = k.renewals;
+        var rb = r === 0 ? "0" : r <= 2 ? "1-2" : r <= 5 ? "3-5" : "6+";
+        renewalBuckets[rb]++;
+        var t = k.tariff || "—";
+        tariffBuckets[t] = (tariffBuckets[t] || 0) + 1;
+      }
     });
 
     return {
@@ -247,12 +358,11 @@
 
   // ---------- "под риском" ----------
 
-  function nearestAliveEnd(kassaList, asOf) {
+  function nearestAliveEnd(kassaList, asOf, strict) {
     var min = null;
     kassaList.forEach(function (k) {
-      if (k.overallEnd && k.overallEnd >= asOf) {
-        if (min === null || k.overallEnd < min) min = k.overallEnd;
-      }
+      var end = kassaDeadline(k, asOf, strict);
+      if (end !== null && (min === null || end < min)) min = end;
     });
     return min;
   }
@@ -262,11 +372,13 @@
     return deadlineFn;
   }
 
-  function clientsAtRisk(model, asOf, deadlineFn) {
+  function clientsAtRisk(model, asOf, deadlineFn, opts) {
+    opts = opts || {};
+    var strict = opts.strict !== false;
     var out = [];
     model.clients.forEach(function (c) {
       if (c.phys) return;
-      var end = nearestAliveEnd(c.kassas, asOf);
+      var end = nearestAliveEnd(c.kassas, asOf, strict);
       if (end && deadlineFn(end)) {
         out.push({ key: c.key, partner: c.partner, kassaCount: c.kassas.length, end: end });
       }
@@ -274,11 +386,14 @@
     return out;
   }
 
-  function kassasAtRisk(model, asOf, deadlineFn) {
+  function kassasAtRisk(model, asOf, deadlineFn, opts) {
+    opts = opts || {};
+    var strict = opts.strict !== false;
     var out = [];
     model.kassas.forEach(function (k) {
-      if (k.overallEnd && k.overallEnd >= asOf && deadlineFn(k.overallEnd)) {
-        out.push({ rnm: k.rnm, partner: k.partner, renewals: k.renewals, tariff: k.tariff, end: k.overallEnd });
+      var end = kassaDeadline(k, asOf, strict);
+      if (end && deadlineFn(end)) {
+        out.push({ rnm: k.rnm, partner: k.partner, renewals: k.renewals, tariff: k.tariff, end: end });
       }
     });
     return out;
@@ -294,7 +409,9 @@
 
   // ---------- партнёры / каналы ----------
 
-  function computePartners(model, asOf) {
+  function computePartners(model, asOf, opts) {
+    opts = opts || {};
+    var strict = opts.strict !== false;
     var byPartner = new Map();
     function bucket(name) {
       var p = byPartner.get(name);
@@ -305,7 +422,7 @@
       if (!clientLapsedAt(c, asOf)) bucket(c.partner || "—").clients.add(c.key);
     });
     model.kassas.forEach(function (k) {
-      if (k.overallEnd && k.overallEnd >= asOf) bucket(k.partner || "—").kassas++;
+      if (isKassaAlive(k, asOf, strict)) bucket(k.partner || "—").kassas++;
     });
     model.reserveRows.forEach(function (r) {
       bucket(r.partner || "—").reserve++;
@@ -319,7 +436,7 @@
   }
 
   // партнёры с указанием канала — для фастфильтра и экспорта на виджете "Разбивка по каналам"
-  function computePartnersByChannel(model, asOf) {
+  function computePartnersByChannel(model, asOf, opts) {
     var partnerChannel = new Map();
     model.kassas.forEach(function (k) {
       var pn = k.partner || "—";
@@ -329,7 +446,7 @@
       var pn = r.partner || "—";
       if (!partnerChannel.has(pn)) partnerChannel.set(pn, classifyChannel(r.partner, r.salesCenter));
     });
-    return computePartners(model, asOf).map(function (p) {
+    return computePartners(model, asOf, opts).map(function (p) {
       return { name: p.name, channel: partnerChannel.get(p.name) || classifyChannel(p.name, null), clients: p.clients, kassas: p.kassas, reserve: p.reserve };
     });
   }
@@ -384,29 +501,54 @@
   }
 
   // помесячные счётчики "новых"/"оттока" по всему периоду — для линейных графиков
-  function computeMonthlySeries(model, periodStart, periodEnd) {
+  function buildMonthRange(periodStart, periodEnd) {
     var months = [];
     var cursor = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1);
     var end = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), 1);
     while (cursor <= end) { months.push(new Date(cursor)); cursor = addMonths(cursor, 1); }
+    return months;
+  }
+  function monthIndexOf(months, date) {
+    for (var i = 0; i < months.length; i++) {
+      if (date.getFullYear() === months[i].getFullYear() && date.getMonth() === months[i].getMonth()) return i;
+    }
+    return -1;
+  }
 
+  function computeMonthlySeries(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd;
+    var months = buildMonthRange(periodStart, periodEnd);
     var newByMonth = months.map(function () { return 0; });
     var churnByMonth = months.map(function () { return 0; });
 
-    function monthIndex(date) {
-      for (var i = 0; i < months.length; i++) {
-        if (date.getFullYear() === months[i].getFullYear() && date.getMonth() === months[i].getMonth()) return i;
-      }
-      return -1;
-    }
-
     model.clients.forEach(function (c) {
       if (inRange(c.appearance, periodStart, periodEnd)) {
-        var i = monthIndex(c.appearance);
+        var i = monthIndexOf(months, c.appearance);
         if (i >= 0) newByMonth[i]++;
       }
-      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd)) {
-        var j = monthIndex(c.currentEnd);
+      if (!c.phys && c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "churned") {
+        var j = monthIndexOf(months, c.currentEnd);
+        if (j >= 0) churnByMonth[j]++;
+      }
+    });
+
+    return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth };
+  }
+
+  // тот же ряд, но по кассам — для борда "Нетто-прирост базы (кассы)"
+  function computeMonthlySeriesKassas(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd;
+    var months = buildMonthRange(periodStart, periodEnd);
+    var newByMonth = months.map(function () { return 0; });
+    var churnByMonth = months.map(function () { return 0; });
+
+    model.kassas.forEach(function (k) {
+      if (inRange(k.appearance, periodStart, periodEnd)) {
+        var i = monthIndexOf(months, k.appearance);
+        if (i >= 0) newByMonth[i]++;
+      }
+      if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd) && kassaChurnStatus(k, asOf) === "churned") {
+        var j = monthIndexOf(months, k.overallEnd);
         if (j >= 0) churnByMonth[j]++;
       }
     });
@@ -494,10 +636,17 @@
     computeReserveDetail: computeReserveDetail,
     computeReservePartnersForMonth: computeReservePartnersForMonth,
     computeMonthlySeries: computeMonthlySeries,
+    computeMonthlySeriesKassas: computeMonthlySeriesKassas,
     computeFunnel: computeFunnel,
+    kassaChurnStatus: kassaChurnStatus,
+    clientChurnStatus: clientChurnStatus,
+    clientsChurned: clientsChurned,
+    computePartnerFlow: computePartnerFlow,
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
     classifyChannel: classifyChannel,
+    isKassaAlive: isKassaAlive,
+    kassaDeadline: kassaDeadline,
     individualEnd: individualEnd,
     addMonths: addMonths,
     addDays: addDays,

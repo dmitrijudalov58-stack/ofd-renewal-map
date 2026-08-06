@@ -8,6 +8,23 @@
   var canvas = document.getElementById("canvas");
   var emptyState = document.getElementById("emptyState");
   var placed = []; // [{instanceId, widgetId, node}]
+  var sizes = {}; // instanceId -> {width, height}px, ручной ресайз (.widget{resize:both}) переживает rerenderAll
+
+  // .widget пересоздаётся целиком на каждый rerenderAll (смена периода/as-of) — без этого
+  // ручной ресайз (перетаскивание уголка) слетал бы при каждом клике по фильтру периода.
+  function watchSize(node, instanceId) {
+    if (typeof ResizeObserver === "undefined") return null;
+    var ro = new ResizeObserver(function (entries) {
+      var box = entries[0].contentRect;
+      sizes[instanceId] = { width: Math.round(node.offsetWidth), height: Math.round(node.offsetHeight) };
+    });
+    ro.observe(node);
+    return ro;
+  }
+  function applySavedSize(node, instanceId) {
+    var s = sizes[instanceId];
+    if (s) { node.style.width = s.width + "px"; node.style.height = s.height + "px"; }
+  }
 
   function toggleEmpty() {
     emptyState.style.display = placed.length === 0 ? "flex" : "none";
@@ -37,7 +54,10 @@
     if (!node) return;
     var instanceId = "w" + Math.random().toString(36).slice(2, 9);
     node.dataset.instanceId = instanceId;
+    var ro = watchSize(node, instanceId);
     node.querySelector(".remove-btn").addEventListener("click", function () {
+      if (ro) ro.disconnect();
+      delete sizes[instanceId];
       placed = placed.filter(function (p) { return p.instanceId !== instanceId; });
       toggleEmpty();
     }, { once: false });
@@ -53,7 +73,11 @@
       var fresh = renderInstance(p.widgetId);
       if (!fresh) return;
       fresh.dataset.instanceId = p.instanceId;
+      applySavedSize(fresh, p.instanceId);
+      var ro = watchSize(fresh, p.instanceId);
       fresh.querySelector(".remove-btn").addEventListener("click", function () {
+        if (ro) ro.disconnect();
+        delete sizes[p.instanceId];
         placed = placed.filter(function (x) { return x.instanceId !== p.instanceId; });
         toggleEmpty();
       });

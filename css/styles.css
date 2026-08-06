@@ -74,6 +74,8 @@ button { font-family: inherit; }
 .btn:disabled { opacity: .4; cursor: not-allowed; background: var(--paper); color: var(--ink); }
 .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
 .btn.primary:hover { background: var(--paper); color: var(--brand); }
+.btn.legacy { border-color: var(--warn); color: var(--warn); }
+.btn.legacy:hover { background: var(--warn); color: var(--paper); }
 .spacer { flex: 1; }
 .asof {
   font-family: var(--mono); font-size: 11px; color: var(--ink); font-weight: 600;
@@ -126,17 +128,21 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 }
 .demo-banner.hidden { display: none; }
 #canvas {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px;
+  display: flex; flex-wrap: wrap; gap: 20px;
   min-height: 200px;
 }
 #canvas.drag-over { outline: 2px solid var(--brand); outline-offset: 6px; border-radius: 0; }
-.span-2 { grid-column: span 2; }
-@media (max-width: 700px) { .span-2 { grid-column: span 1; } }
+.span-2 { width: 740px; }
+@media (max-width: 860px) { .widget, .span-2 { width: 100% !important; resize: vertical; } }
 
 .widget {
   background: var(--paper); border: 1px solid var(--ink); border-radius: 0;
   display: flex; flex-direction: column; overflow: hidden;
+  width: 360px; flex: 0 0 auto;
+  resize: both; min-width: 280px; min-height: 160px; max-width: calc(100vw - 52px);
 }
+/* уголок ресайза виднее на светлой/тёмной теме, чем дефолтный system-серый */
+.widget::-webkit-resizer { background: linear-gradient(135deg, transparent 50%, var(--brand) 50%); }
 .widget-head {
   display: flex; align-items: center; gap: 8px; padding: 13px 14px 11px; border-bottom: 2px solid var(--ink);
 }

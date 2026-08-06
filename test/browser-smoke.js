@@ -78,8 +78,8 @@ async function main() {
   const snap = win.OFDMetrics.computeSnapshot(model, asOf);
   const risk30 = win.OFDMetrics.clientsAtRisk(model, asOf, win.OFDMetrics.daysThresholdFn(asOf, 30));
   console.log("activeClients:", snap.activeClients, "(ожидали 92983)", snap.activeClients === 92983 ? "OK" : "MISMATCH");
-  console.log("clientsAtRisk 30d:", risk30.length, "(ожидали 10707)", risk30.length === 10707 ? "OK" : "MISMATCH");
-  if (snap.activeClients !== 92983 || risk30.length !== 10707) ok = false;
+  console.log("clientsAtRisk 30d:", risk30.length, "(ожидали 11890)", risk30.length === 11890 ? "OK" : "MISMATCH");
+  if (snap.activeClients !== 92983 || risk30.length !== 11890) ok = false;
 
   // 3) интерактив: смена порога дней в risk-таблице меняет число совпадений ("найдено N")
   const riskNode = win.document.querySelector('[data-widget-id="b1-risk"]');

@@ -56,6 +56,11 @@
   function kassaDetailTable(kassaArray, asOf, opts) {
     opts = opts || {};
     var limit = opts.limit || 150;
+    // opts.M/opts.strict — единое определение "действующая касса" (metrics.js isKassaAlive/
+    // kassaDeadline), совпадает с тем, что используют риск-листы и снэпшот-метрики.
+    var M = opts.M, strict = opts.strict;
+    function aliveOf(k) { return M ? M.isKassaAlive(k, asOf, strict) : !!(k.overallEnd && k.overallEnd >= asOf); }
+    function deadlineOf(k) { return M ? M.kassaDeadline(k, asOf, strict) : (k.overallEnd && k.overallEnd >= asOf ? k.overallEnd : null); }
     var partners = Array.from(new Set(kassaArray.map(function (k) { return k.partner || "—"; }))).sort();
     var tariffs = Array.from(new Set(kassaArray.map(function (k) { return k.tariff || "—"; }))).sort();
     var wrap = el('<div></div>');
@@ -71,8 +76,10 @@
       '</div>'
     );
     var tableHolder = el('<div></div>');
+    var expandArea = el('<div style="margin-top:10px"></div>');
     wrap.appendChild(controls);
     wrap.appendChild(tableHolder);
+    wrap.appendChild(expandArea);
 
     function apply() {
       var pf = controls.querySelector(".f-partner").value;
@@ -81,7 +88,7 @@
       var innf = controls.querySelector(".f-inn").value.trim().toLowerCase();
       var minr = parseInt(controls.querySelector(".f-minren").value, 10) || 0;
       var filtered = kassaArray.filter(function (k) {
-        var alive = k.overallEnd && k.overallEnd >= asOf;
+        var alive = aliveOf(k);
         if (pf && (k.partner || "—") !== pf) return false;
         if (tf && (k.tariff || "—") !== tf) return false;
         if (sf === "alive" && !alive) return false;
@@ -93,22 +100,44 @@
       filtered.sort(function (a, b) { return b.renewals - a.renewals; });
       var top = filtered.slice(0, limit);
       var rows = top.map(function (k) {
-        var alive = k.overallEnd && k.overallEnd >= asOf;
-        var status = alive ? riskPill(daysBetween(asOf, k.overallEnd)) : '<span class="status-pill crit"><span class="dot"></span>в оттоке</span>';
-        return [k.rnm, k.clientKey || "—", k.partner || "—", k.renewals, k.tariff || "—", fmtDate(k.overallEnd), status];
+        var deadline = deadlineOf(k);
+        var status = deadline ? riskPill(daysBetween(asOf, deadline)) : '<span class="status-pill crit"><span class="dot"></span>в оттоке</span>';
+        return [k.rnm, k.clientKey || "—", k.partner || "—", k.renewals, k.tariff || "—", fmtDate(deadline), status];
       });
       tableHolder.innerHTML = "";
-      tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(filtered.length) + (filtered.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + '</div>'));
-      tableHolder.appendChild(makeSortableTable(
+      expandArea.innerHTML = "";
+      tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(filtered.length) + (filtered.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + ' · клик по строке — история тарифов кассы</div>'));
+      var tableWrap = makeSortableTable(
         [{ label: "РНМ" }, { label: "ИНН клиента" }, { label: "Партнёр" }, { label: "Продлений", num: true }, { label: "Тариф" }, { label: "Окончание" }, { label: "Статус", html: true }],
         rows
-      ));
+      );
+      tableHolder.appendChild(tableWrap);
+      // клик по строке -> хронология кодов этой кассы (дата активации -> тариф -> дата окончания),
+      // паттерн раскрытия как в b4-partners. Строки таблицы после сортировки переставляются по DOM,
+      // поэтому РНМ берём из самой ячейки, а не из индекса top[i].
+      tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function () {
+          var rnm = tr.children[0].textContent;
+          var k = kassaArray.find(function (x) { return x.rnm === rnm; });
+          if (!k) return;
+          // k.codes -- только коды со статусом "Зарегистрировано" (см. buildModel), статус
+          // в хронологии не показываем, он всегда один и тот же
+          var lines = k.codes.map(function (code, i) {
+            var end = M ? M.individualEnd(code) : code.endDate;
+            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' +
+              '<b>#' + (i + 1) + '</b> · активирован ' + fmtDate(code.activated) + ' · тариф «' + esc(code.tariff || "—") + '» · окончание ' + fmtDate(end) + '</div>';
+          });
+          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>РНМ ' + esc(rnm) + '</b> · история кодов (' + k.codes.length + '):' + lines.join("") + '</div>';
+        });
+      });
       wrap._getExportRows = function () {
         return filtered.map(function (k) {
-          var alive = k.overallEnd && k.overallEnd >= asOf;
-          return { РНМ: k.rnm, ИННКлиента: k.clientKey || "", Партнёр: k.partner || "", Продлений: k.renewals, Тариф: k.tariff || "", ОбщаяДатаОкончания: fmtDate(k.overallEnd), Статус: alive ? "активна" : "в оттоке" };
+          var alive = aliveOf(k);
+          return { РНМ: k.rnm, ИННКлиента: k.clientKey || "", Партнёр: k.partner || "", Продлений: k.renewals, Тариф: k.tariff || "", ОбщаяДатаОкончания: fmtDate(deadlineOf(k)), Статус: alive ? "активна" : "в оттоке" };
         });
       };
+      wrap._getFilteredKassas = function () { return filtered; };
     }
     controls.addEventListener("change", apply);
     controls.addEventListener("input", apply);
@@ -262,16 +291,16 @@
   WIDGETS["b1-active"] = {
     title: "Активные клиенты сейчас", type: "карточка", scope: "as-of",
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
-      return statBlock(fmtNum(s.activeClients), "уникальных ИНН · снэпшот на as-of · всего в базе " + fmtNum(s.totalClients));
+      var s = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict });
+      return statBlock(fmtNum(s.activeClients), "уникальных ИНН с действующим кодом ОФД · снэпшот на as-of · всего в базе " + fmtNum(s.totalClients));
     },
   };
 
   WIDGETS["b1-new"] = {
     title: "Новые клиенты за период", type: "карточка + график", scope: "период", span: true,
     render: function (model, ctx) {
-      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd);
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd);
+      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       var head = statBlock(fmtNum(flow.clients.new), "новых клиентов за период", true);
       var chart = lineChart(series.months, [{ label: "Новые", values: series.newByMonth, color: "var(--s1)" }], { area: true });
       return '<div>' + head + '<div style="margin-top:10px">' + chart + '</div></div>';
@@ -281,26 +310,27 @@
   WIDGETS["b1-churn"] = {
     title: "Отток клиентов за период", type: "карточка + график", scope: "период", span: true,
     render: function (model, ctx) {
-      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd);
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd);
-      var head = statBlock(fmtNum(flow.clients.churn), "клиентов ушло в отток за период", true);
+      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var head = statBlock(fmtNum(flow.clients.churn), "клиентов не продлились 30+ дней (не считая тех, кто ещё вернулся)", true);
       var chart = lineChart(series.months, [{ label: "Отток", values: series.churnByMonth, color: "var(--s2)" }], { area: true });
-      return '<div>' + head + '<div style="margin-top:10px">' + chart + '</div></div>';
+      var note = '<div class="stat-label" style="margin-top:6px">Ретроспективно: месяц окончания кода, статус известен только когда с даты окончания прошло 31+ дней от as-of — последние месяцы периода могут быть занижены.</div>';
+      return '<div>' + head + '<div style="margin-top:10px">' + chart + '</div>' + note + '</div>';
     },
   };
 
   WIDGETS["b1-reanim"] = {
     title: "Реанимированные клиенты", type: "карточка", scope: "период",
     render: function (model, ctx) {
-      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd);
-      return statBlock(fmtNum(flow.clients.reanim), "вернулись в окне +3 мес после конца периода");
+      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      return statBlock(fmtNum(flow.clients.reanim), "вернулись в окне 31–91 день после даты окончания");
     },
   };
 
   WIDGETS["b1-netgrowth"] = {
     title: "Нетто-прирост базы", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd);
+      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       var cum = [], net = [], acc = 0;
       for (var i = 0; i < series.months.length; i++) {
         var n = series.newByMonth[i] - series.churnByMonth[i];
@@ -332,7 +362,7 @@
   WIDGETS["b1-kassdist"] = {
     title: "Распределение по числу касс", type: "график", scope: "as-of",
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
+      var s = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict });
       var b = s.kassaCountBuckets;
       return barList([
         { label: "1 касса", value: b["1"], color: "#3987e5" },
@@ -366,7 +396,7 @@
         var dateVal = controls.querySelector(".date-input").value;
         var pf = controls.querySelector(".f-partner").value;
         var fn = daysRadio.checked ? ctx.M.daysThresholdFn(ctx.asOf, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : ctx.asOf);
-        var rows = ctx.M.clientsAtRisk(model, ctx.asOf, fn);
+        var rows = ctx.M.clientsAtRisk(model, ctx.asOf, fn, { strict: ctx.strict });
         if (pf) rows = rows.filter(function (r) { return (r.partner || "—") === pf; });
         rows.sort(function (a, b) { return a.end - b.end; });
         var top = rows.slice(0, 100);
@@ -393,13 +423,51 @@
   WIDGETS["b1-age"] = {
     title: "Возрастная структура базы", type: "график", scope: "as-of",
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
+      var s = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict });
+      var b = s.ageBuckets;
       return barList([
-        { label: "старше 1 года", value: s.ageBuckets["1y"], color: "#3987e5" },
-        { label: "старше 2 лет", value: s.ageBuckets["2y"], color: "#256abf" },
-        { label: "старше 3 лет", value: s.ageBuckets["3y"], color: "#104281" },
-      ]);
+        { label: "младше 1 года", value: b["0-1y"], color: "#3987e5" },
+        { label: "1–2 года", value: b["1-2y"], color: "#256abf" },
+        { label: "2–3 года", value: b["2-3y"], color: "#184f95" },
+        { label: "старше 3 лет", value: b["3y+"], color: "#104281" },
+      ], { caption: "когорты не пересекаются, каждый клиент только в одной корзине" });
     },
+  };
+
+  WIDGETS["b1-churned"] = {
+    title: "Клиенты к продлению после окончания", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      var wrap = el('<div></div>');
+      var partnerOptions = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
+      var controls = el(
+        '<div class="threshold-row">' +
+        '<label>Партнёр <select class="f-partner"><option value="">все</option>' + partnerOptions.map(function (p) { return "<option>" + esc(p) + "</option>"; }).join("") + '</select></label>' +
+        '</div>'
+      );
+      var tableHolder = el('<div></div>');
+      wrap.appendChild(controls);
+      wrap.appendChild(tableHolder);
+
+      function renderTable() {
+        var pf = controls.querySelector(".f-partner").value;
+        var rows = ctx.M.clientsChurned(model, ctx.asOf);
+        if (pf) rows = rows.filter(function (r) { return (r.partner || "—") === pf; });
+        rows.sort(function (a, b) { return a.daysLapsed - b.daysLapsed; }); // недавно ушедшие сверху -- самые актуальные для дозвона
+        var top = rows.slice(0, 100);
+        var body = top.map(function (r) { return [r.key, r.partner || "—", r.kassaCount, fmtDate(r.end), r.daysLapsed + " дн."]; });
+        tableHolder.innerHTML = "";
+        tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(rows.length) + (rows.length > 100 ? " · показаны первые 100 (самые недавние), остальное — через экспорт" : "") + ' · не продлились 30+ дней, ещё не вернулись</div>'));
+        tableHolder.appendChild(makeSortableTable(
+          [{ label: "ИНН" }, { label: "Партнёр" }, { label: "Касс", num: true }, { label: "Окончание" }, { label: "Дней в оттоке", num: true }],
+          body
+        ));
+        wrap._getExportRows = function () { return rows.map(function (r) { return { ИНН: r.key, Партнёр: r.partner, Касс: r.kassaCount, Окончание: fmtDate(r.end), ДнейВОттоке: r.daysLapsed }; }); };
+      }
+      controls.addEventListener("change", renderTable);
+      renderTable();
+      return wrap;
+    },
+    exportable: true,
   };
 
   // ---------- B2 Кассы ----------
@@ -407,20 +475,55 @@
   WIDGETS["b2-active"] = {
     title: "Активные кассы сейчас", type: "карточка", scope: "as-of",
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
-      return statBlock(fmtNum(s.activeKassas), "РНМ с «Общая дата окончания» ≥ as-of · всего в базе " + fmtNum(s.totalKassas));
+      var s = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict });
+      var caption = ctx.strict
+        ? "РНМ с действующим (непрерванным) кодом ОФД на as-of · всего в базе " + fmtNum(s.totalKassas)
+        : "РНМ с «Общая дата окончания» ≥ as-of · всего в базе " + fmtNum(s.totalKassas);
+      return statBlock(fmtNum(s.activeKassas), caption);
     },
   };
 
   WIDGETS["b2-flow"] = {
     title: "Новые / отток / реанимация касс", type: "карточки", scope: "период", span: true,
     render: function (model, ctx) {
-      var f = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd).kassas;
+      var f = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf).kassas;
       return '<div class="stat-row">' +
         '<div>' + statBlock(fmtNum(f.new), "новые кассы", true) + '</div>' +
-        '<div>' + statBlock(fmtNum(f.churn), "отток касс", true) + '</div>' +
-        '<div>' + statBlock(fmtNum(f.reanim), "реанимация", true) + '</div>' +
+        '<div>' + statBlock(fmtNum(f.churn), "отток касс (30+ дн. без продления)", true) + '</div>' +
+        '<div>' + statBlock(fmtNum(f.reanim), "реанимация (31–91 день)", true) + '</div>' +
         '</div>';
+    },
+  };
+
+  WIDGETS["b2-netgrowth"] = {
+    title: "Нетто-прирост базы (кассы)", type: "график", scope: "период", span: true,
+    render: function (model, ctx) {
+      var series = ctx.M.computeMonthlySeriesKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var cum = [], net = [], acc = 0;
+      for (var i = 0; i < series.months.length; i++) {
+        var n = series.newByMonth[i] - series.churnByMonth[i];
+        net.push(n); acc += n; cum.push(acc);
+      }
+      var tooltips = series.months.map(function (m, i) {
+        var sign = net[i] > 0 ? "+" : "";
+        return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
+      });
+      var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
+
+      var rows = series.months.map(function (m, i) {
+        var sign = net[i] > 0 ? "+" : "";
+        return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), series.newByMonth[i], series.churnByMonth[i], sign + fmtNum(net[i])];
+      });
+      var table = makeSortableTable(
+        [{ label: "Месяц" }, { label: "Новые", num: true }, { label: "Отток", num: true }, { label: "Нетто", num: true }],
+        rows
+      );
+      var wrap = el("<div></div>");
+      wrap.appendChild(el('<div>' + chart + '</div>'));
+      var tableHolder = el('<div style="margin-top:14px"></div>');
+      tableHolder.appendChild(table);
+      wrap.appendChild(tableHolder);
+      return wrap;
     },
   };
 
@@ -428,31 +531,54 @@
     title: "Кассы и продления", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var arr = Array.from(model.kassas.values());
-      var wrap = kassaDetailTable(arr, ctx.asOf);
+      var wrap = kassaDetailTable(arr, ctx.asOf, { M: ctx.M, strict: ctx.strict });
       return wrap;
     },
     exportable: true,
   };
 
+  // общий каркас "график сверху (снэпшот по ВСЕМ кассам) + кнопка рефреша + таблица с
+  // фастфильтрами снизу" -- используется в b2-renewdist и b2-tariff. Без кнопки график и
+  // отфильтрованная таблица расходятся в цифрах; рефреш пересчитывает график по текущему
+  // фильтру таблицы (не автоматически на каждое изменение фильтра, только по клику).
+  function chartPlusFilterableTable(arr, ctx, buildChartRows, chartOpts) {
+    var wrap = el('<div></div>');
+    var chartHolder = el('<div></div>');
+    chartHolder.appendChild(el(barList(buildChartRows(arr), chartOpts)));
+    var refreshBtn = el('<button class="export-btn" style="margin-top:8px">⟳ обновить график по текущему фильтру</button>');
+    wrap.appendChild(chartHolder);
+    wrap.appendChild(refreshBtn);
+    wrap.appendChild(el('<div style="height:14px"></div>'));
+    var table = kassaDetailTable(arr, ctx.asOf, { M: ctx.M, strict: ctx.strict });
+    wrap.appendChild(table);
+    refreshBtn.addEventListener("click", function () {
+      var filtered = table._getFilteredKassas ? table._getFilteredKassas() : arr;
+      chartHolder.innerHTML = "";
+      chartHolder.appendChild(el(barList(buildChartRows(filtered), chartOpts)));
+    });
+    wrap._getExportRows = function () { return table._getExportRows(); };
+    return wrap;
+  }
+
   WIDGETS["b2-renewdist"] = {
     title: "Распределение продлений", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
-      var b = s.renewalBuckets;
-      var chart = barList([
-        { label: "0 продлений", value: b["0"], color: "#3987e5" },
-        { label: "1–2", value: b["1-2"], color: "#256abf" },
-        { label: "3–5", value: b["3-5"], color: "#184f95" },
-        { label: "6+", value: b["6+"], color: "#104281" },
-      ], { caption: "число касс в каждой корзине" });
       var arr = Array.from(model.kassas.values());
-      var wrap = el('<div></div>');
-      wrap.appendChild(el(chart));
-      wrap.appendChild(el('<div style="height:14px"></div>'));
-      var table = kassaDetailTable(arr, ctx.asOf);
-      wrap.appendChild(table);
-      wrap._getExportRows = function () { return table._getExportRows(); };
-      return wrap;
+      function buildRows(kassas) {
+        var b = { "0": 0, "1-2": 0, "3-5": 0, "6+": 0 };
+        kassas.forEach(function (k) {
+          var r = k.renewals;
+          var rb = r === 0 ? "0" : r <= 2 ? "1-2" : r <= 5 ? "3-5" : "6+";
+          b[rb]++;
+        });
+        return [
+          { label: "0 продлений", value: b["0"], color: "#3987e5" },
+          { label: "1–2", value: b["1-2"], color: "#256abf" },
+          { label: "3–5", value: b["3-5"], color: "#184f95" },
+          { label: "6+", value: b["6+"], color: "#104281" },
+        ];
+      }
+      return chartPlusFilterableTable(arr, ctx, buildRows, { caption: "число касс в каждой корзине" });
     },
     exportable: true,
   };
@@ -460,18 +586,15 @@
   WIDGETS["b2-tariff"] = {
     title: "Распределение по сроку тарифа", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
-      var rows = Object.keys(s.tariffBuckets).map(function (k) { return { label: k, value: s.tariffBuckets[k] }; });
-      rows.sort(function (a, b) { return b.value - a.value; });
-      var chart = barList(rows, { color: "var(--brand)", caption: "число касс на каждом тарифе" });
       var arr = Array.from(model.kassas.values());
-      var wrap = el('<div></div>');
-      wrap.appendChild(el(chart));
-      wrap.appendChild(el('<div style="height:14px"></div>'));
-      var table = kassaDetailTable(arr, ctx.asOf);
-      wrap.appendChild(table);
-      wrap._getExportRows = function () { return table._getExportRows(); };
-      return wrap;
+      function buildRows(kassas) {
+        var buckets = {};
+        kassas.forEach(function (k) { var t = k.tariff || "—"; buckets[t] = (buckets[t] || 0) + 1; });
+        var rows = Object.keys(buckets).map(function (k) { return { label: k, value: buckets[k] }; });
+        rows.sort(function (a, b) { return b.value - a.value; });
+        return rows;
+      }
+      return chartPlusFilterableTable(arr, ctx, buildRows, { color: "var(--brand)", caption: "число касс на каждом тарифе" });
     },
     exportable: true,
   };
@@ -497,7 +620,7 @@
         var dateVal = controls.querySelector(".date-input").value;
         var pf = controls.querySelector(".f-partner").value;
         var fn = daysRadio.checked ? ctx.M.daysThresholdFn(ctx.asOf, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : ctx.asOf);
-        var rows = ctx.M.kassasAtRisk(model, ctx.asOf, fn);
+        var rows = ctx.M.kassasAtRisk(model, ctx.asOf, fn, { strict: ctx.strict });
         if (pf) rows = rows.filter(function (r) { return (r.partner || "—") === pf; });
         rows.sort(function (a, b) { return a.end - b.end; });
         var top = rows.slice(0, 100);
@@ -520,7 +643,7 @@
   WIDGETS["b2-summary"] = {
     title: "Сводка клиенты vs кассы", type: "карточки", scope: "as-of",
     render: function (model, ctx) {
-      var s = ctx.M.computeSnapshot(model, ctx.asOf);
+      var s = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict });
       var b = s.kassaCountBuckets;
       var totalReal = b["1"] + b["2-3"] + b["4-9"] + b["10+"];
       var multi = b["2-3"] + b["4-9"] + b["10+"];
@@ -539,7 +662,7 @@
   WIDGETS["b3-active"] = {
     title: "Действующие партнёры сейчас", type: "карточка", scope: "as-of",
     render: function (model, ctx) {
-      var partners = ctx.M.computePartners(model, ctx.asOf);
+      var partners = ctx.M.computePartners(model, ctx.asOf, { strict: ctx.strict });
       var active = partners.filter(function (p) { return p.clients > 0 || p.kassas > 0; }).length;
       return statBlock(fmtNum(active), "с хотя бы 1 активной кассой/клиентом на as-of");
     },
@@ -548,7 +671,7 @@
   WIDGETS["b3-table"] = {
     title: "Таблица по партнёрам", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
-      var partners = ctx.M.computePartners(model, ctx.asOf);
+      var partners = ctx.M.computePartners(model, ctx.asOf, { strict: ctx.strict });
       var wrap = el('<div></div>');
       var controls = el('<div class="threshold-row"><label>Партнёр <input type="text" class="f-name" placeholder="поиск по названию" style="width:220px"></label></div>');
       var tableHolder = el('<div></div>');
@@ -581,7 +704,7 @@
     // Раз метрика перестала быть потоковой — чип "период" на "as-of", иначе он бы врал.
     title: "Топ партнёров по объёму", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
-      var arr = ctx.M.computePartners(model, ctx.asOf);
+      var arr = ctx.M.computePartners(model, ctx.asOf, { strict: ctx.strict });
       arr.sort(function (a, b) { return b.clients - a.clients; });
       var top = arr.slice(0, 100);
       var rows = top.map(function (p) { return [p.name, p.clients, p.kassas]; });
@@ -620,7 +743,7 @@
         { label: "Партнёры", value: ch["Партнёры"], color: "var(--s3)" },
       ], { caption: "число активных клиентов, закреплённых за каналом, на as-of" });
 
-      var byChannel = ctx.M.computePartnersByChannel(model, ctx.asOf);
+      var byChannel = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
       var wrap = el('<div></div>');
       wrap.appendChild(el(chart));
       var controls = el(
@@ -652,6 +775,44 @@
       }
       controls.addEventListener("change", apply);
       apply();
+      return wrap;
+    },
+    exportable: true,
+  };
+
+  WIDGETS["b3-churn-top"] = {
+    title: "Топ оттока по партнёрам", type: "таблица", scope: "период", span: true,
+    render: function (model, ctx) {
+      var rows = ctx.M.computePartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      rows = rows.filter(function (p) { return p.churnedClients > 0; });
+      rows.sort(function (a, b) { return b.churnedClients - a.churnedClients; });
+      var top = rows.slice(0, 100);
+      var body = top.map(function (p) { return [p.name, p.churnedClients, p.retention !== null ? fmtPct(p.retention) : "—"]; });
+      var wrap = el('<div></div>');
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">retention = 1 − (отток / клиентов у партнёра на начало периода) · отток по формуле «не продлился 30+ дней»</div>'));
+      wrap.appendChild(makeSortableTable(
+        [{ label: "Партнёр" }, { label: "Клиентов в оттоке", num: true }, { label: "Retention" }],
+        body
+      ));
+      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, КлиентовВОттоке: p.churnedClients, Retention: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
+      return wrap;
+    },
+    exportable: true,
+  };
+
+  WIDGETS["b3-partner-eff"] = {
+    title: "Партнёр: новые / отток / % эффективности", type: "таблица", scope: "период", span: true,
+    render: function (model, ctx) {
+      var rows = ctx.M.computePartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      rows.sort(function (a, b) { return b.newClients - a.newClients; });
+      var top = rows.slice(0, 150);
+      var body = top.map(function (p) { return [p.name, p.newClients, p.churnedClients, p.retention !== null ? fmtPct(p.retention) : "—"]; });
+      var wrap = el('<div></div>');
+      wrap.appendChild(makeSortableTable(
+        [{ label: "Партнёр" }, { label: "Новых", num: true }, { label: "Отток", num: true }, { label: "% эффективности (retention)" }],
+        body
+      ));
+      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, Новых: p.newClients, Отток: p.churnedClients, Эффективность: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
       return wrap;
     },
     exportable: true,

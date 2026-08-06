@@ -5,7 +5,10 @@
 (function () {
   "use strict";
 
-  window.OFDState = { model: null, ctx: null };
+  // strict (default true) = "рокировка": ориентируемся только на клиентов/кассы с
+  // действующим кодом ОФД. rows хранится отдельно, чтобы переключатель мог перестроить
+  // модель без повторной загрузки файла.
+  window.OFDState = { model: null, ctx: null, rows: null, strict: true };
 
   var fileInput = document.getElementById("fileInput");
   var filenameLabel = document.getElementById("filenameLabel");
@@ -15,6 +18,7 @@
   var periodStartInput = document.getElementById("periodStart");
   var periodEndInput = document.getElementById("periodEnd");
   var applyBtn = document.getElementById("applyRange");
+  var strictToggle = document.getElementById("strictToggle");
 
   var xlsxLoadPromise = null;
   function ensureXLSX() {
@@ -42,7 +46,16 @@
   function currentCtx() {
     var start = new Date(periodStartInput.value + "T00:00:00");
     var end = new Date(periodEndInput.value + "T23:59:59");
-    return { M: window.OFDMetrics, periodStart: start, periodEnd: end, asOf: window.OFDState.asOf };
+    return { M: window.OFDMetrics, periodStart: start, periodEnd: end, asOf: window.OFDState.asOf, strict: window.OFDState.strict };
+  }
+
+  function updateStrictButton() {
+    var strict = window.OFDState.strict;
+    strictToggle.textContent = strict ? "✓ Только действующие" : "⟲ Прежний формат";
+    strictToggle.classList.toggle("legacy", !strict);
+    strictToggle.title = strict
+      ? "Клиент/касса считаются только при действующем (непрерванном) коде ОФД на as-of. Клик — переключиться на прежний формат для сверки."
+      : "Прежний формат: резерв физлиц (Новый/Выдан) считается клиентами, кассы — по «Общей дате окончания» без учёта разрывов между кодами. Клик — вернуться к новому правилу.";
   }
 
   fileInput.addEventListener("change", function (e) {
@@ -73,16 +86,19 @@
           console.warn("Расхождение заголовков колонок:", parsed.headerIssues);
           setStatus("Внимание: формат файла отличается от ожидаемого — см. консоль", true);
         }
-        var model = window.OFDMetrics.buildModel(parsed.rows);
+        var model = window.OFDMetrics.buildModel(parsed.rows, { strict: window.OFDState.strict });
         var asOf = new Date();
 
         window.OFDState.model = model;
+        window.OFDState.rows = parsed.rows;
         window.OFDState.asOf = asOf;
 
         var yearStart = new Date(asOf.getFullYear(), 0, 1);
         periodStartInput.value = fmtInputDate(yearStart);
         periodEndInput.value = fmtInputDate(asOf);
         applyBtn.disabled = false;
+        strictToggle.disabled = false;
+        updateStrictButton();
 
         window.OFDState.ctx = currentCtx();
 
@@ -106,6 +122,16 @@
   applyBtn.addEventListener("click", function () {
     if (!window.OFDState.model) return;
     window.OFDState.ctx = currentCtx();
+    window.OFDCanvas.rerenderAll();
+  });
+
+  strictToggle.addEventListener("click", function () {
+    if (!window.OFDState.rows) return;
+    window.OFDState.strict = !window.OFDState.strict;
+    window.OFDState.model = window.OFDMetrics.buildModel(window.OFDState.rows, { strict: window.OFDState.strict });
+    window.OFDState.ctx = currentCtx();
+    updateStrictButton();
+    setStatus(window.OFDWidgets.fmtNum(window.OFDState.rows.length) + " строк · " + window.OFDWidgets.fmtNum(window.OFDState.model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(window.OFDState.model.kassas.size) + " касс");
     window.OFDCanvas.rerenderAll();
   });
 })();

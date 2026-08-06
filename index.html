@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Карта продлений ОФД</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧾</text></svg>">
-<link rel="stylesheet" href="css/styles.css">
+<link rel="stylesheet" href="css/styles.css?v=3">
 </head>
 <body>
 
@@ -18,6 +18,7 @@
     <input type="date" id="periodEnd" aria-label="конец периода">
     <button class="btn" id="applyRange" disabled>Применить</button>
   </div>
+  <button class="btn" id="strictToggle" disabled>Режим</button>
   <div class="spacer"></div>
   <span class="load-status" id="loadStatus">Файл не загружен</span>
   <span class="asof" id="asofStamp" style="display:none;"></span>
@@ -43,12 +44,14 @@
       <div class="lib-item" draggable="true" data-widget="b1-kassdist"><span class="grip">⋮⋮</span>Распределение по числу касс<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b1-risk"><span class="grip">⋮⋮</span>Клиенты «под риском»<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b1-age"><span class="grip">⋮⋮</span>Возрастная структура базы<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b1-churned"><span class="grip">⋮⋮</span>Клиенты к продлению после окончания<span class="lchip">as-of</span></div>
     </details>
 
     <details class="board-group">
       <summary><span class="code">B2</span>Кассы</summary>
       <div class="lib-item" draggable="true" data-widget="b2-active"><span class="grip">⋮⋮</span>Активные кассы сейчас<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b2-flow"><span class="grip">⋮⋮</span>Новые / отток / реанимация касс<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b2-netgrowth"><span class="grip">⋮⋮</span>Нетто-прирост базы (кассы)<span class="lchip">период</span></div>
       <div class="lib-item" draggable="true" data-widget="b2-renewals"><span class="grip">⋮⋮</span>Кассы и продления<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b2-renewdist"><span class="grip">⋮⋮</span>Распределение продлений<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b2-tariff"><span class="grip">⋮⋮</span>Распределение по сроку тарифа<span class="lchip">as-of</span></div>
@@ -63,6 +66,8 @@
       <div class="lib-item" draggable="true" data-widget="b3-top"><span class="grip">⋮⋮</span>Топ партнёров по объёму<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b3-reserve"><span class="grip">⋮⋮</span>Топ по зависшему резерву<span class="lchip">as-of</span></div>
       <div class="lib-item" draggable="true" data-widget="b3-channels"><span class="grip">⋮⋮</span>Разбивка по каналам<span class="lchip">as-of</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-churn-top"><span class="grip">⋮⋮</span>Топ оттока по партнёрам<span class="lchip">период</span></div>
+      <div class="lib-item" draggable="true" data-widget="b3-partner-eff"><span class="grip">⋮⋮</span>Партнёр: новые / отток / % эффективности<span class="lchip">период</span></div>
     </details>
 
     <details class="board-group">
@@ -82,11 +87,11 @@
 
 </div>
 
-<script src="js/parser.js"></script>
-<script src="js/metrics.js"></script>
-<script src="js/widgets.js"></script>
-<script src="js/dnd.js"></script>
-<script src="js/export.js"></script>
-<script src="js/app.js"></script>
+<script src="js/parser.js?v=3"></script>
+<script src="js/metrics.js?v=3"></script>
+<script src="js/widgets.js?v=3"></script>
+<script src="js/dnd.js?v=3"></script>
+<script src="js/export.js?v=3"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>
