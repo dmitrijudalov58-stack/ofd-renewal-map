@@ -278,18 +278,34 @@
     { label: "Наименование", key: "org" },
     { label: "ИНН партнёра", key: "partnerInn" },
     { label: "Партнёр", key: "partner" },
-    { label: "Активных касс", key: "activeKassas", num: true }
+    { label: "Активных касс", key: "activeKassas", num: true },
+    { label: "Дата прихода", key: "arrivedAt", date: true },
+    { label: "Дата ухода", key: "leftAt", date: true }
   ];
   var DEFAULT_DRILL_FILTERS = [
     { label: "ИНН", key: "key" },
     { label: "Наименование", key: "org" },
     { label: "Партнёр", key: "partner" }
   ];
+  // Отдельный набор колонок для вкладки "Отток" (2026-08-06) -- там вместо
+  // прихода/ухода нужны дата окончания (по которой считался отток) и то, сколько у
+  // клиента ЕЩЁ осталось действующих касс (для полного оттока клиента это всегда 0 --
+  // отток клиента = отток ВСЕХ его касс, выводим явно по просьбе Димы).
+  var CLIENT_CHURN_COLUMNS = [
+    { label: "ИНН", key: "key" },
+    { label: "Наименование", key: "org" },
+    { label: "ИНН партнёра", key: "partnerInn" },
+    { label: "Партнёр", key: "partner" },
+    { label: "Дата окончания", key: "end", date: true },
+    { label: "Осталось активных касс", key: "activeKassas", num: true }
+  ];
 
-  // columns: [{label, key, num}], filterFields: [{label, key}] -- текстовые фаст-фильтры,
-  // объединяются по И (AND). На экране показываем первые `limit` строк отфильтрованного
-  // списка (полный список export'ом не покрыт -- это раскрытие внутри виджета, не отдельная
-  // таблица), фильтры сужают выборку до нужных строк.
+  // columns: [{label, key, num, date}], filterFields: [{label, key}] -- текстовые
+  // фаст-фильтры, объединяются по И (AND). date:true -- значение форматируется fmtDate()
+  // (как и везде в приложении, сортировка по дате -- строкой в формате ДД.ММ.ГГГГ, тот же
+  // компромисс, что и в остальных таблицах с датами). На экране показываем первые `limit`
+  // строк отфильтрованного списка (полный список export'ом не покрыт -- это раскрытие
+  // внутри виджета, не отдельная таблица), фильтры сужают выборку до нужных строк.
   function renderDrillTable(container, list, columns, filterFields, entityLabel, monthLabel, limit) {
     var controls = filterFields.length ? el(
       '<div class="threshold-row" style="margin-top:8px">' +
@@ -325,7 +341,11 @@
       }
       var headers = columns.map(function (c) { return { label: c.label, num: !!c.num }; });
       var rows = top.map(function (item) {
-        return columns.map(function (c) { return (item[c.key] == null || item[c.key] === "") ? "—" : item[c.key]; });
+        return columns.map(function (c) {
+          var v = item[c.key];
+          if (c.date) return v ? fmtDate(v) : "—";
+          return (v == null || v === "") ? "—" : v;
+        });
       });
       var scrollWrap = el('<div class="expand-scroll"></div>');
       scrollWrap.appendChild(makeSortableTable(headers, rows));
@@ -597,7 +617,7 @@
         } else if (v === "new") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", null));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS }));
         } else if (v === "returned") {
           if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
           viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }));
@@ -878,6 +898,12 @@
         return v;
       }
 
+      var kassaDrillFilters = [
+        { label: "РНМ", key: "rnm" },
+        { label: "ИНН клиента", key: "clientKey" },
+        { label: "Наименование", key: "org" },
+        { label: "Партнёр", key: "partner" }
+      ];
       var kassaDrillOpts = {
         entityLabel: "касс",
         columns: [
@@ -886,14 +912,25 @@
           { label: "Наименование клиента", key: "org" },
           { label: "ИНН партнёра", key: "partnerInn" },
           { label: "Партнёр", key: "partner" },
-          { label: "Тариф", key: "tariff" }
+          { label: "Тариф", key: "tariff" },
+          { label: "Дата прихода", key: "arrivedAt", date: true },
+          { label: "Дата ухода", key: "leftAt", date: true }
         ],
-        filterFields: [
+        filterFields: kassaDrillFilters
+      };
+      var kassaChurnOpts = {
+        entityLabel: "касс",
+        columns: [
           { label: "РНМ", key: "rnm" },
           { label: "ИНН клиента", key: "clientKey" },
-          { label: "Наименование", key: "org" },
-          { label: "Партнёр", key: "partner" }
-        ]
+          { label: "Наименование клиента", key: "org" },
+          { label: "ИНН партнёра", key: "partnerInn" },
+          { label: "Партнёр", key: "partner" },
+          { label: "Тариф", key: "tariff" },
+          { label: "Дата окончания", key: "end", date: true },
+          { label: "Осталось активных касс у клиента", key: "activeKassas", num: true }
+        ],
+        filterFields: kassaDrillFilters
       };
 
       function renderView() {
@@ -904,7 +941,7 @@
         } else if (v === "new") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, kassaDrillOpts));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", null));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonth(model, m, ctx.asOf); }, kassaChurnOpts));
         } else if (v === "returned") {
           if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
           viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, kassaDrillOpts));

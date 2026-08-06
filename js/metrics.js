@@ -549,7 +549,8 @@
     model.clients.forEach(function (c) {
       if (c.phys || !c.appearance) return;
       if (c.appearance.getFullYear() === y && c.appearance.getMonth() === m) {
-        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf) });
+        // первое появление -- "ухода" до этого момента не было по определению
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf), arrivedAt: c.appearance, leftAt: null });
       }
     });
     return out;
@@ -565,8 +566,28 @@
       var ri = clientReturnInfo(c);
       if (!ri || ri.tag !== "возвращённый") return;
       if (ri.returnDate.getFullYear() === y && ri.returnDate.getMonth() === m) {
-        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf) });
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf), arrivedAt: ri.returnDate, leftAt: ri.gapEnd });
       }
+    });
+    return out;
+  }
+
+  // Раскрытие для вкладки "Отток клиентов" в "Прирост базы" (2026-08-06) -- тот же
+  // предикат, что и churnByMonth в computeChurnGradient (конец в этом месяце,
+  // подтверждённый статус "churned"), иначе счётчик на графике и сумма строк таблицы
+  // разойдутся. "Оставшихся активных касс" -- по определению отток клиента = отток ВСЕХ
+  // его касс, так что тут всегда 0, но колонку выводим явно (запрошено Димой).
+  function clientsChurnedInMonth(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var end = c.currentEnd;
+      if (!end || end.getFullYear() !== y || end.getMonth() !== m) return;
+      var daysSinceEnd = (asOf - end) / 86400000;
+      if (daysSinceEnd <= CHURN_GRACE_DAYS) return;
+      if (clientChurnStatus(c, asOf) !== "churned") return;
+      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: end, activeKassas: activeKassaCountOf(c, asOf) });
     });
     return out;
   }
@@ -596,7 +617,11 @@
     var out = [];
     model.kassas.forEach(function (k) {
       if (!k.appearance) return;
-      if (k.appearance.getFullYear() === y && k.appearance.getMonth() === m) out.push(kassaRowFor(k, model));
+      if (k.appearance.getFullYear() === y && k.appearance.getMonth() === m) {
+        var row = kassaRowFor(k, model);
+        row.arrivedAt = k.appearance; row.leftAt = null;
+        out.push(row);
+      }
     });
     return out;
   }
@@ -607,7 +632,33 @@
     model.kassas.forEach(function (k) {
       var ri = kassaReturnInfo(k);
       if (!ri || ri.tag !== "возвращённый") return;
-      if (ri.returnDate.getFullYear() === y && ri.returnDate.getMonth() === m) out.push(kassaRowFor(k, model));
+      if (ri.returnDate.getFullYear() === y && ri.returnDate.getMonth() === m) {
+        var row = kassaRowFor(k, model);
+        row.arrivedAt = ri.returnDate; row.leftAt = ri.gapEnd;
+        out.push(row);
+      }
+    });
+    return out;
+  }
+
+  // Раскрытие для вкладки "Отток касс" в "Прирост базы (кассы)" (2026-08-06) -- тот же
+  // предикат, что и churnByMonth в computeChurnGradient(..., true). "Оставшихся активных
+  // касс" -- сколько ЕЩЁ действующих касс у клиента-владельца ПОСЛЕ оттока этой (клиент
+  // мог не потерять всю базу целиком, в отличие от клиентского оттока).
+  function kassasChurnedInMonth(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.kassas.forEach(function (k) {
+      var end = k.overallEnd;
+      if (!end || end.getFullYear() !== y || end.getMonth() !== m) return;
+      var daysSinceEnd = (asOf - end) / 86400000;
+      if (daysSinceEnd <= CHURN_GRACE_DAYS) return;
+      if (kassaChurnStatus(k, asOf) !== "churned") return;
+      var row = kassaRowFor(k, model);
+      var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+      row.end = end;
+      row.activeKassas = client ? activeKassaCountOf(client, asOf) : 0;
+      out.push(row);
     });
     return out;
   }
@@ -920,9 +971,11 @@
     computeReturnedByMonth: computeReturnedByMonth,
     clientsNewInMonth: clientsNewInMonth,
     clientsReturnedInMonth: clientsReturnedInMonth,
+    clientsChurnedInMonth: clientsChurnedInMonth,
     computeReturnedByMonthKassas: computeReturnedByMonthKassas,
     kassasNewInMonth: kassasNewInMonth,
     kassasReturnedInMonth: kassasReturnedInMonth,
+    kassasChurnedInMonth: kassasChurnedInMonth,
     computeFunnel: computeFunnel,
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
