@@ -129,12 +129,13 @@
           if (!k) return;
           // k.codes -- только коды со статусом "Зарегистрировано" (см. buildModel), статус
           // в хронологии не показываем, он всегда один и тот же
-          var lines = k.codes.map(function (code, i) {
+          var codeRows = k.codes.map(function (code, i) {
             var end = M ? M.individualEnd(code) : code.endDate;
-            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' +
-              '<b>#' + (i + 1) + '</b> · активирован ' + fmtDate(code.activated) + ' · тариф «' + esc(code.tariff || "—") + '» · окончание ' + fmtDate(end) + '</div>';
+            return [i + 1, fmtDate(code.activated), code.tariff || "—", fmtDate(end)];
           });
-          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>РНМ ' + esc(rnm) + '</b> · история кодов (' + k.codes.length + '):' + lines.join("") + '</div>';
+          expandArea.innerHTML = "";
+          expandArea.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>РНМ ' + esc(rnm) + '</b> · история кодов (' + k.codes.length + ')</div>'));
+          expandArea.appendChild(makeSortableTable([{ label: "#", num: true }, { label: "Активирован" }, { label: "Тариф" }, { label: "Окончание" }], codeRows));
         });
       });
       wrap._getExportRows = function () {
@@ -268,24 +269,87 @@
   // Столбчатый график + таблица Месяц/Число по месяцам, опционально с раскрытием по
   // клику на строку (список клиентов за этот месяц). Для вкладок "Новые"/"Отток"/
   // "Возвращённые" внутри "Прирост базы" (п.3.5, 2026-08-06).
-  function clientDrillLine(c) {
-    return esc(c.key) + ' · ' + esc(c.org || "—") + ' · партнёр ' + esc(c.partnerInn || "—") + ' ' + esc(c.partner || "—") + ' · активных касс: ' + c.activeKassas;
-  }
-  function kassaDrillLine(k) {
-    return 'РНМ ' + esc(k.rnm) + ' · ИНН клиента ' + esc(k.clientKey || "—") + ' (' + esc(k.org || "—") + ') · партнёр ' + esc(k.partnerInn || "—") + ' ' + esc(k.partner || "—") + ' · тариф «' + esc(k.tariff || "—") + '»';
+  // Раскрытие месяца в "Прирост базы" -- список сущностей настоящей таблицей: колонки
+  // + сортировка по клику на заголовок (makeSortableTable) + фаст-фильтры по ключевым
+  // полям (список может быть большим, сотни-тысячи строк на месяц). Замена прежнего
+  // плоского текстового списка через renderLine (п. "шлифовка", 2026-08-06).
+  var DEFAULT_DRILL_COLUMNS = [
+    { label: "ИНН", key: "key" },
+    { label: "Наименование", key: "org" },
+    { label: "ИНН партнёра", key: "partnerInn" },
+    { label: "Партнёр", key: "partner" },
+    { label: "Активных касс", key: "activeKassas", num: true }
+  ];
+  var DEFAULT_DRILL_FILTERS = [
+    { label: "ИНН", key: "key" },
+    { label: "Наименование", key: "org" },
+    { label: "Партнёр", key: "partner" }
+  ];
+
+  // columns: [{label, key, num}], filterFields: [{label, key}] -- текстовые фаст-фильтры,
+  // объединяются по И (AND). На экране показываем первые `limit` строк отфильтрованного
+  // списка (полный список export'ом не покрыт -- это раскрытие внутри виджета, не отдельная
+  // таблица), фильтры сужают выборку до нужных строк.
+  function renderDrillTable(container, list, columns, filterFields, entityLabel, monthLabel, limit) {
+    var controls = filterFields.length ? el(
+      '<div class="threshold-row" style="margin-top:8px">' +
+      filterFields.map(function (f, i) {
+        return '<label>' + esc(f.label) + ' <input type="text" class="drill-f" data-key="' + i + '" placeholder="поиск" style="width:120px"></label>';
+      }).join("") +
+      '</div>'
+    ) : null;
+    var countLine = el('<div style="font-size:12px;padding:6px 0"></div>');
+    var tableHolder = el('<div></div>');
+    var header = el('<div style="border-top:2px solid var(--ink);padding-top:8px;font-size:12px"><b>' + esc(monthLabel) + '</b></div>');
+    container.innerHTML = "";
+    container.appendChild(header);
+    if (controls) container.appendChild(controls);
+    container.appendChild(countLine);
+    container.appendChild(tableHolder);
+
+    function apply() {
+      var inputs = controls ? controls.querySelectorAll(".drill-f") : [];
+      var filters = filterFields.map(function (f, i) { return inputs[i] ? inputs[i].value.trim().toLowerCase() : ""; });
+      var filtered = list.filter(function (item) {
+        return filterFields.every(function (f, i) {
+          if (!filters[i]) return true;
+          return String(item[f.key] == null ? "" : item[f.key]).toLowerCase().indexOf(filters[i]) !== -1;
+        });
+      });
+      var top = filtered.slice(0, limit);
+      countLine.textContent = entityLabel + ": " + fmtNum(filtered.length) + (filtered.length > top.length ? " · показаны первые " + top.length + " — сузьте фильтром" : "");
+      tableHolder.innerHTML = "";
+      if (!top.length) {
+        tableHolder.appendChild(el('<div style="padding:6px 0;color:var(--muted)">нет данных</div>'));
+        return;
+      }
+      var headers = columns.map(function (c) { return { label: c.label, num: !!c.num }; });
+      var rows = top.map(function (item) {
+        return columns.map(function (c) { return (item[c.key] == null || item[c.key] === "") ? "—" : item[c.key]; });
+      });
+      var scrollWrap = el('<div class="expand-scroll"></div>');
+      scrollWrap.appendChild(makeSortableTable(headers, rows));
+      tableHolder.appendChild(scrollWrap);
+    }
+
+    if (controls) controls.querySelectorAll(".drill-f").forEach(function (inp) { inp.addEventListener("input", apply); });
+    apply();
   }
 
-  // opts: { entityLabel: "клиентов"|"касс", renderLine: fn(item)->html } -- renderLine по
-  // умолчанию clientDrillLine (обратная совместимость со старыми вызовами).
+  // opts: { entityLabel: "клиентов"|"касс", columns, filterFields, limit } -- columns/
+  // filterFields по умолчанию под клиентскую форму drilldown-объекта, задаются явно
+  // для кассовой (см. вызовы b2-netgrowth).
   function monthlyCountBoard(months, counts, countLabel, color, drilldownFn, opts) {
     opts = opts || {};
     var entityLabel = opts.entityLabel || "клиентов";
-    var renderLine = opts.renderLine || clientDrillLine;
+    var columns = opts.columns || DEFAULT_DRILL_COLUMNS;
+    var filterFields = opts.filterFields || DEFAULT_DRILL_FILTERS;
+    var limit = opts.limit || 300;
     var wrap = el("<div></div>");
     var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
     wrap.appendChild(el(barChartVertical(items, { color: color })));
     var tableHolder = el('<div style="margin-top:10px"></div>');
-    var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
+    var expandArea = el('<div style="margin-top:10px"></div>');
     var rowsData = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), month: m, count: counts[i] }; });
     var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r) { return [r.label, r.count]; }));
     tableHolder.appendChild(tableWrap);
@@ -300,10 +364,7 @@
           var r = rowsData.find(function (x) { return x.label === label; });
           if (!r) return;
           var list = drilldownFn(r.month);
-          var lines = list.map(function (item) {
-            return '<div style="padding:4px 0;border-bottom:1px solid var(--line)">' + renderLine(item) + '</div>';
-          });
-          expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>' + esc(label) + '</b> · ' + entityLabel + ': ' + fmtNum(list.length) + '</div>' + (lines.join("") || '<div style="padding:6px 0;color:var(--muted)">нет данных</div>');
+          renderDrillTable(expandArea, list, columns, filterFields, entityLabel, label, limit);
         });
       });
     }
@@ -599,10 +660,10 @@
         var r = top.find(function (x) { return x.key === inn; });
         var client = model.clients.get(inn);
         if (!r || !client) return;
-        var lines = client.kassas.map(function (k) {
-          return '<div style="padding:4px 0;border-bottom:1px solid var(--line)"><b>РНМ ' + esc(k.rnm) + '</b> · последний тариф «' + esc(k.tariff || "—") + '» · окончание ' + fmtDate(k.overallEnd) + '</div>';
-        });
-        expandArea.innerHTML = '<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px"><b>ИНН ' + esc(inn) + '</b> (' + esc(r.org || "—") + ') · касс всего: ' + client.kassas.length + '</div>' + lines.join("");
+        var kassaRows = client.kassas.map(function (k) { return [k.rnm, k.tariff || "—", fmtDate(k.overallEnd)]; });
+        expandArea.innerHTML = "";
+        expandArea.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>ИНН ' + esc(inn) + '</b> (' + esc(r.org || "—") + ') · касс всего: ' + client.kassas.length + '</div>'));
+        expandArea.appendChild(makeSortableTable([{ label: "РНМ" }, { label: "Тариф" }, { label: "Окончание" }], kassaRows));
       });
     });
     wrap._getExportRows = function () {
@@ -817,18 +878,36 @@
         return v;
       }
 
+      var kassaDrillOpts = {
+        entityLabel: "касс",
+        columns: [
+          { label: "РНМ", key: "rnm" },
+          { label: "ИНН клиента", key: "clientKey" },
+          { label: "Наименование клиента", key: "org" },
+          { label: "ИНН партнёра", key: "partnerInn" },
+          { label: "Партнёр", key: "partner" },
+          { label: "Тариф", key: "tariff" }
+        ],
+        filterFields: [
+          { label: "РНМ", key: "rnm" },
+          { label: "ИНН клиента", key: "clientKey" },
+          { label: "Наименование", key: "org" },
+          { label: "Партнёр", key: "partner" }
+        ]
+      };
+
       function renderView() {
         var v = tabs.querySelector('input:checked').value;
         viewHolder.innerHTML = "";
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, { entityLabel: "касс", renderLine: kassaDrillLine }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, kassaDrillOpts));
         } else if (v === "churn") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", null));
         } else if (v === "returned") {
           if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
-          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, { entityLabel: "касс", renderLine: kassaDrillLine }));
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, kassaDrillOpts));
         }
       }
       tabs.addEventListener("change", renderView);
