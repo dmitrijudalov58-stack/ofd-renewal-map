@@ -1109,14 +1109,11 @@
         var q = controls.querySelector(".f-name").value.trim().toLowerCase();
         var state = controls.querySelector('input[type="radio"]:checked').value;
         var filtered = q ? partners.filter(function (p) { return p.name.toLowerCase().includes(q); }) : partners.slice();
-        // фильтр по состоянию (2026-08-07, исправлено по фидбэку Димы): "только с активными
-        // клиентами" -- есть активные клиенты С активными кассами (clients>0 И kassas>0,
-        // не просто clients>0 -- изначально забыл про кассы). "Только с резервными кодами" --
-        // ОБРАТНОЕ состояние: активных клиентов НЕТ (clients===0, из этого следует и
-        // kassas===0), но есть сгенерированные резервные коды (reserve>0). Не "просто
-        // reserve>0" -- партнёр с активными клиентами И резервом сюда не попадает, он уже
-        // учтён в "только с активными клиентами".
-        if (state === "clients") filtered = filtered.filter(function (p) { return p.clients > 0 && p.kassas > 0; });
+        // фильтр по состоянию (2026-08-07). После фикса computePartners() (партнёр кассы
+        // = партнёр её текущего владельца-клиента, не собственное историческое поле кассы)
+        // clients>0 и kassas>0 стали эквивалентны -- касса физически не может остаться за
+        // партнёром без клиентов, поэтому простого clients>0 / reserve>0 достаточно.
+        if (state === "clients") filtered = filtered.filter(function (p) { return p.clients > 0; });
         else if (state === "reserve") filtered = filtered.filter(function (p) { return p.clients === 0 && p.reserve > 0; });
         var rows = filtered.map(function (p) { return [p.name, p.clients, p.kassas, p.reserve]; });
         tableHolder.innerHTML = "";
