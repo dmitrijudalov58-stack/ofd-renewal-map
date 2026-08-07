@@ -356,37 +356,67 @@
     apply();
   }
 
-  // opts: { entityLabel: "клиентов"|"касс", columns, filterFields, limit } -- columns/
-  // filterFields по умолчанию под клиентскую форму drilldown-объекта, задаются явно
-  // для кассовой (см. вызовы b2-netgrowth).
+  // opts: { entityLabel: "клиентов"|"касс", columns, filterFields, limit, activeTotal } --
+  // columns/filterFields по умолчанию под клиентскую форму drilldown-объекта, задаются
+  // явно для кассовой (см. вызовы b2-netgrowth). activeTotal (2026-08-07) -- если задан,
+  // над таблицей появляется тот же тумблер Числа/%, что и на вкладке "Накопительно"
+  // (gradientFlowTable) -- ТОЛЬКО для таблицы, столбчатый график остаётся в штуках
+  // (единообразно с "Накопительно", где график тоже не переключается).
   function monthlyCountBoard(months, counts, countLabel, color, drilldownFn, opts) {
     opts = opts || {};
     var entityLabel = opts.entityLabel || "клиентов";
     var columns = opts.columns || DEFAULT_DRILL_COLUMNS;
     var filterFields = opts.filterFields || DEFAULT_DRILL_FILTERS;
     var limit = opts.limit || 300;
+    var activeTotal = opts.activeTotal;
     var wrap = el("<div></div>");
     var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
     wrap.appendChild(el(barChartVertical(items, { color: color })));
+
+    var toggle = null;
+    if (activeTotal != null) {
+      var pvId = "pctcount-" + Math.random().toString(36).slice(2, 7);
+      toggle = el(
+        '<div class="threshold-row" style="margin-top:10px">' +
+        '<label><input type="radio" name="' + pvId + '" value="abs" checked> Числа</label>' +
+        '<label><input type="radio" name="' + pvId + '" value="pct"> % от активных ' + entityLabel + ' (' + fmtNum(activeTotal) + ')</label>' +
+        '</div>'
+      );
+      wrap.appendChild(toggle);
+    }
+    function fmtCell(n) {
+      if (!toggle || !toggle.querySelector('input[value="pct"]').checked) return fmtNum(n);
+      return activeTotal > 0 ? fmtPct(n / activeTotal) : "—";
+    }
+
     var tableHolder = el('<div style="margin-top:10px"></div>');
     var expandArea = el('<div style="margin-top:10px"></div>');
     var rowsData = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), month: m, count: counts[i] }; });
-    var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r) { return [r.label, r.count]; }));
-    tableHolder.appendChild(tableWrap);
+
+    function renderTable() {
+      tableHolder.innerHTML = "";
+      var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r) { return [r.label, fmtCell(r.count)]; }));
+      tableHolder.appendChild(tableWrap);
+      if (drilldownFn) {
+        tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () {
+            var label = tr.children[0].textContent;
+            var r = rowsData.find(function (x) { return x.label === label; });
+            if (!r) return;
+            var list = drilldownFn(r.month);
+            renderDrillTable(expandArea, list, columns, filterFields, entityLabel, label, limit);
+          });
+        });
+      }
+    }
+    if (toggle) toggle.addEventListener("change", renderTable);
+    renderTable();
+
     wrap.appendChild(tableHolder);
     wrap.appendChild(expandArea);
     if (drilldownFn) {
       wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список ' + entityLabel + ' за этот месяц</div>'));
-      tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
-        tr.style.cursor = "pointer";
-        tr.addEventListener("click", function () {
-          var label = tr.children[0].textContent;
-          var r = rowsData.find(function (x) { return x.label === label; });
-          if (!r) return;
-          var list = drilldownFn(r.month);
-          renderDrillTable(expandArea, list, columns, filterFields, entityLabel, label, limit);
-        });
-      });
     }
     return wrap;
   }
@@ -615,12 +645,12 @@
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotal: activeTotal }));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotal: activeTotal }));
         } else if (v === "returned") {
           if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
-          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }));
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }, { activeTotal: activeTotal }));
         }
       }
       tabs.addEventListener("change", renderView);
@@ -906,6 +936,7 @@
       ];
       var kassaDrillOpts = {
         entityLabel: "касс",
+        activeTotal: activeTotal,
         columns: [
           { label: "РНМ", key: "rnm" },
           { label: "ИНН клиента", key: "clientKey" },
@@ -920,6 +951,7 @@
       };
       var kassaChurnOpts = {
         entityLabel: "касс",
+        activeTotal: activeTotal,
         columns: [
           { label: "РНМ", key: "rnm" },
           { label: "ИНН клиента", key: "clientKey" },
