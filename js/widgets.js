@@ -1085,7 +1085,17 @@
     render: function (model, ctx) {
       var partners = ctx.M.computePartners(model, ctx.asOf, { strict: ctx.strict });
       var wrap = el('<div></div>');
-      var controls = el('<div class="threshold-row"><label>Партнёр <input type="text" class="f-name" placeholder="поиск по названию" style="width:220px"></label></div>');
+      // случайный суффикс -- на холсте виджет может оказаться размещён дважды, статичный
+      // name конфликтовал бы между двумя экземплярами (см. ту же причину у pvId/ngId)
+      var stateId = "partnerstate-" + Math.random().toString(36).slice(2, 7);
+      var controls = el(
+        '<div class="threshold-row">' +
+        '<label>Партнёр <input type="text" class="f-name" placeholder="поиск по названию" style="width:220px"></label>' +
+        '<label><input type="radio" name="' + stateId + '" value="all" checked> все</label>' +
+        '<label><input type="radio" name="' + stateId + '" value="clients"> только с активными клиентами</label>' +
+        '<label><input type="radio" name="' + stateId + '" value="reserve"> только с резервными кодами</label>' +
+        '</div>'
+      );
       var tableHolder = el('<div></div>');
       wrap.appendChild(controls);
       wrap.appendChild(tableHolder);
@@ -1097,7 +1107,12 @@
         // нечего, они не отрисованы). Теперь рисуем ВСЕХ отфильтрованных без среза —
         // сортировка по клику работает по-настоящему на полном наборе.
         var q = controls.querySelector(".f-name").value.trim().toLowerCase();
+        var state = controls.querySelector('input[type="radio"]:checked').value;
         var filtered = q ? partners.filter(function (p) { return p.name.toLowerCase().includes(q); }) : partners.slice();
+        // фильтр по состоянию (2026-08-07): "только с активными клиентами" / "только с
+        // резервными кодами" -- взаимоисключающий выбор (радио), не пересекающиеся галки
+        if (state === "clients") filtered = filtered.filter(function (p) { return p.clients > 0; });
+        else if (state === "reserve") filtered = filtered.filter(function (p) { return p.reserve > 0; });
         var rows = filtered.map(function (p) { return [p.name, p.clients, p.kassas, p.reserve]; });
         tableHolder.innerHTML = "";
         tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(filtered.length) + '</div>'));
@@ -1107,6 +1122,7 @@
         wrap._getExportRows = function () { return filtered.map(function (p) { return { Партнёр: p.name, Клиенты: p.clients, Кассы: p.kassas, Резерв: p.reserve }; }); };
       }
       controls.addEventListener("input", apply);
+      controls.addEventListener("change", apply);
       apply();
       return wrap;
     },
