@@ -148,6 +148,7 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   display: flex; align-items: center; gap: 8px; padding: 13px 14px 11px; border-bottom: 2px solid var(--ink);
 }
 .widget-head .grip { color: var(--muted); font-size: 12px; cursor: grab; }
+.widget.dragging { opacity: .4; }
 .widget-head h3 {
   font-size: 13px; margin: 0; font-weight: 700; flex: 1; text-transform: uppercase; letter-spacing: .01em;
 }
