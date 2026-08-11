@@ -27,7 +27,7 @@
     if (typeof ResizeObserver === "undefined") return null;
     var ro = new ResizeObserver(function () {
       sizes[instanceId] = { width: Math.round(node.offsetWidth), height: Math.round(node.offsetHeight) };
-      resolveAllOverlaps();
+      resolveAllOverlaps(instanceId); // сама эта карточка (выросла -- значит её и ресайзят) не двигается
       growCanvas();
     });
     ro.observe(node);
@@ -132,25 +132,32 @@
   // {resize:both}) или раскрытие содержимого (клик по строке -> разбивка по кассам,
   // widgets.js). Оба случая шли через ResizeObserver, который раньше ТОЛЬКО пересчитывал
   // высоту холста, не проверяя, что выросшая карточка теперь наезжает на соседей --
-  // отсюда наложение на скриншоте Димы 2026-08-11. Раздвигаем ВСЕХ, кого выросшая
-  // карточка теперь перекрывает, вниз (никогда вбок/вверх, та же логика что и в
-  // resolvePosition, гарантированно сходится).
-  function resolveAllOverlaps() {
+  // отсюда наложение на скриншоте Димы 2026-08-11.
+  //
+  // actorId -- та карточка, которую СЕЙЧАС ресайзит/трогает пользователь: она НИКОГДА не
+  // двигается сама, толкаем только соседей. Без этого правило "сдвигаем того, кто ниже"
+  // иногда толкало САМУ actor-карточку (если у соседа индекс в placed[] оказывался
+  // меньше -- решало по Y/индексу, а не по тому, кого реально ресайзят) -- ровно это
+  // Дима поймал 2026-08-11: "двигается сам борд, который я ресайзю". Для пар БЕЗ actor'а
+  // (косвенные столкновения по цепочке) остаётся прежнее правило -- сдвигаем того, кто
+  // ниже, никогда вбок/вверх, гарантированно сходится.
+  function resolveAllOverlaps(actorId) {
     var moved = true, guard = 0;
     while (moved && guard < 500) {
       moved = false;
       guard++;
       for (var i = 0; i < placed.length; i++) {
-        for (var j = 0; j < placed.length; j++) {
-          if (i === j) continue;
-          var ra = liveRect(placed[i].instanceId);
-          var rb = liveRect(placed[j].instanceId);
+        for (var j = i + 1; j < placed.length; j++) {
+          var idA = placed[i].instanceId, idB = placed[j].instanceId;
+          var ra = liveRect(idA);
+          var rb = liveRect(idB);
           if (!ra || !rb) continue;
           if (!rectsOverlap(ra, rb)) continue;
-          // сдвигаем ту, что расположена НИЖЕ (или при равенстве -- с большим индексом) --
-          // однозначное правило, чтобы пара не толкала друг друга туда-обратно
-          var pushId = ra.y < rb.y || (ra.y === rb.y && i < j) ? placed[j].instanceId : placed[i].instanceId;
-          var anchor = pushId === placed[j].instanceId ? ra : rb;
+          var pushId, anchor;
+          if (idA === actorId) { pushId = idB; anchor = ra; }
+          else if (idB === actorId) { pushId = idA; anchor = rb; }
+          else if (ra.y <= rb.y) { pushId = idB; anchor = ra; }
+          else { pushId = idA; anchor = rb; }
           var node = canvas.querySelector('[data-instance-id="' + pushId + '"]');
           if (!node) continue;
           var newY = anchor.y + anchor.h + GAP;
