@@ -177,7 +177,14 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
 }
 .widget-head .grip { color: var(--muted); font-size: 12px; cursor: grab; }
-.widget.dragging { opacity: .4; pointer-events: none; }
+/* Сама карточка теперь живо едет за курсором (не остаётся на месте, пока двигается
+   только призрак-превью) -- лёгкое "поднятие" (тень + чуть прозрачнее), не полное
+   исчезновение как раньше. pointer-events:none -- чтобы её же кнопки/таблицы внутри не
+   перехватывали mousemove/mouseup у document во время перетаскивания. */
+.widget.dragging {
+  opacity: .92; pointer-events: none; cursor: grabbing;
+  box-shadow: 0 8px 28px -6px rgba(28,27,24,.28);
+}
 .widget-head h3 {
   font-size: 12.5px; margin: 0; font-weight: 700; flex: 1; text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted);
