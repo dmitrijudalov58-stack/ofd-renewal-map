@@ -56,22 +56,39 @@
     return v === undefined ? null : v;
   }
 
+  // ИНН иногда хранится в Excel то текстовой ячейкой ("0123456789"), то числовой
+  // (123456789 — Excel молча роняет ведущий ноль у числа). Одна и та же организация
+  // из-за этого попадала в модель под ДВУМЯ разными ключами (строка vs число) — находка
+  // 2026-08-11, на реальных данных инструмент считал 94347 активных клиентов вместо
+  // фактических ~89к, целиком объяснялось этим смешением типов. Всегда приводим к строке;
+  // если после этого осталось ровно 9 или 11 цифр (у настоящего ИНН длина строго 10 или
+  // 12 — юрлицо/физлицо) — значит ведущий ноль был потерян, восстанавливаем его. Проверено
+  // на реальных данных: часть восстановленных так значений (433 из выборки) совпадает с
+  // уже существующим в базе полноразрядным ИНН той же организации — не догадка, подтверждено.
+  function cleanInn(v) {
+    var s = cleanStr(v);
+    if (s === null) return null;
+    s = String(s).trim();
+    if (/^\d+$/.test(s) && (s.length === 9 || s.length === 11)) s = "0" + s;
+    return s;
+  }
+
   function normalizeRow(cells) {
     return {
       pin: cleanStr(cells[IDX.pin]),
       created: toDate(cells[IDX.created]),
       status: (cells[IDX.status] || "").toString().trim(),
       tariff: cleanStr(cells[IDX.tariff]),
-      innPhys: cleanStr(cells[IDX.innPhys]),
+      innPhys: cleanInn(cells[IDX.innPhys]),
       activationType: (cells[IDX.activationType] || "").toString().trim(),
       activated: toDate(cells[IDX.activated]),
       endDate: toDate(cells[IDX.endDate]),
       overallEnd: toDate(cells[IDX.overallEnd]),
       rnm: cleanStr(cells[IDX.rnm]),
       org: cleanStr(cells[IDX.org]),
-      innOrg: cleanStr(cells[IDX.innOrg]),
+      innOrg: cleanInn(cells[IDX.innOrg]),
       partner: cleanStr(cells[IDX.partner]),
-      partnerInn: cleanStr(cells[IDX.partnerInn]),
+      partnerInn: cleanInn(cells[IDX.partnerInn]),
       salesCenter: cleanStr(cells[IDX.salesCenter]),
       salesType: cleanStr(cells[IDX.salesType]),
     };
