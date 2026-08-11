@@ -4,8 +4,12 @@
 (function (root) {
   "use strict";
 
+  // Значения, начинающиеся с =+-@ (или табом/CR), Excel/LibreOffice трактует как формулу
+  // при открытии CSV — источник (годы ручного ввода) не доверенный, экранируем префиксом
+  // апострофа (OWASP CSV Injection mitigation), чтобы такая строка осталась просто текстом.
   function csvEscape(v) {
     var s = v === null || v === undefined ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
     if (/[",;\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
     return s;
   }

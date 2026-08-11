@@ -1,6 +1,8 @@
 node_modules/
 .DS_Store
 .omc/
+tmp/
+cloudflare/public/
 
 # защита от случайного коммита реальной выгрузки с данными клиентов
 *.xlsx
