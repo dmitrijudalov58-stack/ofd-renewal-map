@@ -1,0 +1,12 @@
+name = "ofd-gate"
+main = "worker.js"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[kv_namespaces]]
+binding = "OFD_USERS"
+id = "7b7d67551bf0442bb9f5190b353d65db"

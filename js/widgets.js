@@ -362,31 +362,35 @@
   // над таблицей появляется тот же тумблер Числа/%, что и на вкладке "Накопительно"
   // (gradientFlowTable) -- ТОЛЬКО для таблицы, столбчатый график остаётся в штуках
   // (единообразно с "Накопительно", где график тоже не переключается).
+  // opts.activeTotalByMonth — массив того же размера что months: знаменатель для % СВОЕГО
+  // месяца (действующих на конец этого месяца), не одно фиксированное число на все строки
+  // (п.5, 2026-08-11).
   function monthlyCountBoard(months, counts, countLabel, color, drilldownFn, opts) {
     opts = opts || {};
     var entityLabel = opts.entityLabel || "клиентов";
     var columns = opts.columns || DEFAULT_DRILL_COLUMNS;
     var filterFields = opts.filterFields || DEFAULT_DRILL_FILTERS;
     var limit = opts.limit || 300;
-    var activeTotal = opts.activeTotal;
+    var activeTotalByMonth = opts.activeTotalByMonth;
     var wrap = el("<div></div>");
     var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
     wrap.appendChild(el(barChartVertical(items, { color: color })));
 
     var toggle = null;
-    if (activeTotal != null) {
+    if (activeTotalByMonth != null) {
       var pvId = "pctcount-" + Math.random().toString(36).slice(2, 7);
       toggle = el(
         '<div class="threshold-row" style="margin-top:10px">' +
         '<label><input type="radio" name="' + pvId + '" value="abs" checked> Числа</label>' +
-        '<label><input type="radio" name="' + pvId + '" value="pct"> % от активных ' + entityLabel + ' (' + fmtNum(activeTotal) + ')</label>' +
+        '<label><input type="radio" name="' + pvId + '" value="pct"> % от действующих ' + entityLabel + ' на конец СВОЕГО месяца</label>' +
         '</div>'
       );
       wrap.appendChild(toggle);
     }
-    function fmtCell(n) {
+    function fmtCell(n, i) {
       if (!toggle || !toggle.querySelector('input[value="pct"]').checked) return fmtNum(n);
-      return activeTotal > 0 ? fmtPct(n / activeTotal) : "—";
+      var denom = activeTotalByMonth[i];
+      return denom > 0 ? fmtPct(n / denom) : "—";
     }
 
     var tableHolder = el('<div style="margin-top:10px"></div>');
@@ -395,7 +399,7 @@
 
     function renderTable() {
       tableHolder.innerHTML = "";
-      var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r) { return [r.label, fmtCell(r.count)]; }));
+      var tableWrap = makeSortableTable([{ label: "Месяц" }, { label: countLabel, num: true }], rowsData.map(function (r, i) { return [r.label, fmtCell(r.count, i)]; }));
       tableHolder.appendChild(tableWrap);
       if (drilldownFn) {
         tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
@@ -421,47 +425,58 @@
     return wrap;
   }
 
-  function gradientFlowTable(series, activeTotal, unitLabel) {
+  // Для каждого месяца из months — действующих (клиентов или касс) на КОНЕЦ этого месяца
+  // (последний день месяца, 23:59:59), через computeSnapshot с тем же asOf-датой. Нужно,
+  // чтобы % считался от базы своего месяца, а не от одного зафиксированного "сейчас" на
+  // все строки — п.5, 2026-08-11.
+  function activeCountsAtMonthEnds(model, months, ctx, byKassa) {
+    return months.map(function (m) {
+      var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      var snap = ctx.M.computeSnapshot(model, end, { strict: ctx.strict });
+      return byKassa ? snap.activeKassas : snap.activeClients;
+    });
+  }
+
+  // activeByMonth — массив того же размера что series.months: действующие (клиенты или
+  // кассы) на КОНЕЦ КАЖДОГО месяца (не одно фиксированное "сейчас" на все строки) — п.5,
+  // 2026-08-11. % оттока/% притока считаются от знаменателя СВОЕГО месяца, не текущего.
+  function gradientFlowTable(series, activeByMonth, unitLabel) {
     var wrap = el("<div></div>");
-    // случайный суффикс -- клиентская и кассовая версии "Прирост базы" обычно на холсте
-    // ОДНОВРЕМЕННО, статичный name конфликтовал бы между двумя виджетами сразу
-    var pvId = "pctview-" + Math.random().toString(36).slice(2, 7);
-    var toggle = el(
-      '<div class="threshold-row" style="margin-bottom:8px">' +
-      '<label><input type="radio" name="' + pvId + '" value="abs" checked> Числа</label>' +
-      '<label><input type="radio" name="' + pvId + '" value="pct"> % от активных ' + unitLabel + ' (' + fmtNum(activeTotal) + ')</label>' +
-      '</div>'
-    );
     var tableHolder = el('<div></div>');
-    wrap.appendChild(toggle);
     wrap.appendChild(tableHolder);
 
-    function fmtCell(n) {
-      var byPct = toggle.querySelector('input[value="pct"]').checked;
-      if (!byPct) return fmtNum(n);
-      return activeTotal > 0 ? fmtPct(n / activeTotal) : "—";
+    function pct(n, denom) {
+      return denom > 0 ? fmtPct(n / denom) : "—";
     }
 
     function render() {
       var rows = series.months.map(function (m, i) {
+        var denom = activeByMonth[i];
         var net = series.newByMonth[i] - series.churnByMonth[i];
         var sign = net > 0 ? "+" : "";
-        var churnText = '<span style="color:var(--crit)">' + fmtCell(series.churnByMonth[i]) + '</span>';
+        var churnText = '<span style="color:var(--crit)">' + fmtNum(series.churnByMonth[i]) + '</span>';
         if (series.graceByMonth[i] > 0) {
-          churnText += ' <span style="color:var(--warn)">(' + fmtCell(series.graceByMonth[i]) + ' не продлились)</span>';
+          churnText += ' <span style="color:var(--warn)">(' + fmtNum(series.graceByMonth[i]) + ' не продлились)</span>';
         }
-        var forecastText = series.forecastByMonth[i] > 0 ? '<span style="color:var(--muted)">' + fmtCell(series.forecastByMonth[i]) + '</span>' : '—';
-        return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), fmtCell(series.newByMonth[i]), churnText, forecastText, sign + fmtCell(Math.abs(net))];
+        return [
+          MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(),
+          fmtNum(series.newByMonth[i]),
+          churnText,
+          sign + fmtNum(Math.abs(net)),
+          fmtNum(denom),
+          pct(series.churnByMonth[i], denom),
+          pct(series.newByMonth[i], denom),
+        ];
       });
       tableHolder.innerHTML = "";
       tableHolder.appendChild(makeSortableTable(
-        [{ label: "Месяц" }, { label: "Новые" }, { label: "Факт. отток (не продлились)", html: true }, { label: "Прогноз (будущие)", html: true }, { label: "Нетто" }],
+        [{ label: "Месяц" }, { label: "Новые" }, { label: "Факт. отток (не продлились)", html: true }, { label: "Дельта изменения" },
+         { label: "Кол-во " + unitLabel, num: true }, { label: "% оттока", num: true }, { label: "% притока", num: true }],
         rows
       ));
     }
-    toggle.addEventListener("change", render);
     render();
-    wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Красным — подтверждённый отток (30+ дней). Оранжевым в скобках — ещё не продлились (0-30 дней), может стать оттоком позже. Серым — прогноз: сколько кодов заканчивается в будущем месяце, статус ещё не известен.</div>'));
+    wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Красным — подтверждённый отток (30+ дней). Оранжевым в скобках — ещё не продлились (0-30 дней), может стать оттоком позже. «Кол-во ' + unitLabel + '» — действующих на КОНЕЦ соответствующего месяца (не сейчас) — от этого числа считаются % оттока/притока в той же строке.</div>'));
     return wrap;
   }
 
@@ -580,12 +595,12 @@
       var tableHolder = el('<div></div>');
       tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(returned.length) + (returned.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + '</div>'));
       tableHolder.appendChild(makeSortableTable(
-        [{ label: "ИНН партнёра" }, { label: "Наименование партнёра" }, { label: "ИНН клиента" }, { label: "Наименование клиента" }, { label: "Дней до возврата", num: true }, { label: "Касс сейчас", num: true }],
+        [{ label: "ИНН партнёра" }, { label: "Наименование партнёра" }, { label: "ИНН клиента" }, { label: "Наименование клиента" }, { label: "Дней после возврата", num: true }, { label: "Касс сейчас", num: true }],
         body
       ));
       wrap.appendChild(tableHolder);
       wrap._getExportRows = function () {
-        return returned.map(function (r) { return { ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "", ИННКлиента: r.key, НаименованиеКлиента: r.org || "", ДнейДоВозврата: r.days, КассСейчас: r.kassaCount }; });
+        return returned.map(function (r) { return { ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "", ИННКлиента: r.key, НаименованиеКлиента: r.org || "", ДнейПослеВозврата: r.days, КассСейчас: r.kassaCount }; });
       };
       return wrap;
     },
@@ -601,8 +616,9 @@
     title: "Прирост базы", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
-      var activeTotal = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict }).activeClients;
+      var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, false);
       var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
+      var returnedActiveByMonth = null; // считается лениво вместе с returnedSeries -- свой months-массив
 
       var wrap = el("<div></div>");
       // случайный суффикс в name -- если тот же виджет перетащат на холст дважды, radio-группы
@@ -634,7 +650,7 @@
         var v = el("<div></div>");
         v.appendChild(el('<div>' + chart + '</div>'));
         var tableHolder = el('<div style="margin-top:14px"></div>');
-        tableHolder.appendChild(gradientFlowTable(series, activeTotal, "клиентов"));
+        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов"));
         v.appendChild(tableHolder);
         return v;
       }
@@ -645,12 +661,15 @@
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotal: activeTotal }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: activeByMonth }));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotal: activeTotal }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth }));
         } else if (v === "returned") {
-          if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
-          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }, { activeTotal: activeTotal }));
+          if (!returnedSeries) {
+            returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
+            returnedActiveByMonth = activeCountsAtMonthEnds(model, returnedSeries.months, ctx, false);
+          }
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: returnedActiveByMonth }));
         }
       }
       tabs.addEventListener("change", renderView);
@@ -717,8 +736,20 @@
       });
     });
     wrap._getExportRows = function () {
+      // п.8, 2026-08-11: тариф и кассы -- по всем кассам клиента, каждая на своей строке
+      // внутри ячейки (перенос строки в CSV работает, если значение взято в кавычки --
+      // csvEscape в export.js уже это делает для строк с \n).
       return rows.map(function (r) {
-        return { ИННКлиента: r.key, НаименованиеКлиента: r.org || "", КассКПродлению: r.kassasToRenew, ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "", Окончание: fmtDate(r.end), Дней: r.exportDays };
+        var client = model.clients.get(r.key);
+        var kassas = client ? client.kassas : [];
+        var tariffs = kassas.map(function (k) { return k.tariff || "—"; }).join("\n");
+        var rnms = kassas.map(function (k) { return k.rnm; }).join("\n");
+        return {
+          ИННКлиента: r.key, НаименованиеКлиента: r.org || "", КассКПродлению: r.kassasToRenew,
+          ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "",
+          Окончание: fmtDate(r.end), Дней: r.exportDays,
+          КассыРНМ: rnms, ТарифыПоКассам: tariffs,
+        };
       });
     };
   }
@@ -810,7 +841,7 @@
     // 0-90 дней (ещё в грейсе + уже подтверждённый недавний отток) — та самая "замена
     // текущему борду", о которой просил Дима. Всегда от даты ЗАГРУЗКИ ФАЙЛА (loadAsOf),
     // не от фильтра периода. Фильтр по каждому полю (п.14), полная выгрузка.
-    title: "Клиенты к продлению после окончания", type: "таблица", scope: "as-of", span: true,
+    title: "Просроченные клиенты", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var asOf = ctx.loadAsOf || ctx.asOf;
       var wrap = el('<div></div>');
@@ -892,8 +923,9 @@
     title: "Прирост базы (кассы)", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
-      var activeTotal = ctx.M.computeSnapshot(model, ctx.asOf, { strict: ctx.strict }).activeKassas;
+      var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, true);
       var returnedSeries = null;
+      var returnedActiveByMonth = null;
 
       var wrap = el("<div></div>");
       var ngId = "ngviewk-" + Math.random().toString(36).slice(2, 7);
@@ -923,7 +955,7 @@
         var v = el("<div></div>");
         v.appendChild(el('<div>' + chart + '</div>'));
         var tableHolder = el('<div style="margin-top:14px"></div>');
-        tableHolder.appendChild(gradientFlowTable(series, activeTotal, "касс"));
+        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "касс"));
         v.appendChild(tableHolder);
         return v;
       }
@@ -936,7 +968,7 @@
       ];
       var kassaDrillOpts = {
         entityLabel: "касс",
-        activeTotal: activeTotal,
+        activeTotalByMonth: activeByMonth,
         columns: [
           { label: "РНМ", key: "rnm" },
           { label: "ИНН клиента", key: "clientKey" },
@@ -951,7 +983,7 @@
       };
       var kassaChurnOpts = {
         entityLabel: "касс",
-        activeTotal: activeTotal,
+        activeTotalByMonth: activeByMonth,
         columns: [
           { label: "РНМ", key: "rnm" },
           { label: "ИНН клиента", key: "clientKey" },
@@ -975,8 +1007,12 @@
         } else if (v === "churn") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonth(model, m, ctx.asOf); }, kassaChurnOpts));
         } else if (v === "returned") {
-          if (!returnedSeries) returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
-          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, kassaDrillOpts));
+          if (!returnedSeries) {
+            returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
+            returnedActiveByMonth = activeCountsAtMonthEnds(model, returnedSeries.months, ctx, true);
+          }
+          var returnedOpts = Object.assign({}, kassaDrillOpts, { activeTotalByMonth: returnedActiveByMonth });
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, returnedOpts));
         }
       }
       tabs.addEventListener("change", renderView);
