@@ -19,6 +19,7 @@
 
   var GAP = 16; // минимальный зазор между карточками, чтобы не сидели впритык
   var LIB_DEFAULT_W = 360, LIB_DEFAULT_H = 200; // прикидка размера для превью при перетаскивании из библиотеки (реальный размер узнаём только после рендера на drop)
+  var flowCursor = { x: 24, y: 24, rowH: 0 }; // курсор автораскладки для addWidget() БЕЗ явной точки (стартовые виджеты app.js) -- слева направо, перенос строки, как раньше flex-wrap
 
   // .widget пересоздаётся целиком на каждый rerenderAll (смена периода/as-of) — без этого
   // ручной ресайз (перетаскивание уголка) слетал бы при каждом клике по фильтру периода.
@@ -26,6 +27,7 @@
     if (typeof ResizeObserver === "undefined") return null;
     var ro = new ResizeObserver(function () {
       sizes[instanceId] = { width: Math.round(node.offsetWidth), height: Math.round(node.offsetHeight) };
+      resolveAllOverlaps();
       growCanvas();
     });
     ro.observe(node);
@@ -92,6 +94,25 @@
     return { x: x, y: y };
   }
 
+  // Для addWidget() БЕЗ явной точки сброса (стартовые виджеты, app.js вызывает
+  // addWidget(id) пять раз подряд без dropX/dropY) -- слева направо по текущей строке,
+  // перенос на новую, когда не влезает. Без этого все пять падали бы в одну (24,24) и
+  // resolvePosition сталкивал бы их строго вниз одним столбцом (нашли 2026-08-11).
+  // Только для АВТОМАТИЧЕСКОГО добавления -- перетаскивание из библиотеки/холста всегда
+  // приходит с настоящими координатами курсора, эта функция их не касается.
+  function nextDefaultPosition(w, h) {
+    var maxX = canvas.clientWidth || 1200;
+    if (flowCursor.x > 24 && flowCursor.x + w > maxX) {
+      flowCursor.x = 24;
+      flowCursor.y += flowCursor.rowH + GAP;
+      flowCursor.rowH = 0;
+    }
+    var pos = { x: flowCursor.x, y: flowCursor.y };
+    flowCursor.x += w + GAP;
+    flowCursor.rowH = Math.max(flowCursor.rowH, h);
+    return pos;
+  }
+
   // #canvas -- position:relative, абсолютные дети САМИ не растягивают его высоту.
   // Досчитываем min-height явно по нижней границе самой низкой карточки, иначе снизу
   // холста не окажется места для сброса (п.1 -- "не попал в рабочую область").
@@ -105,6 +126,40 @@
     });
     var needed = maxBottom + 40;
     if (needed > floor) canvas.style.minHeight = needed + "px";
+  }
+
+  // Карточка может вырасти НЕ через перетаскивание -- ручной ресайз за уголок (.widget
+  // {resize:both}) или раскрытие содержимого (клик по строке -> разбивка по кассам,
+  // widgets.js). Оба случая шли через ResizeObserver, который раньше ТОЛЬКО пересчитывал
+  // высоту холста, не проверяя, что выросшая карточка теперь наезжает на соседей --
+  // отсюда наложение на скриншоте Димы 2026-08-11. Раздвигаем ВСЕХ, кого выросшая
+  // карточка теперь перекрывает, вниз (никогда вбок/вверх, та же логика что и в
+  // resolvePosition, гарантированно сходится).
+  function resolveAllOverlaps() {
+    var moved = true, guard = 0;
+    while (moved && guard < 500) {
+      moved = false;
+      guard++;
+      for (var i = 0; i < placed.length; i++) {
+        for (var j = 0; j < placed.length; j++) {
+          if (i === j) continue;
+          var ra = liveRect(placed[i].instanceId);
+          var rb = liveRect(placed[j].instanceId);
+          if (!ra || !rb) continue;
+          if (!rectsOverlap(ra, rb)) continue;
+          // сдвигаем ту, что расположена НИЖЕ (или при равенстве -- с большим индексом) --
+          // однозначное правило, чтобы пара не толкала друг друга туда-обратно
+          var pushId = ra.y < rb.y || (ra.y === rb.y && i < j) ? placed[j].instanceId : placed[i].instanceId;
+          var anchor = pushId === placed[j].instanceId ? ra : rb;
+          var node = canvas.querySelector('[data-instance-id="' + pushId + '"]');
+          if (!node) continue;
+          var newY = anchor.y + anchor.h + GAP;
+          node.style.top = newY + "px";
+          positions[pushId] = { x: parseFloat(node.style.left) || 0, y: newY };
+          moved = true;
+        }
+      }
+    }
   }
 
   function showPreview(x, y, w, h) {
@@ -215,9 +270,8 @@
     node.style.top = "0px";
     canvas.appendChild(node); // сначала в DOM -- иначе offsetWidth/Height ниже вернут 0
     var w = node.offsetWidth, h = node.offsetHeight;
-    var x = dropX != null ? dropX : 24;
-    var y = dropY != null ? dropY : 24;
-    var resolved = resolvePosition(null, x, y, w, h);
+    var pos = dropX != null && dropY != null ? { x: dropX, y: dropY } : nextDefaultPosition(w, h);
+    var resolved = resolvePosition(null, pos.x, pos.y, w, h);
     positions[instanceId] = resolved;
     applyPosition(node, instanceId);
     var ro = watchSize(node, instanceId);
@@ -267,6 +321,7 @@
       }
       oldNode.replaceWith(fresh);
     });
+    resolveAllOverlaps();
     growCanvas();
   }
 
