@@ -15,9 +15,6 @@
   var placed = []; // [{instanceId, widgetId}]
   var sizes = {}; // instanceId -> {width, height}px, ручной ресайз (.widget{resize:both}) переживает rerenderAll
   var positions = {}; // instanceId -> {x, y}px внутри #canvas, переживает rerenderAll
-  var draggingNode = null; // перетаскиваемая карточка (уже размещённая, не из библиотеки)
-  var dragOffset = { x: 0, y: 0 }; // курсор минус левый верхний угол карточки в момент mousedown на грипе
-  var dragSize = { w: 0, h: 0 };
   var previewEl = null;
 
   var GAP = 16; // минимальный зазор между карточками, чтобы не сидели впритык
@@ -133,34 +130,60 @@
     };
   }
 
-  // Перетаскивание за грип (⋮⋮ в шапке). draggable=true включаем только на mousedown
-  // ГРИПА, не на всей карточке -- иначе случайный drag с кнопки/фильтра/таблицы внутри
-  // виджета ломал бы клики и мешал ресайзу за угол.
+  // Перетаскивание за грип (⋮⋮ в шапке) -- обычные mouse-события (mousedown/mousemove/
+  // mouseup на document), НЕ нативный HTML5 draggable/dragstart. Причина смены (найдено
+  // 2026-08-11): нативный drag ненадёжен для "живого" следования за курсором -- он не для
+  // этого создавался, а для файлов/reorder-in-flow (чем и пользовались раньше). Плюс
+  // синтетический DragEvent в тестах МОЖЕТ обмануть код, не пройдя реальную браузерную
+  // детекцию жеста -- ровно так тест на прошлом заходе дал ложный "работает". Обычные
+  // mouse-события лишены этой неопределённости и снимают обе проблемы разом.
+  // mousedown ловим только на ГРИПЕ, не на всей карточке -- иначе случайный drag с
+  // кнопки/фильтра/таблицы внутри виджета ломал бы клики и мешал ресайзу за угол.
   function makeWidgetDraggable(node) {
     var grip = node.querySelector(".grip");
     if (!grip) return;
     grip.addEventListener("mousedown", function (e) {
-      node.draggable = true;
-      var pt = canvasPoint(e);
-      var nodeX = parseFloat(node.style.left) || 0;
-      var nodeY = parseFloat(node.style.top) || 0;
-      dragOffset.x = pt.x - nodeX;
-      dragOffset.y = pt.y - nodeY;
-    });
-    grip.addEventListener("mouseup", function () { node.draggable = false; });
-    node.addEventListener("dragstart", function (e) {
-      draggingNode = node;
-      dragSize = { w: node.offsetWidth, h: node.offsetHeight };
+      if (e.button !== 0) return; // только левая кнопка
+      e.preventDefault(); // не даём тексту/иконке выделиться во время перетаскивания
+      var instanceId = node.dataset.instanceId;
+      var w = node.offsetWidth, h = node.offsetHeight;
+      var startPt = canvasPoint(e);
+      var offsetX = startPt.x - (parseFloat(node.style.left) || 0);
+      var offsetY = startPt.y - (parseFloat(node.style.top) || 0);
+
       node.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", ""); // пусто -- перемещение уже размещённой отличаем по draggingNode
-    });
-    node.addEventListener("dragend", function () {
-      node.draggable = false;
-      node.classList.remove("dragging");
-      draggingNode = null;
-      hidePreview();
-      canvas.classList.remove("drag-over");
+      canvas.classList.add("drag-over");
+      node.style.zIndex = "10"; // поверх остальных карточек, пока держим её курсором
+
+      function onMove(ev) {
+        var pt = canvasPoint(ev);
+        var maxX = Math.max(0, canvas.clientWidth - w);
+        var x = Math.min(Math.max(0, pt.x - offsetX), maxX);
+        var y = Math.max(0, pt.y - offsetY);
+        node.style.left = x + "px"; // сама карточка следует за курсором вживую
+        node.style.top = y + "px";
+        var resolved = resolvePosition(instanceId, x, y, w, h); // а зелёный превью -- куда она реально сядет
+        showPreview(resolved.x, resolved.y, w, h);
+        growCanvas();
+      }
+      function onUp(ev) {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        var pt = canvasPoint(ev);
+        var maxX = Math.max(0, canvas.clientWidth - w);
+        var x = Math.min(Math.max(0, pt.x - offsetX), maxX);
+        var y = Math.max(0, pt.y - offsetY);
+        var resolved = resolvePosition(instanceId, x, y, w, h);
+        positions[instanceId] = resolved;
+        applyPosition(node, instanceId);
+        node.classList.remove("dragging");
+        node.style.zIndex = "";
+        canvas.classList.remove("drag-over");
+        hidePreview();
+        growCanvas();
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
     });
   }
 
@@ -253,23 +276,17 @@
     });
   });
 
+  // Ниже -- только добавление ИЗ БИБЛИОТЕКИ (перетаскивание уже размещённых карточек
+  // теперь отдельная mouse-based механика в makeWidgetDraggable выше, HTML5 DnD её не
+  // касается вообще).
   canvas.addEventListener("dragover", function (e) {
     e.preventDefault();
     canvas.classList.add("drag-over");
     var pt = canvasPoint(e);
-
-    if (draggingNode) {
-      var instanceId = draggingNode.dataset.instanceId;
-      var rawX = pt.x - dragOffset.x, rawY = pt.y - dragOffset.y;
-      var resolved = resolvePosition(instanceId, rawX, rawY, dragSize.w, dragSize.h);
-      showPreview(resolved.x, resolved.y, dragSize.w, dragSize.h);
-      return;
-    }
-
-    // перетаскивание из библиотеки -- реальный размер карточки узнаем только после
-    // рендера на drop, здесь только прикидка для превью
-    var resolved2 = resolvePosition(null, pt.x, pt.y, LIB_DEFAULT_W, LIB_DEFAULT_H);
-    showPreview(resolved2.x, resolved2.y, LIB_DEFAULT_W, LIB_DEFAULT_H);
+    // реальный размер карточки узнаем только после рендера на drop, здесь только
+    // прикидка для превью
+    var resolved = resolvePosition(null, pt.x, pt.y, LIB_DEFAULT_W, LIB_DEFAULT_H);
+    showPreview(resolved.x, resolved.y, LIB_DEFAULT_W, LIB_DEFAULT_H);
   });
   canvas.addEventListener("dragleave", function (e) {
     if (e.target !== canvas) return; // не реагируем на переход между дочерними элементами
@@ -281,17 +298,6 @@
     canvas.classList.remove("drag-over");
     var pt = canvasPoint(e);
     hidePreview();
-
-    if (draggingNode) {
-      var instanceId = draggingNode.dataset.instanceId;
-      var rawX = pt.x - dragOffset.x, rawY = pt.y - dragOffset.y;
-      var resolved = resolvePosition(instanceId, rawX, rawY, dragSize.w, dragSize.h);
-      positions[instanceId] = resolved;
-      applyPosition(draggingNode, instanceId);
-      growCanvas();
-      return; // dragend доделает уборку классов
-    }
-
     var id = e.dataTransfer.getData("text/plain");
     if (id) addWidget(id, pt.x, pt.y);
   });
