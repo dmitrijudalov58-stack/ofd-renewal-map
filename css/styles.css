@@ -130,7 +130,9 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 }
 
 /* ---------- canvas ---------- */
-.canvas-wrap { padding: 22px 26px 100px; }
+/* колонка тянется на всю доступную высоту -- #canvas внутри тоже, свободная зона сброса
+   не ограничена высотой контента (п.1, 2026-08-11: раньше drop мимо контента не долетал) */
+.canvas-wrap { padding: 22px 26px 60px; display: flex; flex-direction: column; flex: 1; }
 .demo-banner {
   font-size: 12.5px; color: var(--ink); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px 14px; margin-bottom: 20px; background: var(--card-bg); border-left: 3px solid var(--brand);
@@ -138,19 +140,35 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 }
 .demo-banner.hidden { display: none; }
 .freshness-banner { border-left-color: var(--warn); font-weight: 600; }
+/* Свободное позиционирование (п.2, 2026-08-11): карточки больше не текут flex-wrap'ом,
+   у каждой свои left/top (JS, dnd.js). position:relative -- система координат для них.
+   Абсолютные дети не растягивают высоту родителя сами -- dnd.js досчитывает min-height
+   явно (growCanvas()) по нижней границе самой низкой карточки. */
 #canvas {
-  display: flex; flex-wrap: wrap; gap: 20px;
-  min-height: 200px;
+  position: relative;
+  flex: 1;
+  min-height: calc(100vh - 230px);
 }
-#canvas.drag-over { outline: 2px solid var(--brand); outline-offset: 6px; border-radius: 14px; }
+#canvas.drag-over { background: color-mix(in oklab, var(--good) 4%, transparent); }
 .span-2 { width: 740px; }
-@media (max-width: 860px) { .widget, .span-2 { width: 100% !important; resize: vertical; } }
+@media (max-width: 860px) {
+  #canvas { min-height: auto; }
+  .widget, .span-2 { position: static !important; width: 100% !important; resize: vertical; margin-bottom: 20px; }
+}
+
+/* Зелёная подсказка места сброса (п.3) -- координаты выставляет dnd.js в реальном
+   времени во время dragover, по тому же алгоритму, что решает, куда карточка сядет. */
+.drop-preview {
+  position: absolute; border: 2px dashed var(--good); border-radius: 14px;
+  background: color-mix(in oklab, var(--good) 14%, transparent);
+  pointer-events: none; z-index: 5;
+}
 
 .widget {
   background: var(--card-bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow);
   display: flex; flex-direction: column; overflow: hidden;
-  width: 360px; flex: 0 0 auto;
+  position: absolute; width: 360px;
   resize: both; min-width: 280px; min-height: 160px; max-width: calc(100vw - 52px);
 }
 /* уголок ресайза виднее на светлой/тёмной теме, чем дефолтный system-серый */
@@ -159,7 +177,7 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
 }
 .widget-head .grip { color: var(--muted); font-size: 12px; cursor: grab; }
-.widget.dragging { opacity: .4; }
+.widget.dragging { opacity: .4; pointer-events: none; }
 .widget-head h3 {
   font-size: 12.5px; margin: 0; font-weight: 700; flex: 1; text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted);
