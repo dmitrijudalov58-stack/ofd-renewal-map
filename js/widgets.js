@@ -429,9 +429,16 @@
   // (последний день месяца, 23:59:59), через computeSnapshot с тем же asOf-датой. Нужно,
   // чтобы % считался от базы своего месяца, а не от одного зафиксированного "сейчас" на
   // все строки — п.5, 2026-08-11.
+  // Для ТЕКУЩЕГО (ещё не закончившегося) и будущих месяцев конец месяца — дата, которой
+  // ещё не наступило: берём min(конец месяца, ctx.asOf), иначе досчитываем на дни вперёд,
+  // которых в данных ещё физически нет (та же логика, по которой убрали "Прогноз",
+  // п.3 — не забегаем по датам, которых ещё не было). Для прошлых месяцев это не меняет
+  // ничего (там конец месяца всегда раньше asOf). Найдено и поправлено 2026-08-11 —
+  // раньше "Кол-во клиентов" за текущий месяц не совпадало с "Активные клиенты сейчас".
   function activeCountsAtMonthEnds(model, months, ctx, byKassa) {
     return months.map(function (m) {
-      var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      var monthEnd = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      var end = monthEnd < ctx.asOf ? monthEnd : ctx.asOf;
       var snap = ctx.M.computeSnapshot(model, end, { strict: ctx.strict });
       return byKassa ? snap.activeKassas : snap.activeClients;
     });
