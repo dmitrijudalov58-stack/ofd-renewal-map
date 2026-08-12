@@ -113,6 +113,52 @@
     return pos;
   }
 
+  // Лучшее свободное место для карточки w×h -- САМОЕ ВЕРХНЕЕ (при равенстве -- самое
+  // левое), не "первое, куда влезло, считая от текущей точки вниз". Нужно, чтобы
+  // вытесненные карточки не расползались всё ниже и ниже с каждым столкновением (Дима,
+  // 2026-08-12: "стремились вверх, не вниз"), а всегда оседали в наиболее компактном
+  // месте. Кандидаты по Y -- 0 и низ+зазор каждой чужой карточки (только там может
+  // начаться новая "полка"), кандидаты по X аналогично по правому краю. Перебор
+  // Y×X по возрастанию, первый свободный -- и есть самый верхний-левый. excludeId --
+  // сама искомая карточка, с собой не сталкивается.
+  function findBestFreeSpot(excludeId, w, h) {
+    var maxX = Math.max(0, canvas.clientWidth - w);
+    var candidatesY = [0], candidatesX = [0];
+    placed.forEach(function (p) {
+      if (p.instanceId === excludeId) return;
+      var r = liveRect(p.instanceId);
+      if (!r) return;
+      candidatesY.push(r.y + r.h + GAP);
+      candidatesX.push(r.x + r.w + GAP);
+    });
+    candidatesY.sort(function (a, b) { return a - b; });
+    candidatesX.sort(function (a, b) { return a - b; });
+
+    for (var yi = 0; yi < candidatesY.length; yi++) {
+      var y = candidatesY[yi];
+      for (var xi = 0; xi < candidatesX.length; xi++) {
+        var x = Math.min(candidatesX[xi], maxX);
+        if (x < 0) continue;
+        var candidate = { x: x, y: y, w: w, h: h };
+        var free = true;
+        for (var i = 0; i < placed.length; i++) {
+          if (placed[i].instanceId === excludeId) continue;
+          var r2 = liveRect(placed[i].instanceId);
+          if (r2 && rectsOverlap(candidate, r2)) { free = false; break; }
+        }
+        if (free) return { x: x, y: y };
+      }
+    }
+    // не должно случаться (холст растёт), но на всякий случай -- под самой нижней
+    var maxBottom = 0;
+    placed.forEach(function (p) {
+      if (p.instanceId === excludeId) return;
+      var r = liveRect(p.instanceId);
+      if (r) maxBottom = Math.max(maxBottom, r.y + r.h);
+    });
+    return { x: 0, y: maxBottom + GAP };
+  }
+
   // #canvas -- position:relative, абсолютные дети САМИ не растягивают его высоту.
   // Досчитываем min-height явно по нижней границе самой низкой карточки, иначе снизу
   // холста не окажется места для сброса (п.1 -- "не попал в рабочую область").
@@ -153,16 +199,19 @@
           var rb = liveRect(idB);
           if (!ra || !rb) continue;
           if (!rectsOverlap(ra, rb)) continue;
-          var pushId, anchor;
-          if (idA === actorId) { pushId = idB; anchor = ra; }
-          else if (idB === actorId) { pushId = idA; anchor = rb; }
-          else if (ra.y <= rb.y) { pushId = idB; anchor = ra; }
-          else { pushId = idA; anchor = rb; }
+          var pushId;
+          if (idA === actorId) pushId = idB;
+          else if (idB === actorId) pushId = idA;
+          else pushId = ra.y <= rb.y ? idB : idA; // без актёра -- та, что ниже, уступает место
+          var pushRect = pushId === idA ? ra : rb;
           var node = canvas.querySelector('[data-instance-id="' + pushId + '"]');
           if (!node) continue;
-          var newY = anchor.y + anchor.h + GAP;
-          node.style.top = newY + "px";
-          positions[pushId] = { x: parseFloat(node.style.left) || 0, y: newY };
+          // самое верхнее-левое свободное место, не "съехать вниз от того, кто вытеснил" --
+          // иначе карточки со временем расползаются всё ниже (Дима, 2026-08-12)
+          var spot = findBestFreeSpot(pushId, pushRect.w, pushRect.h);
+          node.style.left = spot.x + "px";
+          node.style.top = spot.y + "px";
+          positions[pushId] = spot;
           moved = true;
         }
       }
@@ -364,5 +413,84 @@
     if (id) addWidget(id, pt.x, pt.y);
   });
 
-  root.OFDCanvas = { addWidget: addWidget, rerenderAll: rerenderAll };
+  // ---------- сохранение/восстановление расположения между сессиями ----------
+  //
+  // Только локально (localStorage — тот же браузер, тот же принцип "ничего никуда не
+  // уходит", что и у самого инструмента) — какие борды на холсте, где именно (x/y) и
+  // какого размера (если ресайзил руками). При следующей загрузке файла раскладка
+  // восстанавливается САМА, вместо дефолтных 5 стартовых виджетов (Дима, 2026-08-12).
+  var LAYOUT_KEY = "ofd-canvas-layout-v1";
+
+  function saveLayout() {
+    var data = {
+      version: 1,
+      widgets: placed.map(function (p) {
+        var pos = positions[p.instanceId] || { x: 24, y: 24 };
+        var sz = sizes[p.instanceId];
+        return { widgetId: p.widgetId, x: pos.x, y: pos.y, width: sz ? sz.width : null, height: sz ? sz.height : null };
+      }),
+    };
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(data));
+      return true;
+    } catch (e) {
+      return false; // приватный режим браузера и т.п. -- localStorage может быть недоступен
+    }
+  }
+
+  // Восстановление в точности как сохранено -- БЕЗ resolvePosition/коллизий, раз раскладка
+  // уже была валидна на момент сохранения. addWidget() тут не переиспользуем -- она мерит
+  // ЖИВОЙ размер узла и прогоняет через resolvePosition, что могло бы сдвинуть карточки
+  // с сохранённых координат, если текущий контент рендерится чуть иначе по высоте.
+  function restoreWidgetAt(widgetId, x, y, width, height) {
+    var node = renderInstance(widgetId);
+    if (!node) return;
+    var instanceId = "w" + Math.random().toString(36).slice(2, 9);
+    node.dataset.instanceId = instanceId;
+    if (width) node.style.width = width + "px";
+    if (height) node.style.height = height + "px";
+    node.style.left = x + "px";
+    node.style.top = y + "px";
+    canvas.appendChild(node);
+    positions[instanceId] = { x: x, y: y };
+    if (width && height) sizes[instanceId] = { width: width, height: height };
+    var ro = watchSize(node, instanceId);
+    makeWidgetDraggable(node);
+    node.querySelector(".remove-btn").addEventListener("click", function () {
+      if (ro) ro.disconnect();
+      delete sizes[instanceId];
+      delete positions[instanceId];
+      placed = placed.filter(function (p) { return p.instanceId !== instanceId; });
+      growCanvas();
+      toggleEmpty();
+    });
+    placed.push({ instanceId: instanceId, widgetId: widgetId });
+  }
+
+  // true, если что-то реально восстановлено -- вызывающий код (app.js) тогда НЕ добавляет
+  // дефолтные стартовые 5 виджетов поверх.
+  function loadSavedLayout() {
+    if (!root.OFDState || !root.OFDState.model) return false;
+    var raw;
+    try { raw = localStorage.getItem(LAYOUT_KEY); } catch (e) { return false; }
+    if (!raw) return false;
+    var data;
+    try { data = JSON.parse(raw); } catch (e) { return false; }
+    if (!data || !Array.isArray(data.widgets) || !data.widgets.length) return false;
+    var restored = false;
+    data.widgets.forEach(function (w) {
+      if (w && root.OFDWidgets.WIDGETS[w.widgetId]) {
+        restoreWidgetAt(w.widgetId, w.x || 0, w.y || 0, w.width, w.height);
+        restored = true;
+      }
+    });
+    if (restored) {
+      resolveAllOverlaps(); // сохранённые размеры могли не совпасть с реальным рендером -- подстраховка
+      growCanvas();
+      toggleEmpty();
+    }
+    return restored;
+  }
+
+  root.OFDCanvas = { addWidget: addWidget, rerenderAll: rerenderAll, saveLayout: saveLayout, loadSavedLayout: loadSavedLayout };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -22,6 +22,7 @@
   var asOfInput = document.getElementById("asOfInput");
   var applyAsOfBtn = document.getElementById("applyAsOf");
   var strictToggle = document.getElementById("strictToggle");
+  var saveLayoutBtn = document.getElementById("saveLayoutBtn");
 
   var xlsxLoadPromise = null;
   function ensureXLSX() {
@@ -144,6 +145,7 @@
         asOfInput.value = fmtInputDate(asOf);
         applyAsOfBtn.disabled = false;
         strictToggle.disabled = false;
+        saveLayoutBtn.disabled = false;
         updateStrictButton();
 
         window.OFDState.ctx = currentCtx();
@@ -155,9 +157,13 @@
           setStatus(window.OFDWidgets.fmtNum(parsed.rows.length) + " строк · " + window.OFDWidgets.fmtNum(model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
         }
 
-        ["b1-active", "b1-netgrowth", "b1-risk", "b3-channels", "b2-tariff"].forEach(function (id) {
-          window.OFDCanvas.addWidget(id);
-        });
+        // Сохранённая раскладка (кнопка "Сохранить расположение") имеет приоритет --
+        // дефолтные 5 виджетов только если раньше ничего не сохраняли (Дима, 2026-08-12).
+        if (!window.OFDCanvas.loadSavedLayout()) {
+          ["b1-active", "b1-netgrowth", "b1-risk", "b3-channels", "b2-tariff"].forEach(function (id) {
+            window.OFDCanvas.addWidget(id);
+          });
+        }
       })
       .catch(function (err) {
         console.error(err);
@@ -193,6 +199,13 @@
     updateAsofStamp(asOf);
     updateFreshnessBanner();
     window.OFDCanvas.rerenderAll();
+  });
+
+  saveLayoutBtn.addEventListener("click", function () {
+    var ok = window.OFDCanvas.saveLayout();
+    var prevText = saveLayoutBtn.textContent;
+    saveLayoutBtn.textContent = ok ? "✓ Сохранено" : "Не удалось сохранить";
+    setTimeout(function () { saveLayoutBtn.textContent = prevText; }, 1800);
   });
 
   strictToggle.addEventListener("click", function () {
