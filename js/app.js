@@ -18,6 +18,7 @@
   var demoBanner = document.getElementById("demoBanner");
   var freshnessBanner = document.getElementById("freshnessBanner");
   var dedupeBanner = document.getElementById("dedupeBanner");
+  var layoutConvertedBanner = document.getElementById("layoutConvertedBanner");
   var periodStartInput = document.getElementById("periodStart");
   var periodEndInput = document.getElementById("periodEnd");
   var applyBtn = document.getElementById("applyRange");
@@ -255,10 +256,15 @@
 
         // Сохранённая раскладка (кнопка "Сохранить расположение") имеет приоритет --
         // дефолтные 5 виджетов только если раньше ничего не сохраняли (Дима, 2026-08-12).
-        if (!window.OFDCanvas.loadSavedLayout()) {
+        var layoutResult = window.OFDCanvas.loadSavedLayout();
+        if (!layoutResult.restored) {
           ["b1-active", "b1-netgrowth", "b1-risk", "b3-channels", "b2-tariff"].forEach(function (id) {
             window.OFDCanvas.addWidget(id);
           });
+        }
+        if (layoutResult.converted) {
+          layoutConvertedBanner.classList.remove("hidden");
+          layoutConvertedBanner.textContent = "↻ Раскладка перенесена на новую сетку (миграция на GridStack) — проверь расположение виджетов, при необходимости подвинь/доресайзь и сохрани заново.";
         }
         fileLoader.classList.remove("active");
       })

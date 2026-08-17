@@ -532,10 +532,14 @@
 
   // ---------- каркас карточки ----------
 
-  function widgetShell(id, title, type, scope, bodyHTML, footHTML, span2) {
+  // remove-btn слушатель НЕ вешается здесь -- переехал в dnd.js (Fix 7, миграция на
+  // GridStack): удаление виджета обязано звать grid.removeWidget(), не node.remove(),
+  // иначе пустой grid-item остаётся в GridStack-engine навсегда (призрачная ячейка).
+  // dnd.js читает [data-widget-id] с узла и там же навешивает обработчик крестика.
+  function widgetShell(id, title, type, scope, bodyHTML, footHTML) {
     var scopeClass = scope === "период" ? "wchip period" : "wchip";
     var node = el(
-      '<div class="widget' + (span2 ? " span-2" : "") + '" data-widget-id="' + id + '">' +
+      '<div class="widget" data-widget-id="' + id + '">' +
       '<div class="widget-head"><span class="grip">⋮⋮</span><h3>' + title + '</h3>' +
       '<span class="wchip">' + type + '</span><span class="' + scopeClass + '">' + scope + '</span>' +
       '<button class="remove-btn" aria-label="Убрать виджет">×</button></div>' +
@@ -544,7 +548,6 @@
       '</div>'
     );
     node.querySelector(".widget-body").appendChild(bodyHTML instanceof Node ? bodyHTML : el('<div>' + bodyHTML + '</div>'));
-    node.querySelector(".remove-btn").addEventListener("click", function () { node.remove(); });
     return node;
   }
 

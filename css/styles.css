@@ -147,51 +147,40 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 }
 .demo-banner.hidden { display: none; }
 .freshness-banner { border-left-color: var(--warn); font-weight: 600; }
-/* Свободное позиционирование (п.2, 2026-08-11): карточки больше не текут flex-wrap'ом,
-   у каждой свои left/top (JS, dnd.js). position:relative -- система координат для них.
-   Абсолютные дети не растягивают высоту родителя сами -- dnd.js досчитывает min-height
-   явно (growCanvas()) по нижней границе самой низкой карточки. */
+/* Сетка виджетов (GridStack.js, миграция 2026-08-17 — заменила самописный free-pixel
+   движок dnd.js, который "улетал в стороны" при коллизиях: findBestFreeSpot искал
+   свободное место ПО ВСЕМУ холсту, а не локально). #canvas несёт класс .grid-stack
+   (index.html) -- позиционирование самих карточек (.grid-stack-item) даёт vendor CSS
+   (css/vendor/gridstack.min.css), тут только высота контейнера. */
 #canvas {
-  position: relative;
   flex: 1;
   min-height: calc(100vh - 230px);
 }
-#canvas.drag-over { background: color-mix(in oklab, var(--good) 4%, transparent); }
-.span-2 { width: 740px; }
 @media (max-width: 860px) {
+  /* Временно не работает после миграции на GridStack -- позиционирование карточек ушло
+     на .grid-stack-item (не .widget), инструмент фактически десктопный, чинить сейчас не
+     стали (осознанно, см. план миграции). Follow-up при необходимости -- GridStack
+     columnOpts. */
   #canvas { min-height: auto; }
-  .widget, .span-2 { position: static !important; width: 100% !important; resize: vertical; margin-bottom: 20px; }
-}
-
-/* Зелёная подсказка места сброса (п.3) -- координаты выставляет dnd.js в реальном
-   времени во время dragover, по тому же алгоритму, что решает, куда карточка сядет. */
-.drop-preview {
-  position: absolute; border: 2px dashed var(--good); border-radius: 14px;
-  background: color-mix(in oklab, var(--good) 14%, transparent);
-  pointer-events: none; z-index: 5;
+  .widget { width: 100% !important; margin-bottom: 20px; }
 }
 
 .widget {
   background: var(--card-bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow);
   display: flex; flex-direction: column; overflow: hidden;
-  position: absolute; width: 360px;
-  resize: both; min-width: 280px; min-height: 160px; max-width: calc(100vw - 52px);
+  /* min-height:100%, НЕ height:100% -- с height:100% resizeToContent() у GridStack всегда
+     видит itemH===wantedH (ребёнок ровно с контейнер) и никогда не растит карточку. */
+  min-height: 100%;
 }
-/* уголок ресайза виднее на светлой/тёмной теме, чем дефолтный system-серый */
-.widget::-webkit-resizer { background: linear-gradient(135deg, transparent 50%, var(--brand) 50%); }
+/* GridStack по умолчанию ставит overflow-y:auto на .grid-stack-item-content -- лишний
+   третий слой скролла поверх уже существующих .table-scroll/.expand-scroll. Снимаем его,
+   внутренние капы (ниже) остаются единственной точкой скролла, как и до миграции. */
+.grid-stack-item-content { overflow: visible; }
 .widget-head {
   display: flex; align-items: center; gap: 8px; padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
 }
 .widget-head .grip { color: var(--muted); font-size: 12px; cursor: grab; }
-/* Сама карточка теперь живо едет за курсором (не остаётся на месте, пока двигается
-   только призрак-превью) -- лёгкое "поднятие" (тень + чуть прозрачнее), не полное
-   исчезновение как раньше. pointer-events:none -- чтобы её же кнопки/таблицы внутри не
-   перехватывали mousemove/mouseup у document во время перетаскивания. */
-.widget.dragging {
-  opacity: .92; pointer-events: none; cursor: grabbing;
-  box-shadow: 0 8px 28px -6px rgba(28,27,24,.28);
-}
 .widget-head h3 {
   font-size: 12.5px; margin: 0; font-weight: 700; flex: 1; text-transform: uppercase;
   letter-spacing: .06em; color: var(--muted);

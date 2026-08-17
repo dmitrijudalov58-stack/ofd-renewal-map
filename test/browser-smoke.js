@@ -16,7 +16,18 @@ async function main() {
   const dom = await JSDOM.fromFile(path.join(__dirname, "..", "index.html"), {
     runScripts: "dangerously",
     resources: "usable",
+    pretendToBeVisual: true,
     url: "file://" + path.join(__dirname, "..", "index.html"),
+    // ResizeObserver -- нет в jsdom, а GridStack (миграция dnd.js) создаёт его условно при
+    // sizeToContent/columnOpts. beforeParse -- страница выполняет свои <script> уже на
+    // загрузке, после JSDOM.fromFile шимить поздно.
+    beforeParse(win) {
+      win.ResizeObserver = class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      };
+    },
   });
   const win = dom.window;
 
