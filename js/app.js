@@ -13,6 +13,7 @@
   var fileInput = document.getElementById("fileInput");
   var filenameLabel = document.getElementById("filenameLabel");
   var loadStatus = document.getElementById("loadStatus");
+  var fileLoader = document.getElementById("fileLoader");
   var asofStamp = document.getElementById("asofStamp");
   var demoBanner = document.getElementById("demoBanner");
   var freshnessBanner = document.getElementById("freshnessBanner");
@@ -105,6 +106,7 @@
     var file = e.target.files[0];
     if (!file) return;
     filenameLabel.textContent = file.name;
+    fileLoader.classList.add("active");
     setStatus("Загружаю библиотеку разбора…");
 
     ensureXLSX()
@@ -164,10 +166,12 @@
             window.OFDCanvas.addWidget(id);
           });
         }
+        fileLoader.classList.remove("active");
       })
       .catch(function (err) {
         console.error(err);
         setStatus("Ошибка чтения файла: " + err.message, true);
+        fileLoader.classList.remove("active");
       });
   });
 

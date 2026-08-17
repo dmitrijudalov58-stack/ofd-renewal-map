@@ -773,6 +773,7 @@
       var partnerOptions = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
       var controls = el(
         '<div class="threshold-row">' +
+        '<label title="Точка отсчёта для ретроспективного запроса — например «кто заканчивается в августе», даже если сегодня уже середина месяца. Жив/дедлайн кассы считается НА ЭТУ дату, не на сегодня. Пусто — как раньше, всё считается от сегодня (as-of).">с даты <input type="date" class="from-input"></label>' +
         '<label><input type="radio" name="' + controlsId + '" checked> дней до окончания <input type="number" value="30" min="1" class="days-input"></label>' +
         '<label><input type="radio" name="' + controlsId + '"> дата окончания <input type="date" class="date-input"></label>' +
         '<label>Партнёр <select class="f-partner"><option value="">все</option>' + partnerOptions.map(function (p) { return "<option>" + esc(p) + "</option>"; }).join("") + '</select></label>' +
@@ -780,7 +781,8 @@
       );
       var tableHolder = el('<div></div>');
       var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
-      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Всегда на сегодня (' + fmtDate(asOf) + ', момент загрузки файла) — не зависит от фильтра периода</div>'));
+      var caption = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      wrap.appendChild(caption);
       wrap.appendChild(controls);
       wrap.appendChild(tableHolder);
       wrap.appendChild(expandArea);
@@ -789,13 +791,22 @@
         var daysRadio = controls.querySelector('input[type="radio"]');
         var days = parseInt(controls.querySelector(".days-input").value, 10) || 30;
         var dateVal = controls.querySelector(".date-input").value;
+        var fromVal = controls.querySelector(".from-input").value;
+        var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+        // "с даты" -- не просто фильтр поверх результата, а сама точка отсчёта запроса:
+        // жив/дедлайн кассы (kassaDeadline) считается НА эту дату, иначе кассы, уже
+        // просроченные к РЕАЛЬНОМУ сегодня, отвалятся ещё до применения порога.
+        var refDate = from || asOf;
+        caption.textContent = from
+          ? "Ретроспективный запрос от " + fmtDate(from) + " — не срез на сегодня (сегодня факт. " + fmtDate(asOf) + ", момент загрузки файла)"
+          : "Всегда на сегодня (" + fmtDate(asOf) + ", момент загрузки файла) — не зависит от фильтра периода";
         var pf = controls.querySelector(".f-partner").value;
-        var fn = daysRadio.checked ? ctx.M.daysThresholdFn(asOf, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : asOf);
-        var raw = ctx.M.clientsAtRisk(model, asOf, fn, { strict: ctx.strict });
+        var fn = daysRadio.checked ? ctx.M.daysThresholdFn(refDate, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : refDate);
+        var raw = ctx.M.clientsAtRisk(model, refDate, fn, { strict: ctx.strict });
         if (pf) raw = raw.filter(function (r) { return (r.partner || "—") === pf; });
         raw.sort(function (a, b) { return a.end - b.end; });
         var rows = raw.map(function (r) {
-          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(asOf, r.end), statusHtml: riskPill(daysBetween(asOf, r.end)) };
+          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)) };
         });
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
