@@ -17,6 +17,7 @@
   var asofStamp = document.getElementById("asofStamp");
   var demoBanner = document.getElementById("demoBanner");
   var freshnessBanner = document.getElementById("freshnessBanner");
+  var dedupeBanner = document.getElementById("dedupeBanner");
   var periodStartInput = document.getElementById("periodStart");
   var periodEndInput = document.getElementById("periodEnd");
   var applyBtn = document.getElementById("applyRange");
@@ -102,43 +103,129 @@
       : "Прежний формат: резерв физлиц (Новый/Выдан) считается клиентами, кассы — по «Общей дате окончания» без учёта разрывов между кодами. Клик — вернуться к новому правилу.";
   }
 
+  // Признак "то же самое содержимое" для строки -- всё, кроме сравниваемого отдельно PIN.
+  function rowSignature(r) {
+    return [
+      r.status, r.tariff, r.innPhys, r.activationType, r.rnm, r.org, r.innOrg,
+      r.partner, r.partnerInn, r.salesCenter, r.salesType,
+      r.created ? r.created.getTime() : null,
+      r.activated ? r.activated.getTime() : null,
+      r.endDate ? r.endDate.getTime() : null,
+      r.overallEnd ? r.overallEnd.getTime() : null,
+    ].join("|");
+  }
+
+  // Сводит строки из НЕСКОЛЬКИХ выгрузок в одну, без потери и без задвоения кодов.
+  // entries -- [{ row, fileTime }], fileTime = file.lastModified исходного файла (когда
+  // платформа выгрузила именно эту копию -- прокси для "какая версия свежее").
+  // Точный дубль (тот же PIN, ВСЕ поля совпадают) -- отбрасывается молча, это ожидаемо
+  // при пересекающихся годовых выгрузках (один и тот же код мог попасть в оба файла).
+  // Тот же PIN, но РАЗНОЕ содержимое -- это уже не дубль, а код, успевший смениться между
+  // двумя скачиваниями (например резерв -> зарегистрирован); тут молча брать первую
+  // попавшуюся версию нельзя -- побеждает строка из файла с более поздним lastModified,
+  // а сам факт конфликта не прячется (баннер + консоль), чтобы Дима мог перепроверить.
+  function mergeRowEntries(entries) {
+    var byPin = new Map();
+    var out = [];
+    var exactDupCount = 0;
+    var conflictCount = 0;
+    var conflictPins = [];
+    for (var i = 0; i < entries.length; i++) {
+      var row = entries[i].row;
+      var fileTime = entries[i].fileTime;
+      if (!row.pin) { out.push(row); continue; } // нечего сверять -- никогда не дедуплицируем
+      var sig = rowSignature(row);
+      var prev = byPin.get(row.pin);
+      if (!prev) {
+        var idx = out.length;
+        out.push(row);
+        byPin.set(row.pin, { sig: sig, fileTime: fileTime, idx: idx });
+      } else if (prev.sig === sig) {
+        exactDupCount++;
+      } else {
+        conflictCount++;
+        if (conflictPins.length < 50) conflictPins.push(row.pin);
+        if (fileTime >= prev.fileTime) {
+          out[prev.idx] = row;
+          byPin.set(row.pin, { sig: sig, fileTime: fileTime, idx: prev.idx });
+        }
+      }
+    }
+    return { rows: out, exactDupCount: exactDupCount, conflictCount: conflictCount, conflictPins: conflictPins };
+  }
+
+  // Читает и парсит файлы ПОСЛЕДОВАТЕЛЬНО (не Promise.all) -- статус обновляется по ходу
+  // ("файл 2 из 5"), и не держим в памяти все ArrayBuffer сразу при "без ограничений по весу".
+  function readAndParseFiles(files) {
+    var entries = [];
+    var headerIssues = [];
+    var idx = 0;
+    function next() {
+      if (idx >= files.length) return Promise.resolve();
+      var file = files[idx];
+      var fileNo = idx + 1;
+      idx++;
+      setStatus("Читаю файл " + fileNo + " из " + files.length + " (" + file.name + ")…");
+      return file.arrayBuffer().then(function (buf) {
+        return new Promise(function (resolve) {
+          requestAnimationFrame(function () {
+            setStatus("Разбираю файл " + fileNo + " из " + files.length + " (" + file.name + ")…");
+            requestAnimationFrame(function () {
+              var wb = window.XLSX.read(buf, { type: "array", cellDates: true });
+              var parsed = window.OFDParser.parseWorkbook(window.XLSX, wb);
+              if (parsed.headerIssues.length) {
+                headerIssues = headerIssues.concat(parsed.headerIssues.map(function (m) { return file.name + ": " + m; }));
+              }
+              for (var i = 0; i < parsed.rows.length; i++) {
+                entries.push({ row: parsed.rows[i], fileTime: file.lastModified || 0 });
+              }
+              resolve();
+            });
+          });
+        });
+      }).then(next);
+    }
+    return next().then(function () {
+      return { entries: entries, headerIssues: headerIssues };
+    });
+  }
+
+  function updateDedupeBanner(fileCount, merged) {
+    if (fileCount < 2 || !merged.conflictCount) {
+      dedupeBanner.classList.add("hidden");
+      return;
+    }
+    dedupeBanner.classList.remove("hidden");
+    dedupeBanner.textContent = "⚠ " + merged.conflictCount + " код(ов) встретились в разных файлах с РАЗНЫМ содержимым (не точный дубль — статус/дата успели смениться между скачиваниями). " +
+      "Оставлена версия из файла с более поздней датой изменения. PIN для проверки — в консоли браузера.";
+    console.warn("Конфликтующие PIN между файлами (показаны первые " + merged.conflictPins.length + " из " + merged.conflictCount + "):", merged.conflictPins);
+  }
+
   fileInput.addEventListener("change", function (e) {
-    var file = e.target.files[0];
-    if (!file) return;
-    filenameLabel.textContent = file.name;
+    var files = Array.prototype.slice.call(e.target.files);
+    if (!files.length) return;
+    filenameLabel.textContent = files.length === 1 ? files[0].name : files.length + " файлов";
     fileLoader.classList.add("active");
     setStatus("Загружаю библиотеку разбора…");
 
     ensureXLSX()
       .then(function () {
-        setStatus("Читаю файл…");
-        return file.arrayBuffer();
+        return readAndParseFiles(files);
       })
-      .then(function (buf) {
-        return new Promise(function (resolve) {
-          requestAnimationFrame(function () {
-            setStatus("Разбираю строки…");
-            requestAnimationFrame(function () {
-              var wb = window.XLSX.read(buf, { type: "array", cellDates: true });
-              resolve(wb);
-            });
-          });
-        });
-      })
-      .then(function (wb) {
-        var parsed = window.OFDParser.parseWorkbook(window.XLSX, wb);
-        if (parsed.headerIssues.length) {
-          console.warn("Расхождение заголовков колонок:", parsed.headerIssues);
+      .then(function (parsedFiles) {
+        if (parsedFiles.headerIssues.length) {
+          console.warn("Расхождение заголовков колонок:", parsedFiles.headerIssues);
           setStatus("Внимание: формат файла отличается от ожидаемого — см. консоль", true);
         }
-        var model = window.OFDMetrics.buildModel(parsed.rows, { strict: window.OFDState.strict });
+        var merged = mergeRowEntries(parsedFiles.entries);
+        var model = window.OFDMetrics.buildModel(merged.rows, { strict: window.OFDState.strict });
         var asOf = new Date();
 
         window.OFDState.model = model;
-        window.OFDState.rows = parsed.rows;
+        window.OFDState.rows = merged.rows;
         window.OFDState.asOf = asOf;
         window.OFDState.loadTimeAsOf = asOf; // зафиксирован раз и навсегда, для риск-бордов
-        window.OFDState.freshness = computeFreshness(parsed.rows);
+        window.OFDState.freshness = computeFreshness(merged.rows);
 
         var yearStart = new Date(asOf.getFullYear(), 0, 1);
         periodStartInput.value = fmtInputDate(yearStart);
@@ -154,9 +241,16 @@
 
         updateAsofStamp(asOf);
         updateFreshnessBanner();
+        updateDedupeBanner(files.length, merged);
         demoBanner.classList.add("hidden");
-        if (!parsed.headerIssues.length) {
-          setStatus(window.OFDWidgets.fmtNum(parsed.rows.length) + " строк · " + window.OFDWidgets.fmtNum(model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
+        if (!parsedFiles.headerIssues.length) {
+          var statusParts = [];
+          if (files.length > 1) statusParts.push(files.length + " файлов");
+          statusParts.push(window.OFDWidgets.fmtNum(merged.rows.length) + " строк");
+          statusParts.push(window.OFDWidgets.fmtNum(model.clients.size) + " клиентов");
+          statusParts.push(window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
+          if (merged.exactDupCount) statusParts.push(window.OFDWidgets.fmtNum(merged.exactDupCount) + " дублей пропущено");
+          setStatus(statusParts.join(" · "));
         }
 
         // Сохранённая раскладка (кнопка "Сохранить расположение") имеет приоритет --

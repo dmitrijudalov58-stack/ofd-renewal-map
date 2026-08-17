@@ -33,9 +33,9 @@
   <span class="file-loader" id="fileLoader" aria-hidden="true"></span>
   <span class="load-status" id="loadStatus">Файл не загружен</span>
   <span class="asof" id="asofStamp" style="display:none;"></span>
-  <label class="btn primary" style="cursor:pointer;">
+  <label class="btn primary" style="cursor:pointer;" title="Можно выбрать сразу несколько файлов — свод в одну модель, коды-дубли между файлами не задвоятся">
     Загрузить XLSX
-    <input type="file" id="fileInput" accept=".xlsx" style="display:none;">
+    <input type="file" id="fileInput" accept=".xlsx" multiple style="display:none;">
   </label>
   <span class="filename" id="filenameLabel"></span>
 </div>
@@ -91,6 +91,7 @@
   <div class="canvas-wrap">
     <div class="demo-banner" id="demoBanner">Загрузи XLSX-выгрузку ОФД справа сверху — после разбора файла здесь появятся реальные цифры. Обработка идёт целиком в браузере, файл никуда не отправляется.</div>
     <div class="demo-banner freshness-banner hidden" id="freshnessBanner"></div>
+    <div class="demo-banner freshness-banner hidden" id="dedupeBanner"></div>
     <div id="canvas"><div class="empty-state" id="emptyState">Загрузи файл и перетащи виджет из библиотеки слева</div></div>
   </div>
 
