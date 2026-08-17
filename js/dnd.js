@@ -18,6 +18,13 @@
     column: 12, cellHeight: 60, margin: 8, float: false, animate: true,
     resizable: { handles: "se" },
     draggable: { handle: ".widget-head" },
+    // Без acceptWidgets GridStack явно выключает своё droppable-поведение
+    // (_setupAcceptWidget() зовёт droppable(el,"destroy") при его отсутствии) -- сетка
+    // тащить-то тащит (setupDragIn работает независимо от этой опции), но никогда не
+    // принимает дроп: перетаскивание из библиотеки визуально ничего не делало.
+    // Строка-селектор, не true -- дефолт true проверяет класс .grid-stack-item, а у наших
+    // карточек библиотеки класс .lib-item (проверено по исходнику gridstack-all.js).
+    acceptWidgets: ".lib-item",
   }, canvas);
 
   // Дефолтные размеры по типу виджета (в ячейках) -- узкие одиночные карточки-цифры
