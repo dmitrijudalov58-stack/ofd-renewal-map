@@ -183,6 +183,18 @@ async function main() {
   console.log("после rerenderAll виджетов на холсте:", stillThere, stillThere === ids.length ? "OK" : "FAIL");
   if (stillThere !== ids.length) ok = false;
 
+  // 8) rerenderAll не должен показывать СЫРОЙ HTML текстом -- найдено Димой 2026-08-18:
+  // виджеты, чей render() возвращает HTML-строку (не DOM Node, напр. statBlock()/карточки
+  // b1-active) шли через createTextNode() вместо innerHTML-парсинга -- на экране был виден
+  // буквальный "<div class=..." как текст. Тихий баг, БЕЗ исключения -- предыдущая версия
+  // этого теста его не ловила (проверяла только errors.length и что виджет остался в DOM,
+  // не корректность содержимого). Проверяем на b1-active (карточка, string-render) явно.
+  const activeAfterRerender = win.document.querySelector('[data-widget-id="b1-active"]');
+  const hasRealStatValue = !!activeAfterRerender.querySelector(".stat-value");
+  const hasRawHtmlAsText = /<div class="stat-value">/.test(activeAfterRerender.textContent);
+  console.log("после rerenderAll b1-active -- настоящий DOM (не сырой HTML текстом):", hasRealStatValue && !hasRawHtmlAsText ? "OK" : "FAIL");
+  if (!hasRealStatValue || hasRawHtmlAsText) ok = false;
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 

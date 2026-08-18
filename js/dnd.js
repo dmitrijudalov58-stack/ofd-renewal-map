@@ -124,8 +124,21 @@
     var bodyEl = widgetNode.querySelector(".widget-body");
     if (!bodyEl) return;
     var fresh = safeRenderBody(def, state.model, state.ctx);
-    bodyEl.innerHTML = "";
-    bodyEl.appendChild(fresh instanceof Node ? fresh : document.createTextNode(String(fresh)));
+    // БАГ (найден Димой 2026-08-18): многие def.render() возвращают ГОТОВУЮ HTML-СТРОКУ,
+    // не DOM Node (statBlock() и всё, что его использует -- карточки b1-active и т.п.).
+    // createTextNode() вставлял такую строку как ЭКРАНИРОВАННЫЙ ТЕКСТ, не как разметку --
+    // на экране буквально показывался HTML-код вместо карточки, при КАЖДОМ rerenderAll
+    // (смена периода/as-of), не только иногда. Тихий баг, без исключения -- поэтому не
+    // поймался ни одним прошлым тестом (те ловили только exceptions). Фикс -- та же логика,
+    // что и в widgetShell()/renderInstance(): строка идёт через innerHTML (разметка), не
+    // createTextNode (текст). Обёртка в <div> сохраняет инвариант ".widget-body содержит
+    // ровно один корневой узел", на который где-то могли опираться firstElementChild-обращения.
+    if (fresh instanceof Node) {
+      bodyEl.innerHTML = "";
+      bodyEl.appendChild(fresh);
+    } else {
+      bodyEl.innerHTML = "<div>" + String(fresh) + "</div>";
+    }
   }
 
   // Кнопка "⟳" в шапке — принудительный ручной рефреш конкретной карточки в любой момент,
