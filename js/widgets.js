@@ -22,6 +22,17 @@
     if (days <= 30) return '<span class="status-pill warn"><span class="dot"></span>риск · ' + days + ' дн.</span>';
     return '<span class="status-pill good"><span class="dot"></span>норма · ' + days + ' дн.</span>';
   }
+  // Текстовые (не HTML) варианты пилюль -- для колонки "Статус" в CSV-выгрузке по кассам.
+  function riskPillText(days) {
+    if (days <= 7) return "критично · " + days + " дн.";
+    if (days <= 30) return "риск · " + days + " дн.";
+    return "норма · " + days + " дн.";
+  }
+  function overduePillText(days) {
+    if (days > 60) return days + " дн. в оттоке";
+    if (days > 30) return days + " дн. в оттоке";
+    return days + " дн.";
+  }
 
   // ---------- переиспользуемые чарты ----------
 
@@ -51,7 +62,18 @@
     return opts.caption ? svg + '<div class="stat-label" style="margin-top:6px">' + opts.caption + '</div>' : svg;
   }
 
-  // Таблица касс с фастфильтрами (партнёр / тариф / статус / ИНН клиента / мин. продлений) —
+  // Бакеты фильтра "Продлений" (Дима, 2026-08-18) — заменили числовой "Продлений от N" на
+  // явные чекбоксы: раньше 0, введённый в поле, был неотличим от пустого поля (оба давали
+  // "фильтр выключен", изолировать именно "0 продлений" было нельзя) — отсюда жалоба
+  // "фильтрация не идёт от нуля". Мультивыбор — объединение (ИЛИ) отмеченных бакетов.
+  var RENEWAL_BUCKETS = [
+    { id: "0", label: "0", test: function (n) { return n === 0; } },
+    { id: "1-2", label: "1-2", test: function (n) { return n >= 1 && n <= 2; } },
+    { id: "3-5", label: "3-5", test: function (n) { return n >= 3 && n <= 5; } },
+    { id: "6+", label: "6+", test: function (n) { return n >= 6; } },
+  ];
+
+  // Таблица касс с фастфильтрами (партнёр / тариф / статус / ИНН клиента / бакет продлений) —
   // общий компонент для "Кассы и продления" и таблиц-раскрытий под распределениями (B2).
   function kassaDetailTable(kassaArray, asOf, opts) {
     opts = opts || {};
@@ -72,7 +94,9 @@
       tariffs.map(function (t) { return '<option>' + esc(t) + '</option>'; }).join("") + '</select></label>' +
       '<label>Статус <select class="f-status"><option value="">все</option><option value="alive">активна</option><option value="lapsed">в оттоке</option></select></label>' +
       '<label>ИНН клиента <input type="text" class="f-inn" placeholder="поиск" style="width:110px"></label>' +
-      '<label>Продлений от <input type="number" class="f-minren" min="0" style="width:56px"></label>' +
+      '<span style="display:flex;gap:8px;align-items:center;color:var(--muted)">Продлений:' +
+      RENEWAL_BUCKETS.map(function (b) { return '<label style="display:flex;gap:3px;align-items:center;color:var(--ink)"><input type="checkbox" class="f-ren" value="' + b.id + '"> ' + b.label + '</label>'; }).join("") +
+      '</span>' +
       '</div>'
     );
     var tableHolder = el('<div></div>');
@@ -86,7 +110,8 @@
       var tf = controls.querySelector(".f-tariff").value;
       var sf = controls.querySelector(".f-status").value;
       var innf = controls.querySelector(".f-inn").value.trim().toLowerCase();
-      var minr = parseInt(controls.querySelector(".f-minren").value, 10) || 0;
+      var checkedBuckets = Array.from(controls.querySelectorAll(".f-ren:checked")).map(function (cb) { return cb.value; });
+      var activeBuckets = RENEWAL_BUCKETS.filter(function (b) { return checkedBuckets.indexOf(b.id) !== -1; });
       var filtered = kassaArray.filter(function (k) {
         var alive = aliveOf(k);
         if (pf && (k.partner || "—") !== pf) return false;
@@ -94,7 +119,7 @@
         if (sf === "alive" && !alive) return false;
         if (sf === "lapsed" && alive) return false;
         if (innf && !(k.clientKey || "").toLowerCase().includes(innf)) return false;
-        if (k.renewals < minr) return false;
+        if (activeBuckets.length && !activeBuckets.some(function (b) { return b.test(k.renewals); })) return false;
         return true;
       });
       filtered.sort(function (a, b) { return b.renewals - a.renewals; });
@@ -371,6 +396,7 @@
     var columns = opts.columns || DEFAULT_DRILL_COLUMNS;
     var filterFields = opts.filterFields || DEFAULT_DRILL_FILTERS;
     var limit = opts.limit || 300;
+    var exportTitle = opts.exportTitle || (countLabel + " " + entityLabel);
     var activeTotalByMonth = opts.activeTotalByMonth;
     var wrap = el("<div></div>");
     var items = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + String(m.getFullYear()).slice(2), value: counts[i] }; });
@@ -421,6 +447,25 @@
     wrap.appendChild(expandArea);
     if (drilldownFn) {
       wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список ' + entityLabel + ' за этот месяц</div>'));
+      // "Скачать" -- полный список ЗА ВЕСЬ ПЕРИОД одним файлом (Дима, 2026-08-18), не
+      // только раскрытый месяц. Поля — те же, что в таблице раскрытия (columns), выгрузка
+      // без лимита (лимит 300 только для раскрытия на экране, тут построчных обработчиков
+      // клика нет — не тот случай, что крашит jsdom/браузер, см. SKILL.md гоча №6).
+      var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">Скачать (весь период)</button>');
+      downloadBtn.addEventListener("click", function () {
+        var allItems = [];
+        months.forEach(function (m) { allItems = allItems.concat(drilldownFn(m) || []); });
+        var exportRows = allItems.map(function (item) {
+          var row = {};
+          columns.forEach(function (c) {
+            var v = item[c.key];
+            row[c.label.replace(/\s+/g, "")] = c.date ? (v ? fmtDate(v) : "") : (v == null ? "" : v);
+          });
+          return row;
+        });
+        if (root.OFDExport) root.OFDExport.downloadCSV(exportTitle, exportRows);
+      });
+      wrap.appendChild(downloadBtn);
     }
     return wrap;
   }
@@ -542,6 +587,7 @@
       '<div class="widget" data-widget-id="' + id + '">' +
       '<div class="widget-head"><span class="grip">⋮⋮</span><h3>' + title + '</h3>' +
       '<span class="wchip">' + type + '</span><span class="' + scopeClass + '">' + scope + '</span>' +
+      '<button class="refresh-widget-btn" aria-label="Обновить" title="Обновить борд — если данные выглядят не так или борд завис после смены фильтра">⟳</button>' +
       '<button class="remove-btn" aria-label="Убрать виджет">×</button></div>' +
       '<div class="widget-body"></div>' +
       (footHTML ? '<div class="widget-foot">' + footHTML + '</div>' : '') +
@@ -671,15 +717,15 @@
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: activeByMonth }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы — новые клиенты" }));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы — отток клиентов" }));
         } else if (v === "returned") {
           if (!returnedSeries) {
             returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
             returnedActiveByMonth = activeCountsAtMonthEnds(model, returnedSeries.months, ctx, false);
           }
-          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: returnedActiveByMonth }));
+          viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.clientsReturnedInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: returnedActiveByMonth, exportTitle: "Прирост базы — возвращённые клиенты" }));
         }
       }
       tabs.addEventListener("change", renderView);
@@ -708,7 +754,7 @@
   function overduePill(days) {
     if (days > 60) return '<span class="status-pill crit"><span class="dot"></span>' + days + ' дн. в оттоке</span>';
     if (days > 30) return '<span class="status-pill warn"><span class="dot"></span>' + days + ' дн. в оттоке</span>';
-    return '<span class="status-pill good"><span class="dot"></span>' + days + ' дн., ещё в грейсе</span>';
+    return '<span class="status-pill good"><span class="dot"></span>' + days + ' дн.</span>';
   }
 
   // Общий рендер таблицы+раскрытия+выгрузки для "Клиенты под риском" и "Клиенты к
@@ -746,21 +792,37 @@
       });
     });
     wrap._getExportRows = function () {
-      // п.8, 2026-08-11: тариф и кассы -- по всем кассам клиента, каждая на своей строке
-      // внутри ячейки (перенос строки в CSV работает, если значение взято в кавычки --
-      // csvEscape в export.js уже это делает для строк с \n).
-      return rows.map(function (r) {
-        var client = model.clients.get(r.key);
-        var kassas = client ? client.kassas : [];
-        var tariffs = kassas.map(function (k) { return k.tariff || "—"; }).join("\n");
-        var rnms = kassas.map(function (k) { return k.rnm; }).join("\n");
-        return {
-          ИННКлиента: r.key, НаименованиеКлиента: r.org || "", КассКПродлению: r.kassasToRenew,
-          ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "",
-          Окончание: fmtDate(r.end), Дней: r.exportDays,
-          КассыРНМ: rnms, ТарифыПоКассам: tariffs,
-        };
+      // Одна строка = один РНМ (Дима, 2026-08-18: "у каждого РНМ должна быть дата
+      // окончания"), кассы одного клиента идут подряд одна под другой (порядок клиентов
+      // в rows сохраняется, кассы каждого добавляются все разом перед следующим клиентом).
+      // r.kassaDetails -- список именно ТЕХ касс, что попали в порог (риск/просрочка), не
+      // весь портфель клиента; заполняется вызывающим виджетом (b1-risk/b1-churned).
+      var out = [];
+      rows.forEach(function (r) {
+        if (r.kassaDetails && r.kassaDetails.length) {
+          r.kassaDetails.forEach(function (kd) {
+            out.push({
+              ИННКлиента: r.key, НаименованиеКлиента: r.org || "",
+              ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "",
+              РНМКассы: kd.rnm, Тариф: kd.tariff || "—",
+              ДатаОкончания: fmtDate(kd.end), Статус: kd.statusText || "",
+            });
+          });
+        } else {
+          // фолбэк -- на случай если вызывающий виджет не передал kassaDetails
+          var client = model.clients.get(r.key);
+          var kassas = client ? client.kassas : [];
+          var tariffs = kassas.map(function (k) { return k.tariff || "—"; }).join("\n");
+          var rnms = kassas.map(function (k) { return k.rnm; }).join("\n");
+          out.push({
+            ИННКлиента: r.key, НаименованиеКлиента: r.org || "", КассКПродлению: r.kassasToRenew,
+            ИННПартнёра: r.partnerInn || "", НаименованиеПартнёра: r.partner || "",
+            Окончание: fmtDate(r.end), Дней: r.exportDays,
+            КассыРНМ: rnms, ТарифыПоКассам: tariffs,
+          });
+        }
       });
+      return out;
     };
   }
 
@@ -809,7 +871,10 @@
         if (pf) raw = raw.filter(function (r) { return (r.partner || "—") === pf; });
         raw.sort(function (a, b) { return a.end - b.end; });
         var rows = raw.map(function (r) {
-          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)) };
+          var kassaDetails = (r.kassaDetails || []).map(function (kd) {
+            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, statusText: riskPillText(daysBetween(refDate, kd.end)) };
+          });
+          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)), kassaDetails: kassaDetails };
         });
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
@@ -869,6 +934,7 @@
       var partnerOptions = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
       var controls = el(
         '<div class="threshold-row">' +
+        '<label title="Если заполнено -- и клиент, и счётчик «касс к продлению» считаются ТОЛЬКО по кассам с датой окончания в этом диапазоне (старые кассы вне диапазона не попадают в счёт). Пусто -- как раньше, окно 0-90 дней от сегодня.">от <input type="date" class="from-input"> до <input type="date" class="to-input"></label>' +
         '<label>Партнёр <select class="f-partner"><option value="">все</option>' + partnerOptions.map(function (p) { return "<option>" + esc(p) + "</option>"; }).join("") + '</select></label>' +
         '<label>ИНН клиента <input type="text" class="f-inn" placeholder="поиск" style="width:110px"></label>' +
         '<label>Наименование клиента <input type="text" class="f-org" placeholder="поиск" style="width:140px"></label>' +
@@ -877,7 +943,8 @@
       );
       var tableHolder = el('<div></div>');
       var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
-      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Всегда на сегодня (' + fmtDate(asOf) + ', момент загрузки файла) — не зависит от фильтра периода. Окно 0-90 дней: ещё в грейсе (≤30 дней) + уже подтверждённый недавний отток (31-90).</div>'));
+      var caption = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      wrap.appendChild(caption);
       wrap.appendChild(controls);
       wrap.appendChild(tableHolder);
       wrap.appendChild(expandArea);
@@ -887,7 +954,18 @@
         var innf = controls.querySelector(".f-inn").value.trim().toLowerCase();
         var orgf = controls.querySelector(".f-org").value.trim().toLowerCase();
         var pinnf = controls.querySelector(".f-pinn").value.trim().toLowerCase();
-        var raw = ctx.M.clientsOverdue(model, asOf, 0, 90);
+        var fromVal = controls.querySelector(".from-input").value;
+        var toVal = controls.querySelector(".to-input").value;
+        var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+        var to = toVal ? new Date(toVal + "T23:59:59") : null;
+        var raw;
+        if (from && to) {
+          raw = ctx.M.clientsOverdueInRange(model, asOf, from, to);
+          caption.textContent = "Диапазон " + fmtDate(from) + " — " + fmtDate(to) + ": и клиент, и «касс к продлению» считаются только по кассам с окончанием в этом окне (сегодня факт. " + fmtDate(asOf) + ", момент загрузки файла).";
+        } else {
+          raw = ctx.M.clientsOverdue(model, asOf, 0, 90);
+          caption.textContent = "Всегда на сегодня (" + fmtDate(asOf) + ", момент загрузки файла) — не зависит от фильтра периода. Окно 0-90 дней: недавно просроченные + ещё не подтверждённый (≤30 дней) отток.";
+        }
         raw = raw.filter(function (r) {
           if (pf && (r.partner || "—") !== pf) return false;
           if (innf && !r.key.toLowerCase().includes(innf)) return false;
@@ -897,7 +975,10 @@
         });
         raw.sort(function (a, b) { return a.daysOverdue - b.daysOverdue; }); // недавно ушедшие сверху -- самые актуальные для дозвона
         var rows = raw.map(function (r) {
-          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: r.daysOverdue, statusHtml: overduePill(r.daysOverdue) };
+          var kassaDetails = (r.kassaDetails || []).map(function (kd) {
+            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, statusText: overduePillText(daysBetween(kd.end, asOf)) };
+          });
+          return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: r.daysOverdue, statusHtml: overduePill(r.daysOverdue), kassaDetails: kassaDetails };
         });
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
@@ -1024,15 +1105,15 @@
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, kassaDrillOpts));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, Object.assign({ exportTitle: "Прирост базы (кассы) — новые кассы" }, kassaDrillOpts)));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonth(model, m, ctx.asOf); }, kassaChurnOpts));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonth(model, m, ctx.asOf); }, Object.assign({ exportTitle: "Прирост базы (кассы) — отток касс" }, kassaChurnOpts)));
         } else if (v === "returned") {
           if (!returnedSeries) {
             returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
             returnedActiveByMonth = activeCountsAtMonthEnds(model, returnedSeries.months, ctx, true);
           }
-          var returnedOpts = Object.assign({}, kassaDrillOpts, { activeTotalByMonth: returnedActiveByMonth });
+          var returnedOpts = Object.assign({}, kassaDrillOpts, { activeTotalByMonth: returnedActiveByMonth, exportTitle: "Прирост базы (кассы) — возвращённые кассы" });
           viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ctx.M.kassasReturnedInMonth(model, m); }, returnedOpts));
         }
       }

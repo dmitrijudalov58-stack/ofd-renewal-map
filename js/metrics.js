@@ -482,11 +482,14 @@
       if (c.phys) return;
       var end = nearestAliveEnd(c.kassas, asOf, strict);
       if (end && deadlineFn(end)) {
-        var toRenew = c.kassas.filter(function (k) {
+        // kassaDetails -- САМИ кассы, которые попали под порог (не только счётчик), для
+        // выгрузки по кассам (Дима, 2026-08-18: "у каждого РНМ должна быть дата окончания").
+        var matched = c.kassas.filter(function (k) {
           var d = kassaDeadline(k, asOf, strict);
           return d && deadlineFn(d);
-        }).length;
-        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: toRenew, end: end });
+        });
+        var kassaDetails = matched.map(function (k) { return { rnm: k.rnm, tariff: k.tariff, end: kassaDeadline(k, asOf, strict) }; });
+        out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: matched.length, end: end, kassaDetails: kassaDetails });
       }
     });
     return out;
@@ -502,8 +505,27 @@
       if (c.currentEnd >= checkAsOf) return;
       var days = daysBetween(c.currentEnd, checkAsOf);
       if (days < minDays || days > maxDays) return;
-      var toRenew = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd <= checkAsOf; }).length;
-      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: toRenew, end: c.currentEnd, daysOverdue: days });
+      var overdueKassas = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd <= checkAsOf; });
+      var kassaDetails = overdueKassas.map(function (k) { return { rnm: k.rnm, tariff: k.tariff, end: k.overallEnd }; });
+      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: overdueKassas.length, end: c.currentEnd, daysOverdue: days, kassaDetails: kassaDetails });
+    });
+    return out;
+  }
+
+  // Диапазонная версия для явного "от-до" (Дима, 2026-08-18) -- в отличие от clientsOverdue
+  // (окно "N дней от сегодня", считает ВСЕ кассы клиента с датой окончания в прошлом, даже
+  // многолетней давности), тут И отбор клиента, И "касс к продлению" целиком определяются
+  // попаданием ДАТЫ ОКОНЧАНИЯ КАССЫ в [fromDate, toDate] -- старые кассы вне диапазона
+  // (условный "2022 год") в счётчик не попадают вообще.
+  function clientsOverdueInRange(model, checkAsOf, fromDate, toDate) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var inRange = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd >= fromDate && k.overallEnd <= toDate; });
+      if (!inRange.length) return;
+      var nearestEnd = inRange.reduce(function (min, k) { return (!min || k.overallEnd < min) ? k.overallEnd : min; }, null);
+      var kassaDetails = inRange.map(function (k) { return { rnm: k.rnm, tariff: k.tariff, end: k.overallEnd }; });
+      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, kassaCount: c.kassas.length, kassasToRenew: inRange.length, end: nearestEnd, daysOverdue: daysBetween(nearestEnd, checkAsOf), kassaDetails: kassaDetails });
     });
     return out;
   }
@@ -993,6 +1015,7 @@
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
     clientsOverdue: clientsOverdue,
+    clientsOverdueInRange: clientsOverdueInRange,
     computeReturnedClients: computeReturnedClients,
     clientReturnInfo: clientReturnInfo,
     kassaReturnInfo: kassaReturnInfo,

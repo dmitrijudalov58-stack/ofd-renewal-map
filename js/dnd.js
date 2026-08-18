@@ -40,12 +40,38 @@
     emptyState.style.display = placed.length === 0 ? "flex" : "none";
   }
 
+  // Один виджет с плохими данными/крайним случаем не должен рушить остальные. Раньше
+  // def.render() вызывался без защиты и в addWidget(), и в rerenderAll() -- если ОДИН
+  // виджет бросал исключение при смене периода, весь forEach в rerenderAll() обрывался, и
+  // ВСЕ виджеты ПОСЛЕ сломавшегося в списке `placed` оставались со старым (не обновлённым)
+  // содержимым -- симптом "борд не отображается после смены диапазона, помогает только
+  // удалить и перетащить заново" (Дима, 2026-08-18). Единая точка защиты -- любой сбой
+  // рендера превращается в понятный плейсхолдер с кнопкой "⟳ обновить" вместо тихого
+  // застревания на старых данных, и не мешает соседним виджетам обновиться.
+  function safeRenderBody(def, model, ctx) {
+    try {
+      return def.render(model, ctx);
+    } catch (e) {
+      console.error('Ошибка рендера виджета «' + def.title + '»:', e);
+      var box = document.createElement("div");
+      var msg = document.createElement("div");
+      msg.style.cssText = "color:var(--crit);font-size:12.5px;margin-bottom:8px";
+      msg.textContent = "⚠ Не удалось отобразить: " + (e && e.message ? e.message : String(e));
+      var hint = document.createElement("div");
+      hint.style.cssText = "font-size:11.5px;color:var(--muted)";
+      hint.textContent = "Нажми «⟳» в шапке карточки, чтобы попробовать снова.";
+      box.appendChild(msg);
+      box.appendChild(hint);
+      return box;
+    }
+  }
+
   function renderInstance(widgetId) {
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return null;
     var state = root.OFDState;
     if (!state || !state.model) return null;
-    var body = def.render(state.model, state.ctx);
+    var body = safeRenderBody(def, state.model, state.ctx);
     var node = root.OFDWidgets.widgetShell(widgetId, def.title, def.type, def.scope, body, def.exportable ? '<button class="export-btn">Экспорт CSV / Excel</button>' : "");
     if (def.exportable) {
       var btn = node.querySelector(".export-btn");
@@ -87,6 +113,30 @@
     });
   }
 
+  // Пересобирает ТОЛЬКО .widget-body одной карточки — общий путь для rerenderAll() (все
+  // карточки разом) и ручной кнопки "⟳" на конкретной (см. Дима, 2026-08-18 — просил
+  // кнопку рефреша борда как раз для случаев, когда что-то отобразилось не так).
+  function renderWidgetBody(widgetNode, widgetId) {
+    var def = root.OFDWidgets.WIDGETS[widgetId];
+    if (!def) return;
+    var state = root.OFDState;
+    if (!state || !state.model) return;
+    var bodyEl = widgetNode.querySelector(".widget-body");
+    if (!bodyEl) return;
+    var fresh = safeRenderBody(def, state.model, state.ctx);
+    bodyEl.innerHTML = "";
+    bodyEl.appendChild(fresh instanceof Node ? fresh : document.createTextNode(String(fresh)));
+  }
+
+  // Кнопка "⟳" в шапке — принудительный ручной рефреш конкретной карточки в любой момент,
+  // не только при ошибке (пользователь сам решает, когда что-то выглядит не так).
+  function wireRefresh(widgetNode, widgetId) {
+    var btn = widgetNode.querySelector(".refresh-widget-btn");
+    btn.addEventListener("click", function () {
+      renderWidgetBody(widgetNode, widgetId);
+    });
+  }
+
   function addWidget(widgetId, x, y, w, h) {
     if (!root.OFDState || !root.OFDState.model) return;
     var def = root.OFDWidgets.WIDGETS[widgetId];
@@ -105,6 +155,7 @@
     var instanceId = "w" + Math.random().toString(36).slice(2, 9);
     itemEl.dataset.instanceId = instanceId;
     wireRemove(widgetNode);
+    wireRefresh(widgetNode, widgetId);
     placed.push({ instanceId: instanceId, widgetId: widgetId });
     toggleEmpty();
   }
@@ -121,15 +172,9 @@
     placed.forEach(function (p) {
       var itemEl = canvas.querySelector('[data-instance-id="' + p.instanceId + '"]');
       if (!itemEl) return;
-      var def = root.OFDWidgets.WIDGETS[p.widgetId];
-      if (!def) return;
-      var state = root.OFDState;
-      if (!state || !state.model) return;
-      var bodyEl = itemEl.querySelector(".widget-body");
-      if (!bodyEl) return;
-      var fresh = def.render(state.model, state.ctx);
-      bodyEl.innerHTML = "";
-      bodyEl.appendChild(fresh instanceof Node ? fresh : document.createTextNode(String(fresh)));
+      // renderWidgetBody сама оборачивает def.render() в safeRenderBody -- сбой ОДНОГО
+      // виджета тут не мешает forEach дойти до остальных (Дима, 2026-08-18, см. safeRenderBody).
+      renderWidgetBody(itemEl, p.widgetId);
     });
   }
 

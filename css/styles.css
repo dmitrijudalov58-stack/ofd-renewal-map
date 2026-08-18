@@ -191,11 +191,12 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   white-space: nowrap;
 }
 .wchip.period { border-color: var(--brand); color: var(--brand); }
-.remove-btn {
+.remove-btn, .refresh-widget-btn {
   border: none; background: transparent; color: var(--muted); cursor: pointer; font-size: 16px;
   line-height: 1; padding: 2px 5px; border-radius: 6px;
 }
-.remove-btn:hover { background: var(--paper); color: var(--ink); }
+.remove-btn:hover, .refresh-widget-btn:hover { background: var(--paper); color: var(--ink); }
+.refresh-widget-btn { font-size: 14px; }
 .widget-body { padding: 16px; flex: 1; }
 .widget-foot { padding: 10px 16px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
 .export-btn {
