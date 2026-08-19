@@ -1517,6 +1517,179 @@
       return statBlock(fmtPct(share), "от всех кодов, созданных за период — без клиента на момент выгрузки");
     },
   };
+  // ---------- B5 Расчёты: борды каналов продаж ----------
+  //
+  // Второй заход (2026-08-19): первая версия была фикс. панелью в сайдбаре — Дима
+  // забраковал ("пользоваться неудобно, сделай бордом"). Теперь — обычные виджеты холста,
+  // по одному на каждый из 3 фиксированных каналов (те же строки, что возвращает
+  // classifyChannel/computePartnersByChannel: "Ольга Зибер" / "Лариса Пенигина" /
+  // "Партнёры") — можно перетащить из библиотеки, размножить, убрать как любой борд.
+  // scope:"период" -- берёт период НАПРЯМУЮ из шапки (ctx.periodStart/periodEnd), не свой
+  // локальный — Дима явно просил "дата с-по должна быть общей" для сравнения каналов.
+  var CC_CHANNELS = ["Ольга Зибер", "Лариса Пенигина", "Партнёры"];
+  var CC_OVERRIDE_KEY = "ofd-channel-overrides-v1";
+  var CC_TARIFF_COLORS = ["#3987e5", "#256abf", "#184f95", "#104281", "#0b7a66", "#0e8f79"];
+
+  function ccLoadOverrides() {
+    try { return JSON.parse(localStorage.getItem(CC_OVERRIDE_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  function ccSaveOverrides(map) {
+    try { localStorage.setItem(CC_OVERRIDE_KEY, JSON.stringify(map)); } catch (e) { /* приватный режим и т.п. -- не критично */ }
+  }
+  var ccOverrides = ccLoadOverrides(); // partnerName -> channelName | "" (явно свободен)
+
+  function ccEffectiveChannel(name, autoMap) {
+    if (Object.prototype.hasOwnProperty.call(ccOverrides, name)) return ccOverrides[name];
+    var auto = autoMap.get(name);
+    return CC_CHANNELS.indexOf(auto) !== -1 ? auto : "Партнёры";
+  }
+
+  // Разбивает всех партнёров на {byChannel, free} -- дефолт из авто-классификации,
+  // ручные overrides поверх. Пересчитывается заново при каждом render() (в т.ч. каждой
+  // карточки отдельно) -- дёшево (проход по партнёрам, не по клиентам/кассам).
+  function ccAssignment(model, ctx) {
+    var rows = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
+    var autoMap = new Map(rows.map(function (r) { return [r.name, r.channel]; }));
+    var names = rows.map(function (r) { return r.name; }).sort();
+    var byChannel = {}; CC_CHANNELS.forEach(function (c) { byChannel[c] = []; });
+    var free = [];
+    names.forEach(function (name) {
+      var eff = ccEffectiveChannel(name, autoMap);
+      if (eff === "") { free.push(name); return; }
+      (byChannel[eff] || byChannel["Партнёры"]).push(name);
+    });
+    return { byChannel: byChannel, free: free };
+  }
+
+  function ccPartnerRowHTML(name, checked) {
+    return '<label class="cc-partner-row"><input type="checkbox" data-partner="' + esc(name) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + '</label>';
+  }
+
+  function makeChannelRevenueWidget(channelName) {
+    return {
+      title: "Выручка канала: " + channelName, type: "калькулятор", scope: "период", span: true,
+      render: function (model, ctx) {
+        var asn = ccAssignment(model, ctx);
+        var mine = asn.byChannel[channelName] || [];
+        var free = asn.free;
+
+        var wrap = el('<div></div>');
+        var head = el(
+          '<div class="cc-settings">' +
+          '<button type="button" class="cc-toggle">▸ Партнёры канала (' + mine.length + ')</button>' +
+          '<div class="threshold-row" style="margin-top:8px">' +
+          '<label>чек, ₽ <input type="number" min="0" step="1" class="cc-check"></label>' +
+          '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="cc-churn"></label>' +
+          '</div>' +
+          '<div class="cc-body hidden">' +
+          '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
+          '<div class="cc-list"></div>' +
+          '</div>' +
+          '</div>'
+        );
+        var resultsBox = el('<div class="cc-results"></div>');
+        wrap.appendChild(head);
+        wrap.appendChild(resultsBox);
+
+        var toggleBtn = head.querySelector(".cc-toggle");
+        var bodyEl = head.querySelector(".cc-body");
+        var searchInput = head.querySelector(".cc-search");
+        var listEl = head.querySelector(".cc-list");
+        var checkInput = head.querySelector(".cc-check");
+        var churnInput = head.querySelector(".cc-churn");
+
+        function updateToggleLabel() {
+          var isOpen = !bodyEl.classList.contains("hidden");
+          toggleBtn.textContent = (isOpen ? "▾" : "▸") + " Партнёры канала (" + mine.length + ")";
+        }
+
+        function renderList() {
+          var term = searchInput.value.trim().toLowerCase();
+          var mineF = mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+          var freeF = free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+          var html = "";
+          if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
+          if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
+          if (!mineF.length && !freeF.length) html = '<div class="cc-empty">Ничего не найдено</div>';
+          listEl.innerHTML = html;
+          listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+            cb.addEventListener("change", function () {
+              var name = cb.dataset.partner;
+              ccOverrides[name] = cb.checked ? channelName : "";
+              ccSaveOverrides(ccOverrides);
+              // Свою же карточку двигаем сразу (mine/free -- живые массивы в замыкании
+              // render(), не снимок) -- чекбокс не должен зависать в "не той" группе до
+              // "⟳". ДРУГИЕ карточки каналов на холсте (если стоят) сами не
+              // синхронизируются -- сознательно, без auto-broadcast между виджетами, как и
+              // весь остальной инструмент: пересчёт по явной команде "⟳", не за спиной у Димы.
+              var mineIdx = mine.indexOf(name), freeIdx = free.indexOf(name);
+              if (cb.checked) {
+                if (freeIdx !== -1) free.splice(freeIdx, 1);
+                if (mineIdx === -1) mine.push(name);
+              } else {
+                if (mineIdx !== -1) mine.splice(mineIdx, 1);
+                if (freeIdx === -1) free.push(name);
+              }
+              updateToggleLabel();
+              renderList();
+              renderResults();
+            });
+          });
+        }
+
+        toggleBtn.addEventListener("click", function () {
+          bodyEl.classList.toggle("hidden");
+          updateToggleLabel();
+          if (!bodyEl.classList.contains("hidden")) renderList();
+        });
+        searchInput.addEventListener("input", renderList);
+
+        function renderResults() {
+          var check = parseFloat(checkInput.value) || 0;
+          var churn = parseFloat(churnInput.value) || 0;
+          var from = ctx.periodStart, to = ctx.periodEnd;
+
+          if (!mine.length) {
+            resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">В канале нет партнёров — раскрой список выше и добавь.</div>';
+            return;
+          }
+          var set = new Set(mine);
+          var kassas = ctx.M.computeChannelForecastKassas(model, set, from, to);
+          var churnedCount = ctx.M.computeChannelChurnKassas(model, set, from, to, ctx.asOf);
+
+          var byTariff = new Map();
+          kassas.forEach(function (k) {
+            var t = k.tariff || "—";
+            byTariff.set(t, (byTariff.get(t) || 0) + 1);
+          });
+          var tariffRows = Array.from(byTariff.entries()).sort(function (a, b) { return b[1] - a[1]; })
+            .map(function (e, i) { return { label: e[0], value: e[1], color: CC_TARIFF_COLORS[i % CC_TARIFF_COLORS.length] }; });
+
+          var revenue = kassas.length * check * (1 - churn / 100);
+          var lostRevenue = churnedCount * check;
+
+          var html = "";
+          html += '<div class="cc-metric">' + statBlock(fmtNum(kassas.length), "Касс к продлению") + '</div>';
+          if (tariffRows.length) {
+            html += '<div class="cc-metric">' + barList(tariffRows, { caption: "разбивка по тарифам среди найденных касс" }) + '</div>';
+          }
+          html += '<div class="cc-metric"><div class="stat-value" style="color:var(--good)">' + fmtNum(Math.round(revenue)) + ' ₽</div><div class="stat-label">Прогноз выручки за период</div></div>';
+          html += '<div class="cc-metric"><div class="stat-value" style="color:var(--crit)">' + fmtNum(churnedCount) + ' касс</div><div class="stat-label">Отток за период — потеряно ≈ ' + fmtNum(Math.round(lostRevenue)) + ' ₽</div></div>';
+          resultsBox.innerHTML = html;
+        }
+
+        checkInput.addEventListener("input", renderResults);
+        churnInput.addEventListener("input", renderResults);
+        renderResults();
+        return wrap;
+      },
+    };
+  }
+
+  WIDGETS["b5-revenue-olya"] = makeChannelRevenueWidget("Ольга Зибер");
+  WIDGETS["b5-revenue-larisa"] = makeChannelRevenueWidget("Лариса Пенигина");
+  WIDGETS["b5-revenue-partners"] = makeChannelRevenueWidget("Партнёры");
+
   var api = { WIDGETS: WIDGETS, widgetShell: widgetShell, fmtNum: fmtNum, fmtDate: fmtDate };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDWidgets = api;

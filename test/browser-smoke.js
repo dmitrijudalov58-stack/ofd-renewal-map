@@ -209,26 +209,23 @@ async function main() {
   console.log("после rerenderAll b1-active -- настоящий DOM (не сырой HTML текстом):", hasRealStatValue && !hasRawHtmlAsText ? "OK" : "FAIL");
   if (!hasRealStatValue || hasRawHtmlAsText) ok = false;
 
-  // 9) Панель «Каналы продаж — выручка» (левый сайдбар, фикс. блок, НЕ виджет холста).
-  if (!win.OFDChannelCalc) { console.error("OFDChannelCalc не загрузился"); ok = false; }
+  // 9) Борды каналов продаж (B5) -- обычные виджеты холста (не сайдбар-панель, снесённая
+  // 2026-08-19 по фидбэку Димы "неудобно"). Ставим 2 из 3 (Оля Зибер, Партнёры), проверяем
+  // список партнёров + override в localStorage + перемещение между карточками + порядок
+  // метрик (кассы -> тарифы -> деньги -> отток, п.9 требования Димы).
   win.localStorage.removeItem("ofd-channel-overrides-v1");
-  win.OFDChannelCalc.init(model, win.OFDState.ctx);
-  const ccMount = win.document.getElementById("channelCalc");
-  const ccBlocks = Array.from(ccMount.querySelectorAll(".cc-channel"));
-  console.log("cc: 3 канала построены:", ccBlocks.length === 3 ? "OK" : "FAIL", ccBlocks.length);
-  if (ccBlocks.length !== 3) ok = false;
+  // Все 3 борда уже на холсте -- цикл п.1 добавил КАЖДЫЙ id из WIDGETS, включая эти три.
+  const olyaNode = win.document.querySelector('[data-widget-id="b5-revenue-olya"]');
+  const partnersNode = win.document.querySelector('[data-widget-id="b5-revenue-partners"]');
 
-  function ccBlockByName(name) { return ccBlocks.find((b) => b.querySelector(".cc-name").textContent === name); }
-  const olyaBlock = ccBlockByName("Ольга Зибер");
-  const partnersBlock = ccBlockByName("Партнёры");
-  const larisaBlock = ccBlockByName("Лариса Пенигина");
-  olyaBlock.querySelector(".cc-head").dispatchEvent(new win.Event("click", { bubbles: true }));
-  const olyaRows = olyaBlock.querySelectorAll(".cc-partner-row");
+  olyaNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const olyaRows = olyaNode.querySelectorAll(".cc-partner-row");
   console.log("cc: список партнёров канала непустой:", olyaRows.length > 0 ? "OK" : "FAIL", olyaRows.length);
   if (olyaRows.length === 0) ok = false;
 
-  // снимаем первого партнёра "Ольги Зибер" -- он должен уйти в "свободные" у "Партнёров"
-  const firstCb = olyaBlock.querySelector('.cc-partner-row input[type="checkbox"]');
+  // снимаем первого партнёра "Ольги Зибер" -- проверяем и localStorage, и что своя же
+  // карточка сразу переносит его в "Свободные" (не ждёт "⟳")
+  const firstCb = olyaNode.querySelector('.cc-partner-row input[type="checkbox"]');
   const movedName = firstCb.dataset.partner;
   firstCb.checked = false;
   firstCb.dispatchEvent(new win.Event("change", { bubbles: true }));
@@ -237,32 +234,45 @@ async function main() {
   console.log("cc: снятие партнёра пишет override в localStorage:", overrideWritten ? "OK" : "FAIL");
   if (!overrideWritten) ok = false;
 
-  partnersBlock.querySelector(".cc-head").dispatchEvent(new win.Event("click", { bubbles: true }));
-  const freedCb = Array.from(partnersBlock.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === movedName);
-  console.log("cc: снятый партнёр появился свободным в другом канале:", freedCb && !freedCb.checked ? "OK" : "FAIL");
+  const stillCheckedInOlya = Array.from(olyaNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === movedName && cb.checked);
+  console.log("cc: своя карточка сразу переносит партнёра в «Свободные» (без ⟳):", !stillCheckedInOlya ? "OK" : "FAIL");
+  if (stillCheckedInOlya) ok = false;
+
+  // другой борд ("Партнёры") синхронизируется через явный "⟳" -- не сам по себе
+  partnersNode.querySelector(".refresh-widget-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+  partnersNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const freedCb = Array.from(partnersNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === movedName);
+  console.log("cc: снятый партнёр появился свободным в другом борде после ⟳:", freedCb && !freedCb.checked ? "OK" : "FAIL");
   if (!freedCb || freedCb.checked) ok = false;
 
   // поиск фильтрует список
-  const beforeSearch = partnersBlock.querySelectorAll(".cc-partner-row").length;
-  partnersBlock.querySelector(".cc-search").value = "zzz-нет-такого-партнёра-zzz";
-  partnersBlock.querySelector(".cc-search").dispatchEvent(new win.Event("input", { bubbles: true }));
-  const afterSearch = partnersBlock.querySelectorAll(".cc-partner-row").length;
+  const beforeSearch = partnersNode.querySelectorAll(".cc-partner-row").length;
+  partnersNode.querySelector(".cc-search").value = "zzz-нет-такого-партнёра-zzz";
+  partnersNode.querySelector(".cc-search").dispatchEvent(new win.Event("input", { bubbles: true }));
+  const afterSearch = partnersNode.querySelectorAll(".cc-partner-row").length;
   console.log("cc: поиск фильтрует список:", beforeSearch > 0 && afterSearch === 0 ? "OK" : "FAIL", beforeSearch, "->", afterSearch);
   if (!(beforeSearch > 0 && afterSearch === 0)) ok = false;
 
-  // расчёт выручки у нетронутого канала (Лариса) -- сверка с ручным вызовом той же формулы
-  larisaBlock.querySelector(".cc-check").value = "1000";
-  larisaBlock.querySelector(".cc-check").dispatchEvent(new win.Event("input", { bubbles: true }));
-  const periodFrom = new Date(ccMount.querySelector(".cc-from").value + "T00:00:00");
-  const periodTo = new Date(ccMount.querySelector(".cc-to").value + "T23:59:59");
-  const larisaRowsAuto = win.OFDMetrics.computePartnersByChannel(model, win.OFDState.ctx.asOf, { strict: win.OFDState.ctx.strict })
-    .filter((r) => r.channel === "Лариса Пенигина").map((r) => r.name);
-  const expectedKassas = win.OFDMetrics.computeRevenueForecastKassas(model, new Set(larisaRowsAuto), periodFrom, periodTo);
-  const revenueText = larisaBlock.querySelector(".cc-revenue").textContent;
-  const shownKassas = /·\s*([\d\s]+)\s*касс/.exec(revenueText);
-  const shownCount = shownKassas ? parseInt(shownKassas[1].replace(/\s/g, ""), 10) : null;
-  console.log("cc: расчёт выручки сходится с ручной сверкой:", shownCount === expectedKassas ? "OK" : "FAIL", shownCount, "vs", expectedKassas);
-  if (shownCount !== expectedKassas) ok = false;
+  // порядок и состав метрик: кассы -> тарифы (цветной барчарт) -> деньги -> отток
+  olyaNode.querySelector(".cc-check").value = "1000";
+  olyaNode.querySelector(".cc-check").dispatchEvent(new win.Event("input", { bubbles: true }));
+  const ccMetrics = olyaNode.querySelectorAll(".cc-metric");
+  console.log("cc: 4 блока метрик (кассы/тарифы/деньги/отток):", ccMetrics.length === 4 ? "OK" : "FAIL", ccMetrics.length);
+  if (ccMetrics.length !== 4) ok = false;
+  const kassasLabelFirst = ccMetrics.length && /Касс к продлению/.test(ccMetrics[0].textContent);
+  const hasTariffChart = ccMetrics.length > 1 && ccMetrics[1].querySelector(".chart-svg") != null;
+  const revenueThird = ccMetrics.length > 2 && /Прогноз выручки/.test(ccMetrics[2].textContent);
+  const churnFourth = ccMetrics.length > 3 && /Отток за период/.test(ccMetrics[3].textContent);
+  console.log("cc: порядок метрик кассы->тарифы->деньги->отток:", kassasLabelFirst && hasTariffChart && revenueThird && churnFourth ? "OK" : "FAIL");
+  if (!(kassasLabelFirst && hasTariffChart && revenueThird && churnFourth)) ok = false;
+
+  // независимая сверка числа касс к продлению (после снятия partnerName из Оли Зибер)
+  const olyaRowsAuto = win.OFDMetrics.computePartnersByChannel(model, win.OFDState.ctx.asOf, { strict: win.OFDState.ctx.strict })
+    .filter((r) => r.channel === "Ольга Зибер" && r.name !== movedName).map((r) => r.name);
+  const expectedKassas = win.OFDMetrics.computeChannelForecastKassas(model, new Set(olyaRowsAuto), win.OFDState.ctx.periodStart, win.OFDState.ctx.periodEnd).length;
+  const shownKassas = parseInt((ccMetrics[0].querySelector(".stat-value").textContent || "").replace(/\s/g, ""), 10);
+  console.log("cc: расчёт касс к продлению сходится с ручной сверкой:", shownKassas === expectedKassas ? "OK" : "FAIL", shownKassas, "vs", expectedKassas);
+  if (shownKassas !== expectedKassas) ok = false;
 
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;

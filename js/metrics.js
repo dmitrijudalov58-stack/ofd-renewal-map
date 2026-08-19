@@ -985,18 +985,31 @@
     return createdTotal ? createdReserve / createdTotal : 0;
   }
 
-  // Калькулятор потенциальной выручки (B5) -- сколько касс должно продлиться в периоде
-  // у клиентов заданного набора партнёров ("канал продаж"). Партнёр -- партнёр КЛИЕНТА-
-  // владельца (c.partner), та же логика, что в computePartners (см. её комментарий) --
-  // не собственное поле кассы. Весь потенциал периода, БЕЗ вычета уже случившегося оттока --
-  // % оттока закладывает сам пользователь калькулятора как отдельную ручную поправку
-  // (см. tmp/plans/2026-08-19-revenue-calculator.md).
-  function computeRevenueForecastKassas(model, partnerSet, periodStart, periodEnd) {
+  // Каналы продаж — калькулятор выручки (B5). Партнёр -- партнёр КЛИЕНТА-владельца
+  // (c.partner), та же логика, что в computePartners (см. её комментарий) -- не
+  // собственное поле кассы. computeChannelForecastKassas -- весь потенциал периода
+  // (кассы канала, у которых дата окончания попадает в период), БЕЗ вычета уже
+  // случившегося оттока -- % оттока закладывает сам пользователь как ручную поправку.
+  // Возвращает массив (не просто count) -- виджету нужна разбивка по тарифам.
+  function computeChannelForecastKassas(model, partnerSet, periodStart, periodEnd) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (!partnerSet.has(c.partner || "—")) return;
+      c.kassas.forEach(function (k) {
+        if (inRange(k.overallEnd, periodStart, periodEnd)) out.push({ rnm: k.rnm, tariff: k.tariff, overallEnd: k.overallEnd });
+      });
+    });
+    return out;
+  }
+
+  // Отток касс канала за тот же период -- сколько из потенциала УЖЕ подтверждённо
+  // отвалилось (kassaChurnStatus, та же формула 30/31 дней, что и везде в инструменте).
+  function computeChannelChurnKassas(model, partnerSet, periodStart, periodEnd, asOf) {
     var count = 0;
     model.clients.forEach(function (c) {
       if (!partnerSet.has(c.partner || "—")) return;
       c.kassas.forEach(function (k) {
-        if (inRange(k.overallEnd, periodStart, periodEnd)) count++;
+        if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd) && kassaChurnStatus(k, asOf) === "churned") count++;
       });
     });
     return count;
@@ -1041,7 +1054,8 @@
     monthResolved: monthResolved,
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
-    computeRevenueForecastKassas: computeRevenueForecastKassas,
+    computeChannelForecastKassas: computeChannelForecastKassas,
+    computeChannelChurnKassas: computeChannelChurnKassas,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,

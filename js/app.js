@@ -239,7 +239,6 @@
         updateStrictButton();
 
         window.OFDState.ctx = currentCtx();
-        window.OFDChannelCalc.init(model, window.OFDState.ctx);
 
         updateAsofStamp(asOf);
         updateFreshnessBanner();
@@ -287,7 +286,6 @@
     asOfInput.value = periodEndInput.value;
     updateAsofStamp(asOf);
     window.OFDState.ctx = currentCtx();
-    window.OFDChannelCalc.refresh(window.OFDState.model, window.OFDState.ctx);
     updateFreshnessBanner();
     window.OFDCanvas.rerenderAll();
   });
@@ -302,7 +300,6 @@
     var asOf = new Date(asOfInput.value + "T23:59:59");
     window.OFDState.asOf = asOf;
     window.OFDState.ctx = currentCtx();
-    window.OFDChannelCalc.refresh(window.OFDState.model, window.OFDState.ctx);
     updateAsofStamp(asOf);
     updateFreshnessBanner();
     window.OFDCanvas.rerenderAll();
@@ -320,7 +317,6 @@
     window.OFDState.strict = !window.OFDState.strict;
     window.OFDState.model = window.OFDMetrics.buildModel(window.OFDState.rows, { strict: window.OFDState.strict });
     window.OFDState.ctx = currentCtx();
-    window.OFDChannelCalc.refresh(window.OFDState.model, window.OFDState.ctx);
     updateStrictButton();
     setStatus(window.OFDWidgets.fmtNum(window.OFDState.rows.length) + " строк · " + window.OFDWidgets.fmtNum(window.OFDState.model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(window.OFDState.model.kassas.size) + " касс");
     window.OFDCanvas.rerenderAll();
