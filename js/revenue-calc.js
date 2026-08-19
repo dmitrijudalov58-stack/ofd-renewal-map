@@ -199,7 +199,6 @@
   }
 
   function init(model, ctx) {
-    if (!built) buildShell();
     if (!built) return; // markup ещё не вставлен в index.html -- защита от молчаливого краша
     lastModel = model; lastCtx = ctx;
     if (!fromInput.value) fromInput.value = fmtInputDate(ctx.periodStart);
@@ -215,6 +214,14 @@
     var day = String(d.getDate()).padStart(2, "0");
     return d.getFullYear() + "-" + m + "-" + day;
   }
+
+  // Панель строится СРАЗУ при загрузке страницы, не ждёт файл -- иначе до загрузки XLSX
+  // виден только заголовок "Каналы продаж — выручка" и пустота под ним (найдено Димой на
+  // скриншоте, 2026-08-19: путал с "раздел не появился"). Заголовки трёх каналов + поля
+  // чек/%оттока/период должны быть на виду сразу, как и библиотека виджетов слева -- только
+  // счётчики/суммы дозаполняются позже через init(model, ctx) после загрузки файла. Скрипт
+  // подключён в конце <body>, разметка #channelCalc уже распарсена к этому моменту.
+  buildShell();
 
   root.OFDChannelCalc = { init: init, refresh: init };
 })(typeof window !== "undefined" ? window : globalThis);
