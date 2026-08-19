@@ -136,6 +136,37 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; white-space: nowrap;
 }
 
+/* ---------- каналы продаж: калькулятор выручки (левый сайдбар, фикс. панель) ---------- */
+.channel-calc { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.cc-period { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
+.cc-period label { display: flex; align-items: center; gap: 4px; }
+.cc-period input[type="date"] { font-size: 11px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--card-bg); color: var(--ink); }
+.cc-total { font-size: 12.5px; font-weight: 700; margin-bottom: 10px; }
+.cc-channel { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; overflow: hidden; }
+.cc-head {
+  width: 100%; display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: none;
+  border: none; cursor: pointer; text-align: left; font: inherit; color: var(--ink);
+}
+.cc-head:hover { background: var(--paper); }
+.cc-arrow { color: var(--brand); font-size: 10px; width: 8px; }
+.cc-name { font-size: 12.5px; font-weight: 700; }
+.cc-count { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.cc-fields { display: flex; gap: 8px; padding: 0 10px 6px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.cc-fields label { display: flex; align-items: center; gap: 4px; }
+.cc-fields input { width: 62px; font-size: 11px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--card-bg); color: var(--ink); }
+.cc-revenue { padding: 0 10px 8px; font-size: 12px; font-weight: 600; color: var(--brand); min-height: 16px; }
+.cc-body { padding: 0 10px 10px; border-top: 1px solid var(--line); }
+.cc-body.hidden { display: none; }
+.cc-search {
+  width: 100%; box-sizing: border-box; font-size: 11.5px; padding: 5px 8px; margin-top: 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card-bg); color: var(--ink);
+}
+.cc-list { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+.cc-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 3px; }
+.cc-partner-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; padding: 3px 2px; border-radius: 6px; }
+.cc-partner-row:hover { background: var(--paper); }
+.cc-empty { font-size: 11.5px; color: var(--muted); padding: 6px 2px; }
+
 /* ---------- canvas ---------- */
 /* колонка тянется на всю доступную высоту -- #canvas внутри тоже, свободная зона сброса
    не ограничена высотой контента (п.1, 2026-08-11: раньше drop мимо контента не долетал) */
