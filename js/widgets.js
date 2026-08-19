@@ -10,6 +10,12 @@
 
   function fmtNum(n) { return (n || 0).toLocaleString("ru-RU"); }
   function fmtDate(d) { return d instanceof Date ? d.toLocaleDateString("ru-RU") : "—"; }
+  function isoDateForInput(d) {
+    if (!(d instanceof Date)) return "";
+    var m = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    return d.getFullYear() + "-" + m + "-" + day;
+  }
   function fmtPct(x) { return (x * 100).toFixed(1) + "%"; }
   function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
   function el(html) { var t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; }
@@ -1509,6 +1515,130 @@
     render: function (model, ctx) {
       var share = ctx.M.computeReserveShare(model, ctx.periodStart, ctx.periodEnd);
       return statBlock(fmtPct(share), "от всех кодов, созданных за период — без клиента на момент выгрузки");
+    },
+  };
+
+  // ---------- B5 Расчёты ----------
+  //
+  // Калькулятор потенциальной выручки: один борд на холсте = один канал продаж (набор
+  // партнёров). Состояние (партнёры/чек/%оттока/период) живёт в module-level Map по
+  // instanceId (см. tmp/plans/2026-08-19-revenue-calculator.md) -- переживает rerenderAll,
+  // в отличие от обычных виджетов, которые пересоздают DOM-состояние с нуля при каждой
+  // смене периода/as-of сверху (для калькулятора это было бы неприемлемо -- слишком дорогая
+  // настройка канала, чтобы терять её случайно).
+  var revenueCalcState = new Map(); // instanceId -> {partners:Set<string>, avgCheck:number, churnPct:number, from:Date|null, to:Date|null}
+  // Взаимоисключение: партнёр может быть выбран только в ОДНОМ калькуляторе одновременно --
+  // как только его берут в канал А, он пропадает из списка выбора у всех остальных.
+  var revenueCalcOwnership = new Map(); // partnerName -> instanceId владельца
+  // Синхронизация между несколькими живыми калькуляторами на холсте -- callback-реестр,
+  // не DOM CustomEvent: каждый инстанс перезаписывает свою запись при КАЖДОМ render() (в
+  // т.ч. при rerenderAll), поэтому здесь никогда не копятся мёртвые подписки на
+  // удалённых/пересозданных узлах -- в отличие от document.addEventListener, который
+  // пришлось бы вручную снимать при каждой подмене .widget-body (иначе листенеры растут
+  // без ограничения при каждой смене периода).
+  var revenueCalcSyncers = new Map(); // instanceId -> function() { перерисовать список партнёров этого инстанса }
+  function revenueCalcBroadcast(exceptInstanceId) {
+    revenueCalcSyncers.forEach(function (fn, id) {
+      if (id !== exceptInstanceId) fn();
+    });
+  }
+
+  WIDGETS["b5-revenue-calc"] = {
+    title: "Калькулятор потенциальной выручки", type: "калькулятор", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var state = revenueCalcState.get(instanceId);
+      if (!state) {
+        state = { partners: new Set(), avgCheck: 0, churnPct: 0, from: null, to: null };
+        revenueCalcState.set(instanceId, state);
+      }
+      var allPartners = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
+
+      var wrap = el('<div></div>');
+      var hint = el('<div class="stat-label" style="margin-bottom:6px">Один калькулятор = один канал продаж. Партнёр, занятый в другом калькуляторе на холсте, недоступен здесь.</div>');
+      var partnersBox = el('<div class="threshold-row" style="flex-wrap:wrap;row-gap:6px"></div>');
+      var fieldsRow = el(
+        '<div class="threshold-row" style="margin-top:10px">' +
+        '<label>Средний чек, ₽ <input type="number" min="0" step="1" class="rc-check" value="' + (state.avgCheck || "") + '"></label>' +
+        '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="rc-churn" value="' + (state.churnPct || 0) + '"></label>' +
+        '<label>с <input type="date" class="rc-from" value="' + isoDateForInput(state.from) + '"></label>' +
+        '<label>по <input type="date" class="rc-to" value="' + isoDateForInput(state.to) + '"></label>' +
+        '</div>'
+      );
+      var resultBox = el('<div style="margin-top:10px"></div>');
+      wrap.appendChild(hint);
+      wrap.appendChild(partnersBox);
+      wrap.appendChild(fieldsRow);
+      wrap.appendChild(resultBox);
+
+      function renderPartnerCheckboxes() {
+        partnersBox.innerHTML = "";
+        allPartners.forEach(function (name) {
+          var ownerId = revenueCalcOwnership.get(name);
+          var mine = state.partners.has(name);
+          var disabled = !!ownerId && ownerId !== instanceId;
+          var lab = document.createElement("label");
+          lab.style.cssText = "font-weight:400;white-space:nowrap" + (disabled ? ";opacity:.4" : "");
+          if (disabled) lab.title = "занят в другом калькуляторе на холсте";
+          var cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = mine;
+          cb.disabled = disabled;
+          cb.addEventListener("change", function () {
+            if (cb.checked) {
+              state.partners.add(name);
+              revenueCalcOwnership.set(name, instanceId);
+            } else {
+              state.partners.delete(name);
+              revenueCalcOwnership.delete(name);
+            }
+            renderResult();
+            revenueCalcBroadcast(instanceId);
+          });
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(" " + name));
+          partnersBox.appendChild(lab);
+        });
+      }
+
+      function renderResult() {
+        var check = parseFloat(fieldsRow.querySelector(".rc-check").value) || 0;
+        var churn = parseFloat(fieldsRow.querySelector(".rc-churn").value) || 0;
+        state.avgCheck = check;
+        state.churnPct = churn;
+        var fromVal = fieldsRow.querySelector(".rc-from").value;
+        var toVal = fieldsRow.querySelector(".rc-to").value;
+        state.from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+        state.to = toVal ? new Date(toVal + "T23:59:59") : null;
+        if (!state.partners.size || !state.from || !state.to || state.from > state.to) {
+          resultBox.innerHTML = '<div class="stat-label">Выбери партнёров канала, средний чек и период «с — по».</div>';
+          return;
+        }
+        var kassaCount = ctx.M.computeRevenueForecastKassas(model, state.partners, state.from, state.to);
+        var revenue = kassaCount * check * (1 - churn / 100);
+        resultBox.innerHTML =
+          statBlock(fmtNum(Math.round(revenue)) + " ₽", "потенциальная выручка за период") +
+          '<div class="stat-label" style="margin-top:6px">' + fmtNum(kassaCount) + ' касс к продлению × ' + fmtNum(check) + ' ₽' + (churn ? ' × (1 − ' + churn + '%)' : '') + '</div>';
+      }
+
+      fieldsRow.addEventListener("input", renderResult);
+      fieldsRow.addEventListener("change", renderResult);
+      renderPartnerCheckboxes();
+      renderResult();
+      revenueCalcSyncers.set(instanceId, renderPartnerCheckboxes);
+      return wrap;
+    },
+    // Освобождает партнёров этого канала при удалении карточки с холста -- иначе они
+    // остались бы "заняты" навсегда, недоступными ни для одного другого калькулятора.
+    onRemove: function (instanceId) {
+      var state = revenueCalcState.get(instanceId);
+      if (state) {
+        state.partners.forEach(function (name) {
+          if (revenueCalcOwnership.get(name) === instanceId) revenueCalcOwnership.delete(name);
+        });
+      }
+      revenueCalcState.delete(instanceId);
+      revenueCalcSyncers.delete(instanceId);
+      revenueCalcBroadcast(instanceId);
     },
   };
 

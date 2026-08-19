@@ -985,6 +985,23 @@
     return createdTotal ? createdReserve / createdTotal : 0;
   }
 
+  // Калькулятор потенциальной выручки (B5) -- сколько касс должно продлиться в периоде
+  // у клиентов заданного набора партнёров ("канал продаж"). Партнёр -- партнёр КЛИЕНТА-
+  // владельца (c.partner), та же логика, что в computePartners (см. её комментарий) --
+  // не собственное поле кассы. Весь потенциал периода, БЕЗ вычета уже случившегося оттока --
+  // % оттока закладывает сам пользователь калькулятора как отдельную ручную поправку
+  // (см. tmp/plans/2026-08-19-revenue-calculator.md).
+  function computeRevenueForecastKassas(model, partnerSet, periodStart, periodEnd) {
+    var count = 0;
+    model.clients.forEach(function (c) {
+      if (!partnerSet.has(c.partner || "—")) return;
+      c.kassas.forEach(function (k) {
+        if (inRange(k.overallEnd, periodStart, periodEnd)) count++;
+      });
+    });
+    return count;
+  }
+
   var api = {
     buildModel: buildModel,
     computeFlow: computeFlow,
@@ -1024,6 +1041,7 @@
     monthResolved: monthResolved,
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
+    computeRevenueForecastKassas: computeRevenueForecastKassas,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,

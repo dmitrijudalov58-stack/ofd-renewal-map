@@ -48,9 +48,9 @@
   // удалить и перетащить заново" (Дима, 2026-08-18). Единая точка защиты -- любой сбой
   // рендера превращается в понятный плейсхолдер с кнопкой "⟳ обновить" вместо тихого
   // застревания на старых данных, и не мешает соседним виджетам обновиться.
-  function safeRenderBody(def, model, ctx) {
+  function safeRenderBody(def, model, ctx, instanceId) {
     try {
-      return def.render(model, ctx);
+      return def.render(model, ctx, instanceId);
     } catch (e) {
       console.error('Ошибка рендера виджета «' + def.title + '»:', e);
       var box = document.createElement("div");
@@ -66,12 +66,17 @@
     }
   }
 
-  function renderInstance(widgetId) {
+  // instanceId — стабильный идентификатор ЭТОГО размещения виджета на холсте, передаётся
+  // СНАРУЖИ (не генерируется тут), и одинаков при первом рендере (addWidget) и при каждом
+  // повторном (rerenderAll/кнопка "⟳") — виджетам с собственным состоянием, которое должно
+  // пережить смену периода/as-of сверху (например калькулятор выручки — b5-revenue-calc),
+  // нужен per-instance ключ для своей Map, а не общий на все инстансы этого типа виджета.
+  function renderInstance(widgetId, instanceId) {
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return null;
     var state = root.OFDState;
     if (!state || !state.model) return null;
-    var body = safeRenderBody(def, state.model, state.ctx);
+    var body = safeRenderBody(def, state.model, state.ctx, instanceId);
     var node = root.OFDWidgets.widgetShell(widgetId, def.title, def.type, def.scope, body, def.exportable ? '<button class="export-btn">Экспорт CSV / Excel</button>' : "");
     if (def.exportable) {
       var btn = node.querySelector(".export-btn");
@@ -107,6 +112,12 @@
       var itemEl = widgetNode.closest(".grid-stack-item");
       if (!itemEl) return;
       var instanceId = itemEl.dataset.instanceId;
+      // Lifecycle-хук для виджетов со своим внешним состоянием, которое переживает
+      // rerenderAll (например b5-revenue-calc держит занятость партнёров в module-level
+      // Map — без очистки при удалении партнёры остались бы "заняты" навсегда).
+      var widgetId = widgetNode.dataset.widgetId;
+      var def = widgetId ? root.OFDWidgets.WIDGETS[widgetId] : null;
+      if (def && typeof def.onRemove === "function") def.onRemove(instanceId);
       grid.removeWidget(itemEl);
       placed = placed.filter(function (p) { return p.instanceId !== instanceId; });
       toggleEmpty();
@@ -123,7 +134,9 @@
     if (!state || !state.model) return;
     var bodyEl = widgetNode.querySelector(".widget-body");
     if (!bodyEl) return;
-    var fresh = safeRenderBody(def, state.model, state.ctx);
+    var itemEl = widgetNode.closest(".grid-stack-item");
+    var instanceId = itemEl ? itemEl.dataset.instanceId : null;
+    var fresh = safeRenderBody(def, state.model, state.ctx, instanceId);
     // БАГ (найден Димой 2026-08-18): многие def.render() возвращают ГОТОВУЮ HTML-СТРОКУ,
     // не DOM Node (statBlock() и всё, что его использует -- карточки b1-active и т.п.).
     // createTextNode() вставлял такую строку как ЭКРАНИРОВАННЫЙ ТЕКСТ, не как разметку --
@@ -154,7 +167,11 @@
     if (!root.OFDState || !root.OFDState.model) return;
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return;
-    var widgetNode = renderInstance(widgetId);
+    // instanceId генерится ДО первого рендера (не после, как раньше) -- виджетам со своим
+    // per-instance state (b5-revenue-calc) он нужен уже на первом def.render(), не только
+    // на последующих rerenderAll.
+    var instanceId = "w" + Math.random().toString(36).slice(2, 9);
+    var widgetNode = renderInstance(widgetId, instanceId);
     if (!widgetNode) return;
     var size = defaultSizeFor(def);
     var gridItem = buildGridItem(widgetNode);
@@ -165,7 +182,6 @@
     if (x != null) opts.x = x;
     if (y != null) opts.y = y;
     var itemEl = grid.addWidget(gridItem, opts);
-    var instanceId = "w" + Math.random().toString(36).slice(2, 9);
     itemEl.dataset.instanceId = instanceId;
     wireRemove(widgetNode);
     wireRefresh(widgetNode, widgetId);

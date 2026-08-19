@@ -195,6 +195,55 @@ async function main() {
   console.log("после rerenderAll b1-active -- настоящий DOM (не сырой HTML текстом):", hasRealStatValue && !hasRawHtmlAsText ? "OK" : "FAIL");
   if (!hasRealStatValue || hasRawHtmlAsText) ok = false;
 
+  // 9) B5 калькулятор потенциальной выручки: взаимоисключение партнёров между двумя
+  // инстансами на холсте, персистентность состояния через rerenderAll (instanceId-based
+  // per-instance state, см. dnd.js/widgets.js, 2026-08-19), освобождение партнёра при
+  // удалении карточки (def.onRemove-хук).
+  function rcCheckboxFor(node, name) {
+    var labels = node.querySelectorAll('.threshold-row label');
+    for (var i = 0; i < labels.length; i++) {
+      if (labels[i].textContent.trim() === name && labels[i].querySelector('input[type="checkbox"]')) {
+        return labels[i].querySelector("input");
+      }
+    }
+    return null;
+  }
+  const rc1 = win.document.querySelector('[data-widget-id="b5-revenue-calc"]'); // с шага 1
+  win.OFDCanvas.addWidget("b5-revenue-calc");
+  const rcAll = win.document.querySelectorAll('[data-widget-id="b5-revenue-calc"]');
+  const rc2 = rcAll[rcAll.length - 1];
+
+  const rc1Checkboxes = rc1.querySelectorAll('.threshold-row input[type="checkbox"]');
+  const rc1FirstLabel = rc1Checkboxes[0].closest("label");
+  const rc1PartnerName = rc1FirstLabel.textContent.trim();
+  rc1Checkboxes[0].checked = true;
+  rc1Checkboxes[0].dispatchEvent(new win.Event("change", { bubbles: true }));
+
+  const rc2SameCb = rcCheckboxFor(rc2, rc1PartnerName);
+  console.log("b5 взаимоисключение партнёров:", rc2SameCb && rc2SameCb.disabled ? "OK" : "FAIL");
+  if (!rc2SameCb || !rc2SameCb.disabled) ok = false;
+
+  rc1.querySelector(".rc-check").value = "5000";
+  rc1.querySelector(".rc-check").dispatchEvent(new win.Event("input", { bubbles: true }));
+  rc1.querySelector(".rc-from").value = "2025-01-01";
+  rc1.querySelector(".rc-from").dispatchEvent(new win.Event("change", { bubbles: true }));
+  rc1.querySelector(".rc-to").value = "2025-12-31";
+  rc1.querySelector(".rc-to").dispatchEvent(new win.Event("change", { bubbles: true }));
+
+  win.OFDCanvas.rerenderAll();
+  // rc1 -- та же самая ссылка на .widget-узел, что и до rerenderAll: dnd.js подменяет
+  // только .widget-body ВНУТРИ него (см. renderWidgetBody), сам узел не пересоздаётся.
+  const checkPreserved = rc1.querySelector(".rc-check").value === "5000";
+  const partnerCbAfter = rc1.querySelectorAll('.threshold-row input[type="checkbox"]')[0];
+  const partnerPreserved = !!(partnerCbAfter && partnerCbAfter.checked);
+  console.log("b5 состояние переживает rerenderAll:", checkPreserved && partnerPreserved ? "OK" : "FAIL");
+  if (!checkPreserved || !partnerPreserved) ok = false;
+
+  rc1.querySelector(".remove-btn").click();
+  const freedCb = rcCheckboxFor(rc2, rc1PartnerName);
+  console.log("b5 удаление освобождает партнёра:", freedCb && !freedCb.disabled ? "OK" : "FAIL");
+  if (!freedCb || freedCb.disabled) ok = false;
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 
