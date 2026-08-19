@@ -1002,18 +1002,6 @@
     return out;
   }
 
-  // Отток касс канала за тот же период -- сколько из потенциала УЖЕ подтверждённо
-  // отвалилось (kassaChurnStatus, та же формула 30/31 дней, что и везде в инструменте).
-  function computeChannelChurnKassas(model, partnerSet, periodStart, periodEnd, asOf) {
-    var count = 0;
-    model.clients.forEach(function (c) {
-      if (!partnerSet.has(c.partner || "—")) return;
-      c.kassas.forEach(function (k) {
-        if (k.overallEnd && inRange(k.overallEnd, periodStart, periodEnd) && kassaChurnStatus(k, asOf) === "churned") count++;
-      });
-    });
-    return count;
-  }
 
   var api = {
     buildModel: buildModel,
@@ -1055,7 +1043,6 @@
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
     computeChannelForecastKassas: computeChannelForecastKassas,
-    computeChannelChurnKassas: computeChannelChurnKassas,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,

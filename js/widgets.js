@@ -1567,7 +1567,9 @@
 
   function makeChannelRevenueWidget(channelName) {
     return {
-      title: "Выручка канала: " + channelName, type: "калькулятор", scope: "период", span: true,
+      // scope:"as-of" -- у каждого борда СВОЙ период "с-по" (ниже), не общий фильтр шапки:
+      // Дима explicitly хочет сравнивать разные будущие окна на разных каналах одновременно.
+      title: "Выручка канала: " + channelName, type: "калькулятор", scope: "as-of", span: true,
       render: function (model, ctx) {
         var asn = ccAssignment(model, ctx);
         var mine = asn.byChannel[channelName] || [];
@@ -1578,8 +1580,12 @@
           '<div class="cc-settings">' +
           '<button type="button" class="cc-toggle">▸ Партнёры канала (' + mine.length + ')</button>' +
           '<div class="threshold-row" style="margin-top:8px">' +
+          '<label title="Смотрим на будущие продления -- касс, у которых дата окончания попадает в это окно">с <input type="date" class="cc-from"></label>' +
+          '<label>по <input type="date" class="cc-to"></label>' +
+          '</div>' +
+          '<div class="threshold-row" style="margin-top:8px">' +
           '<label>чек, ₽ <input type="number" min="0" step="1" class="cc-check"></label>' +
-          '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="cc-churn"></label>' +
+          '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="cc-churn" placeholder="—"></label>' +
           '</div>' +
           '<div class="cc-body hidden">' +
           '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
@@ -1595,6 +1601,8 @@
         var bodyEl = head.querySelector(".cc-body");
         var searchInput = head.querySelector(".cc-search");
         var listEl = head.querySelector(".cc-list");
+        var fromInput = head.querySelector(".cc-from");
+        var toInput = head.querySelector(".cc-to");
         var checkInput = head.querySelector(".cc-check");
         var churnInput = head.querySelector(".cc-churn");
 
@@ -1646,16 +1654,23 @@
 
         function renderResults() {
           var check = parseFloat(checkInput.value) || 0;
-          var churn = parseFloat(churnInput.value) || 0;
-          var from = ctx.periodStart, to = ctx.periodEnd;
+          var churnRaw = churnInput.value.trim();
+          var hasChurn = churnRaw !== ""; // Дима, 2026-08-19: отток пуст, пока % явно не введён -- 0 и "не задано" разные вещи
+          var churn = hasChurn ? (parseFloat(churnRaw) || 0) : 0;
+          var fromVal = fromInput.value, toVal = toInput.value;
+          var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+          var to = toVal ? new Date(toVal + "T23:59:59") : null;
 
           if (!mine.length) {
             resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">В канале нет партнёров — раскрой список выше и добавь.</div>';
             return;
           }
+          if (!from || !to || from > to) {
+            resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">Укажи период «с — по» (будущие продления), чтобы увидеть прогноз.</div>';
+            return;
+          }
           var set = new Set(mine);
           var kassas = ctx.M.computeChannelForecastKassas(model, set, from, to);
-          var churnedCount = ctx.M.computeChannelChurnKassas(model, set, from, to, ctx.asOf);
 
           var byTariff = new Map();
           kassas.forEach(function (k) {
@@ -1666,7 +1681,6 @@
             .map(function (e, i) { return { label: e[0], value: e[1], color: CC_TARIFF_COLORS[i % CC_TARIFF_COLORS.length] }; });
 
           var revenue = kassas.length * check * (1 - churn / 100);
-          var lostRevenue = churnedCount * check;
 
           var html = "";
           html += '<div class="cc-metric">' + statBlock(fmtNum(kassas.length), "Касс к продлению") + '</div>';
@@ -1674,10 +1688,20 @@
             html += '<div class="cc-metric">' + barList(tariffRows, { caption: "разбивка по тарифам среди найденных касс" }) + '</div>';
           }
           html += '<div class="cc-metric"><div class="stat-value" style="color:var(--good)">' + fmtNum(Math.round(revenue)) + ' ₽</div><div class="stat-label">Прогноз выручки за период</div></div>';
-          html += '<div class="cc-metric"><div class="stat-value" style="color:var(--crit)">' + fmtNum(churnedCount) + ' касс</div><div class="stat-label">Отток за период — потеряно ≈ ' + fmtNum(Math.round(lostRevenue)) + ' ₽</div></div>';
+          // Отток -- прогноз потерь ОТ введённого % (не факт по истории): касс_к_продлению × %.
+          // Пусто, пока % не введён -- см. hasChurn выше.
+          if (hasChurn) {
+            var lostKassas = Math.round(kassas.length * churn / 100);
+            var lostMoney = lostKassas * check;
+            html += '<div class="cc-metric"><div class="stat-value" style="color:var(--crit)">' + fmtNum(lostKassas) + ' касс</div><div class="stat-label">Отток за период — потеряно ≈ ' + fmtNum(Math.round(lostMoney)) + ' ₽</div></div>';
+          } else {
+            html += '<div class="cc-metric"><div class="stat-label">Укажи % оттока выше, чтобы увидеть прогноз потерь.</div></div>';
+          }
           resultsBox.innerHTML = html;
         }
 
+        fromInput.addEventListener("change", renderResults);
+        toInput.addEventListener("change", renderResults);
         checkInput.addEventListener("input", renderResults);
         churnInput.addEventListener("input", renderResults);
         renderResults();
