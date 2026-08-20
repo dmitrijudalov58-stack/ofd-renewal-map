@@ -1537,6 +1537,16 @@
     try { localStorage.setItem(CC_OVERRIDE_KEY, JSON.stringify(map)); } catch (e) { /* приватный режим и т.п. -- не критично */ }
   }
   var ccOverrides = ccLoadOverrides(); // partnerName -> channelName | "" (явно свободен)
+  // Live-sync между бордами каналов на холсте -- их ровно 3 (фиксированный набор, не
+  // произвольное N), поэтому реестр по имени канала, не по instanceId. Каждый render()
+  // перезаписывает свою запись; после ЛЮБОГО изменения ccOverrides зовём refresh() у ВСЕХ
+  // сейчас смонтированных карточек -- Дима держит все 3 борда открытыми одновременно и
+  // ожидает, что снятие партнёра в одном СРАЗУ видно в остальных, без ручного "⟳"
+  // (2026-08-20: "снял галочку с Ларисы, партнёр не появился у Оли и Партнёров").
+  var ccActiveRefreshers = {}; // channelName -> function()
+  function ccBroadcastAssignmentChanged() {
+    Object.keys(ccActiveRefreshers).forEach(function (key) { ccActiveRefreshers[key](); });
+  }
 
   function ccEffectiveChannel(name, autoMap) {
     if (Object.prototype.hasOwnProperty.call(ccOverrides, name)) return ccOverrides[name];
@@ -1611,13 +1621,17 @@
           toggleBtn.textContent = (isOpen ? "▾" : "▸") + " Партнёры канала (" + mine.length + ")";
         }
 
+        // Свободные -- ПЕРВЫМИ (это и есть actionable-список, "кого можно добавить"),
+        // "В канале" -- ниже, справочно (Дима, дословно из ТЗ: "чтобы ИХ [свободных]
+        // выводило наверх списка, они же [ниже] находились те, что за ней уже закреплены" --
+        // раньше был перепутан порядок, свободные оказывались внизу под длинным "В канале").
         function renderList() {
           var term = searchInput.value.trim().toLowerCase();
           var mineF = mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
           var freeF = free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
           var html = "";
-          if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
           if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
+          if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
           if (!mineF.length && !freeF.length) html = '<div class="cc-empty">Ничего не найдено</div>';
           listEl.innerHTML = html;
           listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
@@ -1625,25 +1639,25 @@
               var name = cb.dataset.partner;
               ccOverrides[name] = cb.checked ? channelName : "";
               ccSaveOverrides(ccOverrides);
-              // Свою же карточку двигаем сразу (mine/free -- живые массивы в замыкании
-              // render(), не снимок) -- чекбокс не должен зависать в "не той" группе до
-              // "⟳". ДРУГИЕ карточки каналов на холсте (если стоят) сами не
-              // синхронизируются -- сознательно, без auto-broadcast между виджетами, как и
-              // весь остальной инструмент: пересчёт по явной команде "⟳", не за спиной у Димы.
-              var mineIdx = mine.indexOf(name), freeIdx = free.indexOf(name);
-              if (cb.checked) {
-                if (freeIdx !== -1) free.splice(freeIdx, 1);
-                if (mineIdx === -1) mine.push(name);
-              } else {
-                if (mineIdx !== -1) mine.splice(mineIdx, 1);
-                if (freeIdx === -1) free.push(name);
-              }
-              updateToggleLabel();
-              renderList();
-              renderResults();
+              // Пересчитывают и перерисовывают себя ВСЕ смонтированные борды каналов
+              // сразу (включая этот) -- см. ccBroadcastAssignmentChanged выше.
+              ccBroadcastAssignmentChanged();
             });
           });
         }
+
+        // Полный пересчёт "с нуля" из ccAssignment (не точечная правка mine/free) --
+        // вызывается и на свою же карточку, и на остальные борды каналов через
+        // ccBroadcastAssignmentChanged, единая точка входа для live-sync.
+        function refreshAssignment() {
+          var fresh = ccAssignment(model, ctx);
+          mine = fresh.byChannel[channelName] || [];
+          free = fresh.free;
+          updateToggleLabel();
+          if (!bodyEl.classList.contains("hidden")) renderList();
+          renderResults();
+        }
+        ccActiveRefreshers[channelName] = refreshAssignment;
 
         toggleBtn.addEventListener("click", function () {
           bodyEl.classList.toggle("hidden");

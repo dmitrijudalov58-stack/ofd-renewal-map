@@ -218,13 +218,16 @@ async function main() {
   const olyaNode = win.document.querySelector('[data-widget-id="b5-revenue-olya"]');
   const partnersNode = win.document.querySelector('[data-widget-id="b5-revenue-partners"]');
 
+  // Оба борда открыты ОДНОВРЕМЕННО -- так Дима реально держит их на холсте (2026-08-20:
+  // 3 борда рядом, ожидает live-sync между ними, не ручной "⟳" на каждом по отдельности).
   olyaNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  partnersNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
   const olyaRows = olyaNode.querySelectorAll(".cc-partner-row");
   console.log("cc: список партнёров канала непустой:", olyaRows.length > 0 ? "OK" : "FAIL", olyaRows.length);
   if (olyaRows.length === 0) ok = false;
 
-  // снимаем первого партнёра "Ольги Зибер" -- проверяем и localStorage, и что своя же
-  // карточка сразу переносит его в "Свободные" (не ждёт "⟳")
+  // снимаем первого партнёра "Ольги Зибер" (пока "Свободных" ещё нет -- единственная
+  // группа в списке "В канале", берём первый чекбокс)
   const firstCb = olyaNode.querySelector('.cc-partner-row input[type="checkbox"]');
   const movedName = firstCb.dataset.partner;
   firstCb.checked = false;
@@ -235,14 +238,20 @@ async function main() {
   if (!overrideWritten) ok = false;
 
   const stillCheckedInOlya = Array.from(olyaNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === movedName && cb.checked);
-  console.log("cc: своя карточка сразу переносит партнёра в «Свободные» (без ⟳):", !stillCheckedInOlya ? "OK" : "FAIL");
+  console.log("cc: своя карточка сразу переносит партнёра в «Свободные»:", !stillCheckedInOlya ? "OK" : "FAIL");
   if (stillCheckedInOlya) ok = false;
 
-  // другой борд ("Партнёры") синхронизируется через явный "⟳" -- не сам по себе
-  partnersNode.querySelector(".refresh-widget-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
-  partnersNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  // теперь в списке ЕСТЬ и "Свободные" (только что снятый), и "В канале" -- группа
+  // "Свободные" должна идти ПЕРВОЙ (Дима, дословно из исходного ТЗ: "чтобы их выводило
+  // наверх списка, они же ниже -- те, что за ней уже закреплены"; порядок был перепутан
+  // на предыдущем заходе -- "В канале" стояло сверху).
+  const firstGroupLabel = olyaNode.querySelector(".cc-group-label");
+  console.log("cc: группа «Свободные» идёт первой в списке:", firstGroupLabel && /Свободные/.test(firstGroupLabel.textContent) ? "OK" : "FAIL", firstGroupLabel && firstGroupLabel.textContent);
+  if (!firstGroupLabel || !/Свободные/.test(firstGroupLabel.textContent)) ok = false;
+
+  // ДРУГОЙ борд ("Партнёры"), уже открытый, обновился САМ -- без клика по "⟳"
   const freedCb = Array.from(partnersNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === movedName);
-  console.log("cc: снятый партнёр появился свободным в другом борде после ⟳:", freedCb && !freedCb.checked ? "OK" : "FAIL");
+  console.log("cc: снятый партнёр появился свободным в другом борде БЕЗ «⟳» (live-sync):", freedCb && !freedCb.checked ? "OK" : "FAIL");
   if (!freedCb || freedCb.checked) ok = false;
 
   // поиск фильтрует список
