@@ -307,6 +307,122 @@ async function main() {
   console.log("cc: после ввода % оттока считает касс_в_оттоке и сумму:", shownLostKassas === expectedLostKassas && shownLostMoney === expectedLostMoney ? "OK" : "FAIL", shownLostKassas, "vs", expectedLostKassas, "|", shownLostMoney, "vs", expectedLostMoney);
   if (shownLostKassas !== expectedLostKassas || shownLostMoney !== expectedLostMoney) ok = false;
 
+  // 10) Кастомный борд "Новый канал" (B5, 2026-08-20) -- пустой борд с переименованием
+  // текстовым полем, партнёры персистятся как обычно (ccOverrides), само ИМЯ -- через
+  // instanceId + def.getPersistState/applyPersistState (3-й заход API dnd.js, теперь
+  // обоснованно: "каналов может быть больше 3", каждый со своим именем).
+  win.OFDCanvas.addWidget("b5-revenue-custom");
+  const customNodes = win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]');
+  const customNode = customNodes[customNodes.length - 1];
+
+  const placeholderShown = /Введи название канала/.test(customNode.textContent);
+  console.log("custom: пустой борд показывает плейсхолдер до ввода имени:", placeholderShown ? "OK" : "FAIL");
+  if (!placeholderShown) ok = false;
+
+  const CUSTOM_NAME = "Тестовый канал " + Math.random().toString(36).slice(2, 6);
+  const nameInput = customNode.querySelector(".cc-name-input");
+  nameInput.value = CUSTOM_NAME;
+  nameInput.dispatchEvent(new win.Event("change", { bubbles: true }));
+  const hasAccordionAfterName = !!customNode.querySelector(".cc-toggle");
+  console.log("custom: после ввода имени появляется аккордеон партнёров:", hasAccordionAfterName ? "OK" : "FAIL");
+  if (!hasAccordionAfterName) ok = false;
+
+  customNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const customFirstCb = customNode.querySelector('.cc-partner-row input[type="checkbox"]');
+  const customPartnerName = customFirstCb.dataset.partner;
+  customFirstCb.checked = true;
+  customFirstCb.dispatchEvent(new win.Event("change", { bubbles: true }));
+  const overridesAfterCustomAssign = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+  console.log("custom: назначение партнёра в кастомный канал пишет override:", overridesAfterCustomAssign[customPartnerName] === CUSTOM_NAME ? "OK" : "FAIL");
+  if (overridesAfterCustomAssign[customPartnerName] !== CUSTOM_NAME) ok = false;
+
+  // переименование мигрирует уже назначенного партнёра на новое имя (не теряет)
+  const RENAMED = CUSTOM_NAME + " (переименован)";
+  nameInput.value = RENAMED;
+  nameInput.dispatchEvent(new win.Event("change", { bubbles: true }));
+  const overridesAfterRename = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+  console.log("custom: переименование переносит партнёра на новое имя:", overridesAfterRename[customPartnerName] === RENAMED ? "OK" : "FAIL");
+  if (overridesAfterRename[customPartnerName] !== RENAMED) ok = false;
+
+  // getPersistState/applyPersistState -- та же механика, что dnd.js saveLayout/
+  // loadSavedLayout используют внутри (проверяем напрямую, без второго JSDOM-окна --
+  // дорого перепарсивать XLSX ради симуляции полной перезагрузки страницы)
+  const customInstanceId = customNode.closest(".grid-stack-item").dataset.instanceId;
+  const savedCustom = win.OFDWidgets.WIDGETS["b5-revenue-custom"].getPersistState(customInstanceId);
+  console.log("custom: getPersistState отдаёт текущее имя:", savedCustom === RENAMED ? "OK" : "FAIL", savedCustom);
+  if (savedCustom !== RENAMED) ok = false;
+
+  win.OFDCanvas.addWidget("b5-revenue-custom", null, null, null, null, savedCustom);
+  const restoredNodes = win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]');
+  const restoredNode = restoredNodes[restoredNodes.length - 1];
+  const restoredNameValue = restoredNode.querySelector(".cc-name-input").value;
+  console.log("custom: восстановленный борд (addWidget+customState) сразу с именем:", restoredNameValue === RENAMED ? "OK" : "FAIL", restoredNameValue);
+  if (restoredNameValue !== RENAMED) ok = false;
+  const restoredHasAccordion = !!restoredNode.querySelector(".cc-toggle");
+  console.log("custom: восстановленный борд сразу показывает партнёров (не плейсхолдер):", restoredHasAccordion ? "OK" : "FAIL");
+  if (!restoredHasAccordion) ok = false;
+
+  // удаление борда освобождает его партнёра (видно свободным у остальных)
+  customNode.querySelector(".remove-btn").click();
+  const overridesAfterRemove = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+  console.log("custom: удаление борда освобождает партнёра:", overridesAfterRemove[customPartnerName] === "" ? "OK" : "FAIL");
+  if (overridesAfterRemove[customPartnerName] !== "") ok = false;
+
+  // 11) "Топ оттока по партнёрам" (b3-churn-top, 2026-08-20): новая колонка "0-30 дней
+  // (грейс)" + клик по партнёру -> drill-down таблица касс этого партнёра, оканчивающихся
+  // в текущем месяце (РНМ/ИНН/Наименование/Тариф/Дата окончания).
+  const churnTopNode = win.document.querySelector('[data-widget-id="b3-churn-top"]');
+  const churnTopHeaders = Array.from(churnTopNode.querySelectorAll("th")).map((th) => th.textContent);
+  const hasPendingColumn = churnTopHeaders.some((h) => /0-30 дней/.test(h));
+  console.log("b3-churn-top: колонка «0-30 дней (грейс)» есть:", hasPendingColumn ? "OK" : "FAIL", churnTopHeaders);
+  if (!hasPendingColumn) ok = false;
+
+  const churnFirstRow = churnTopNode.querySelector("tbody tr");
+  const churnPartnerName = churnFirstRow.children[0].textContent;
+  churnFirstRow.dispatchEvent(new win.Event("click", { bubbles: true }));
+  const churnDrillTable = churnTopNode.querySelector(".expand-scroll table");
+  const drillHeaders = churnDrillTable ? Array.from(churnDrillTable.querySelectorAll("th")).map((th) => th.textContent) : [];
+  const drillHeadersOk = ["РНМ", "ИНН", "Наименование", "Тариф", "Дата окончания"].every((h) => drillHeaders.includes(h));
+  console.log("b3-churn-top: клик по партнёру открывает drill-down с нужными колонками:", drillHeadersOk ? "OK" : "FAIL", drillHeaders);
+  if (!drillHeadersOk) ok = false;
+
+  const nowForDrill = new Date();
+  const expectedDrillRows = win.OFDMetrics.computePartnerKassasInMonth(model, churnPartnerName, nowForDrill.getFullYear(), nowForDrill.getMonth()).length;
+  const shownDrillRows = churnDrillTable ? churnDrillTable.querySelectorAll("tbody tr").length : -1;
+  console.log("b3-churn-top: число строк drill-down сходится с ручной сверкой:", shownDrillRows === expectedDrillRows ? "OK" : "FAIL", shownDrillRows, "vs", expectedDrillRows);
+  if (shownDrillRows !== expectedDrillRows) ok = false;
+
+  // 12) "Распределение продлений по клиентам" (b2-renewdist-clients, 2026-08-20) --
+  // копия b2-renewdist, но во главе клиент: нет РНМ/Дата окончания/Статус, продлений
+  // клиента = сумма продлений по всем его кассам.
+  const renewClientsNode = win.document.querySelector('[data-widget-id="b2-renewdist-clients"]');
+  const renewClientsHeaders = Array.from(renewClientsNode.querySelectorAll("th")).map((th) => th.textContent);
+  const expectedHeaders = ["ИНН клиента", "Наименование", "Партнёр", "Продлений", "Тариф"];
+  const forbiddenHeaders = ["РНМ", "Окончание", "Статус"];
+  const headersMatch = expectedHeaders.every((h) => renewClientsHeaders.includes(h)) && forbiddenHeaders.every((h) => !renewClientsHeaders.includes(h));
+  console.log("b2-renewdist-clients: колонки без РНМ/Окончания/Статуса, с Продлений/Тариф:", headersMatch ? "OK" : "FAIL", renewClientsHeaders);
+  if (!headersMatch) ok = false;
+
+  // независимая сверка: сумма продлений случайного клиента = сумма renewals по его кассам
+  const sampleClient = Array.from(model.clients.values()).find((c) => !c.phys && c.kassas.length > 1);
+  const expectedRenewals = sampleClient.kassas.reduce((sum, k) => sum + k.renewals, 0);
+  const clientRow = Array.from(renewClientsNode.querySelectorAll("tbody tr")).find((tr) => tr.children[0].textContent === sampleClient.key);
+  if (clientRow) {
+    const shownRenewals = parseInt(clientRow.children[3].textContent.replace(/\s/g, ""), 10);
+    console.log("b2-renewdist-clients: продления клиента = сумма по его кассам:", shownRenewals === expectedRenewals ? "OK" : "FAIL", shownRenewals, "vs", expectedRenewals);
+    if (shownRenewals !== expectedRenewals) ok = false;
+  } else {
+    // клиент мог не попасть в топ-150 по умолчанию (сортировка по убыванию) -- фильтруем по ИНН, чтобы найти его гарантированно
+    renewClientsNode.querySelector(".f-inn").value = sampleClient.key;
+    renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
+    const filteredRow = renewClientsNode.querySelector("tbody tr");
+    const shownRenewals = filteredRow ? parseInt(filteredRow.children[3].textContent.replace(/\s/g, ""), 10) : null;
+    console.log("b2-renewdist-clients: продления клиента = сумма по его кассам (через фильтр ИНН):", shownRenewals === expectedRenewals ? "OK" : "FAIL", shownRenewals, "vs", expectedRenewals);
+    if (shownRenewals !== expectedRenewals) ok = false;
+    renewClientsNode.querySelector(".f-inn").value = "";
+    renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 

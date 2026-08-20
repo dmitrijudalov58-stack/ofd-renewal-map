@@ -158,6 +158,12 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 .cc-empty { font-size: 12px; color: var(--muted); padding: 6px 2px; }
 .cc-metric { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cc-metric:first-of-type { margin-top: 14px; border-top: none; padding-top: 0; }
+.cc-name-label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+.cc-name-input {
+  width: 100%; max-width: 340px; box-sizing: border-box; font-size: 13.5px; font-weight: 700;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card-bg); color: var(--ink);
+}
+.cc-name-input:focus { border-color: var(--brand); outline: none; }
 
 /* ---------- canvas ---------- */
 /* колонка тянется на всю доступную высоту -- #canvas внутри тоже, свободная зона сброса

@@ -48,9 +48,16 @@
   // удалить и перетащить заново" (Дима, 2026-08-18). Единая точка защиты -- любой сбой
   // рендера превращается в понятный плейсхолдер с кнопкой "⟳ обновить" вместо тихого
   // застревания на старых данных, и не мешает соседним виджетам обновиться.
-  function safeRenderBody(def, model, ctx) {
+  // instanceId — стабильный на время жизни ЭТОГО размещения виджета на холсте (генерится в
+  // addWidget ДО первого рендера, переживает rerenderAll/"⟳", НЕ переживает перезагрузку
+  // страницы — на loadSavedLayout генерится заново). Нужен виджетам с собственным
+  // module-level состоянием на инстанс (2026-08-20: кастомный борд "Новый канал" в B5 —
+  // у каждого своё имя канала). def.getPersistState(instanceId)/def.applyPersistState —
+  // опциональная пара хуков для персистентности ЭТОГО состояния через saveLayout/
+  // loadSavedLayout (см. ниже) — у остальных 30+ виджетов не определены, не влияет на них.
+  function safeRenderBody(def, model, ctx, instanceId) {
     try {
-      return def.render(model, ctx);
+      return def.render(model, ctx, instanceId);
     } catch (e) {
       console.error('Ошибка рендера виджета «' + def.title + '»:', e);
       var box = document.createElement("div");
@@ -66,12 +73,12 @@
     }
   }
 
-  function renderInstance(widgetId) {
+  function renderInstance(widgetId, instanceId) {
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return null;
     var state = root.OFDState;
     if (!state || !state.model) return null;
-    var body = safeRenderBody(def, state.model, state.ctx);
+    var body = safeRenderBody(def, state.model, state.ctx, instanceId);
     var node = root.OFDWidgets.widgetShell(widgetId, def.title, def.type, def.scope, body, def.exportable ? '<button class="export-btn">Экспорт CSV / Excel</button>' : "");
     if (def.exportable) {
       var btn = node.querySelector(".export-btn");
@@ -107,6 +114,11 @@
       var itemEl = widgetNode.closest(".grid-stack-item");
       if (!itemEl) return;
       var instanceId = itemEl.dataset.instanceId;
+      // Lifecycle-хук для виджетов со своим module-level состоянием по instanceId (2026-08-20:
+      // кастомный канал в B5 освобождает своих партнёров и чистит своё имя при удалении).
+      var widgetId = widgetNode.dataset.widgetId;
+      var def = widgetId ? root.OFDWidgets.WIDGETS[widgetId] : null;
+      if (def && typeof def.onRemove === "function") def.onRemove(instanceId);
       grid.removeWidget(itemEl);
       placed = placed.filter(function (p) { return p.instanceId !== instanceId; });
       toggleEmpty();
@@ -123,7 +135,9 @@
     if (!state || !state.model) return;
     var bodyEl = widgetNode.querySelector(".widget-body");
     if (!bodyEl) return;
-    var fresh = safeRenderBody(def, state.model, state.ctx);
+    var itemEl = widgetNode.closest(".grid-stack-item");
+    var instanceId = itemEl ? itemEl.dataset.instanceId : null;
+    var fresh = safeRenderBody(def, state.model, state.ctx, instanceId);
     // БАГ (найден Димой 2026-08-18): многие def.render() возвращают ГОТОВУЮ HTML-СТРОКУ,
     // не DOM Node (statBlock() и всё, что его использует -- карточки b1-active и т.п.).
     // createTextNode() вставлял такую строку как ЭКРАНИРОВАННЫЙ ТЕКСТ, не как разметку --
@@ -150,11 +164,17 @@
     });
   }
 
-  function addWidget(widgetId, x, y, w, h) {
+  function addWidget(widgetId, x, y, w, h, customState) {
     if (!root.OFDState || !root.OFDState.model) return;
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return;
-    var widgetNode = renderInstance(widgetId);
+    // instanceId генерится ДО первого рендера -- виджетам со своим per-instance state
+    // (см. def.applyPersistState ниже) он нужен уже на первом def.render().
+    var instanceId = "w" + Math.random().toString(36).slice(2, 9);
+    if (customState !== undefined && typeof def.applyPersistState === "function") {
+      def.applyPersistState(instanceId, customState);
+    }
+    var widgetNode = renderInstance(widgetId, instanceId);
     if (!widgetNode) return;
     var size = defaultSizeFor(def);
     var gridItem = buildGridItem(widgetNode);
@@ -165,7 +185,6 @@
     if (x != null) opts.x = x;
     if (y != null) opts.y = y;
     var itemEl = grid.addWidget(gridItem, opts);
-    var instanceId = "w" + Math.random().toString(36).slice(2, 9);
     itemEl.dataset.instanceId = instanceId;
     wireRemove(widgetNode);
     wireRefresh(widgetNode, widgetId);
@@ -244,11 +263,18 @@
       widgets: placed.map(function (p) {
         var itemEl = canvas.querySelector('[data-instance-id="' + p.instanceId + '"]');
         var node = itemEl && itemEl.gridstackNode;
-        return {
+        var entry = {
           widgetId: p.widgetId,
           x: node ? node.x : 0, y: node ? node.y : 0,
           w: node ? node.w : null, h: node ? node.h : null,
         };
+        // Опциональное per-instance состояние (имя кастомного канала и т.п.) -- у
+        // подавляющего большинства виджетов хука нет, entry.custom просто не появляется.
+        var def = root.OFDWidgets.WIDGETS[p.widgetId];
+        if (def && typeof def.getPersistState === "function") {
+          entry.custom = def.getPersistState(p.instanceId);
+        }
+        return entry;
       }),
     };
     try {
@@ -312,7 +338,7 @@
     var restored = false;
     data.widgets.forEach(function (w) {
       if (w && root.OFDWidgets.WIDGETS[w.widgetId]) {
-        addWidget(w.widgetId, w.x || 0, w.y || 0, w.w, w.h);
+        addWidget(w.widgetId, w.x || 0, w.y || 0, w.w, w.h, w.custom);
         restored = true;
       }
     });

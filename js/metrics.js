@@ -310,7 +310,7 @@
     var byPartner = new Map();
     function bucket(name) {
       var p = byPartner.get(name);
-      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, baseAtStart: 0, baseAtEnd: 0 }; byPartner.set(name, p); }
+      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, pendingClients: 0, baseAtStart: 0, baseAtEnd: 0 }; byPartner.set(name, p); }
       return p;
     }
     model.clients.forEach(function (c) {
@@ -319,6 +319,13 @@
       if (inRange(c.appearance, periodStart, periodEnd)) bucket(name).newClients++;
       if (c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "churned") {
         bucket(name).churnedClients++;
+      }
+      // "0-30 дней" (Дима, 2026-08-20) -- клиент уже не продлился, но ещё в грейс-периоде,
+      // подтверждённым оттоком НЕ считается (churnStatusFromEnd отдаёт "pending" ровно для
+      // этого окна). Отдельная метрика от churnedClients -- одно и то же currentEnd не
+      // может одновременно попасть в оба счётчика (статусы взаимоисключающие).
+      if (c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "pending") {
+        bucket(name).pendingClients++;
       }
       // база "на начало периода" — клиент уже существовал и был жив на дату начала периода
       if (c.appearance && c.appearance < periodStart && !clientLapsedAt(c, periodStart)) {
@@ -332,13 +339,31 @@
     var rows = [];
     byPartner.forEach(function (p) {
       var retention = p.baseAtStart > 0 ? 1 - (p.churnedClients / p.baseAtStart) : null;
-      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, baseAtStart: p.baseAtStart, baseAtEnd: p.baseAtEnd, retention: retention });
+      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, pendingClients: p.pendingClients, baseAtStart: p.baseAtStart, baseAtEnd: p.baseAtEnd, retention: retention });
     });
     return rows;
   }
 
   // То же самое, но по кассам (РНМ) вместо клиентов (ИНН) — для борда "Партнёр: новые/
   // отток/% эффективности" (сместили фокус с клиентов на кассы 2026-08-06).
+  // Drill-down для "Топ оттока по партнёрам" (Дима, 2026-08-20): клик по партнёру -> кассы
+  // ЕГО клиентов с датой окончания в конкретном месяце (обычно текущем). year/month -- как
+  // у Date (month 0-11). Партнёр кассы = партнёр её клиента-владельца (c.partner), та же
+  // логика, что и в computePartnerFlow/computePartners.
+  function computePartnerKassasInMonth(model, partnerName, year, month) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if ((c.partner || "—") !== partnerName) return;
+      c.kassas.forEach(function (k) {
+        if (!k.overallEnd) return;
+        if (k.overallEnd.getFullYear() === year && k.overallEnd.getMonth() === month) {
+          out.push({ rnm: k.rnm, inn: c.key, org: c.org, tariff: k.tariff, overallEnd: k.overallEnd });
+        }
+      });
+    });
+    return out;
+  }
+
   function computePartnerFlowKassas(model, periodStart, periodEnd, asOf) {
     asOf = asOf || periodEnd;
     var byPartner = new Map();
@@ -1039,6 +1064,7 @@
     kassaReturnInfo: kassaReturnInfo,
     computePartnerFlow: computePartnerFlow,
     computePartnerFlowKassas: computePartnerFlowKassas,
+    computePartnerKassasInMonth: computePartnerKassasInMonth,
     monthResolved: monthResolved,
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,

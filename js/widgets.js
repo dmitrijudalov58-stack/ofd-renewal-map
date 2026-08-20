@@ -187,6 +187,61 @@
     return wrap;
   }
 
+  // Клиентская версия kassaDetailTable (2026-08-20, "Распределение продлений по
+  // клиентам") -- во главе КЛИЕНТ (ИНН), не касса. РНМ/дата окончания/статус убраны
+  // сознательно (Дима): у клиента может быть НЕСКОЛЬКО касс с разными датами/статусами,
+  // единого значения нет. Тариф оставлен -- последней по дате активации кассы клиента
+  // (тоже не единственный, но представительный, тот же принцип, что и c.partner в buildModel).
+  function clientRenewalDetailTable(clientArray, opts) {
+    opts = opts || {};
+    var limit = opts.limit || 150;
+    var partners = Array.from(new Set(clientArray.map(function (c) { return c.partner || "—"; }))).sort();
+    var wrap = el('<div></div>');
+    var controls = el(
+      '<div class="threshold-row">' +
+      '<label>Партнёр <select class="f-partner"><option value="">все</option>' +
+      partners.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join("") + '</select></label>' +
+      '<label>ИНН клиента <input type="text" class="f-inn" placeholder="поиск" style="width:110px"></label>' +
+      '<span style="display:flex;gap:8px;align-items:center;color:var(--muted)">Продлений:' +
+      RENEWAL_BUCKETS.map(function (b) { return '<label style="display:flex;gap:3px;align-items:center;color:var(--ink)"><input type="checkbox" class="f-ren" value="' + b.id + '"> ' + b.label + '</label>'; }).join("") +
+      '</span>' +
+      '</div>'
+    );
+    var tableHolder = el('<div></div>');
+    wrap.appendChild(controls);
+    wrap.appendChild(tableHolder);
+
+    function apply() {
+      var pf = controls.querySelector(".f-partner").value;
+      var innf = controls.querySelector(".f-inn").value.trim().toLowerCase();
+      var checkedBuckets = Array.from(controls.querySelectorAll(".f-ren:checked")).map(function (cb) { return cb.value; });
+      var activeBuckets = RENEWAL_BUCKETS.filter(function (b) { return checkedBuckets.indexOf(b.id) !== -1; });
+      var filtered = clientArray.filter(function (c) {
+        if (pf && (c.partner || "—") !== pf) return false;
+        if (innf && !(c.key || "").toLowerCase().includes(innf)) return false;
+        if (activeBuckets.length && !activeBuckets.some(function (b) { return b.test(c.renewals); })) return false;
+        return true;
+      });
+      filtered.sort(function (a, b) { return b.renewals - a.renewals; });
+      var top = filtered.slice(0, limit);
+      var rows = top.map(function (c) { return [c.key, c.org || "—", c.partner || "—", c.renewals, c.tariff || "—"]; });
+      tableHolder.innerHTML = "";
+      tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(filtered.length) + (filtered.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + '</div>'));
+      tableHolder.appendChild(makeSortableTable(
+        [{ label: "ИНН клиента" }, { label: "Наименование" }, { label: "Партнёр" }, { label: "Продлений", num: true }, { label: "Тариф" }],
+        rows
+      ));
+      wrap._getExportRows = function () {
+        return filtered.map(function (c) { return { ИННКлиента: c.key, Наименование: c.org || "", Партнёр: c.partner || "", Продлений: c.renewals, Тариф: c.tariff || "" }; });
+      };
+      wrap._getFilteredClients = function () { return filtered; };
+    }
+    controls.addEventListener("change", apply);
+    controls.addEventListener("input", apply);
+    apply();
+    return wrap;
+  }
+
   // линия + область по месячному ряду, две серии опционально (categorical slot1/slot2)
   function lineChart(months, series, opts) {
     opts = opts || {};
@@ -1158,7 +1213,10 @@
   }
 
   WIDGETS["b2-renewdist"] = {
-    title: "Распределение продлений", type: "график + таблица", scope: "as-of", span: true,
+    // Название уточнено 2026-08-20 (Дима: "переименовать, чтобы не путаться" с новым
+    // клиентским бордом ниже) — id виджета "b2-renewdist" НЕ трогаем, чтобы не сломать
+    // уже сохранённые Димой раскладки (localStorage хранит именно этот id).
+    title: "Распределение продлений по кассам", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var arr = Array.from(model.kassas.values());
       function buildRows(kassas) {
@@ -1176,6 +1234,56 @@
         ];
       }
       return chartPlusFilterableTable(arr, ctx, buildRows, { caption: "число касс в каждой корзине" }, { hideTariff: true });
+    },
+    exportable: true,
+  };
+
+  WIDGETS["b2-renewdist-clients"] = {
+    // Копия b2-renewdist (2026-08-20), но во главе КЛИЕНТ (ИНН), не касса. Цель (Дима):
+    // понять сколько клиентов и сколько раз они продлились В ЦЕЛОМ, не по отдельной кассе.
+    title: "Распределение продлений по клиентам", type: "график + таблица", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      // Продлений клиента = сумма продлений по ВСЕМ его кассам (не среднее, не макс --
+      // "сколько раз они продлились" суммарно). Резервных физлиц (c.phys, legacy strict:false)
+      // не считаем -- у них по определению 0 касс, только шумели бы бакет "0 продлений".
+      var clientArr = Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) {
+        var totalRenewals = c.kassas.reduce(function (sum, k) { return sum + k.renewals; }, 0);
+        var lastKassa = c.kassas.reduce(function (last, k) { return (!last || k.appearance > last.appearance) ? k : last; }, null);
+        return { key: c.key, org: c.org, partner: c.partner, renewals: totalRenewals, tariff: lastKassa ? lastKassa.tariff : null };
+      });
+
+      function buildRows(clients) {
+        var b = { "0": 0, "1-2": 0, "3-5": 0, "6+": 0 };
+        clients.forEach(function (c) {
+          var r = c.renewals;
+          var rb = r === 0 ? "0" : r <= 2 ? "1-2" : r <= 5 ? "3-5" : "6+";
+          b[rb]++;
+        });
+        return [
+          { label: "0 продлений", value: b["0"], color: "#3987e5" },
+          { label: "1–2", value: b["1-2"], color: "#256abf" },
+          { label: "3–5", value: b["3-5"], color: "#184f95" },
+          { label: "6+", value: b["6+"], color: "#104281" },
+        ];
+      }
+
+      var wrap = el('<div></div>');
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН), не кассы. «Продлений» — сумма продлений по ВСЕМ кассам клиента (сколько раз он в целом продлевался). Тариф — последней по дате активации кассы клиента (может быть несколько касс на разных тарифах).</div>'));
+      var chartHolder = el('<div></div>');
+      chartHolder.appendChild(el(barList(buildRows(clientArr), { caption: "число клиентов в каждой корзине" })));
+      var refreshBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">⟳ обновить график по текущему фильтру</button>');
+      wrap.appendChild(chartHolder);
+      wrap.appendChild(refreshBtn);
+      wrap.appendChild(el('<div style="height:14px"></div>'));
+      var table = clientRenewalDetailTable(clientArr);
+      wrap.appendChild(table);
+      refreshBtn.addEventListener("click", function () {
+        var filtered = table._getFilteredClients ? table._getFilteredClients() : clientArr;
+        chartHolder.innerHTML = "";
+        chartHolder.appendChild(el(barList(buildRows(filtered), { caption: "число клиентов в каждой корзине" })));
+      });
+      wrap._getExportRows = function () { return table._getExportRows(); };
+      return wrap;
     },
     exportable: true,
   };
@@ -1352,24 +1460,41 @@
   WIDGETS["b3-churn-top"] = {
     // Формула п.23 (2026-08-06): было "база на начало периода + retention%", стало
     // "новые + отток + база на КОНЕЦ периода" — три голых числа: пришло/ушло/осталось.
-    title: "Топ оттока по партнёрам", type: "таблица", scope: "период", span: true,
+    title: "Топ оттока по партнёрам", type: "таблица, раскрывается", scope: "период", span: true,
     render: function (model, ctx) {
       var rows = ctx.M.computePartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       rows = rows.filter(function (p) { return p.churnedClients > 0; });
       rows.sort(function (a, b) { return b.churnedClients - a.churnedClients; });
       var top = rows.slice(0, 100);
-      var body = top.map(function (p) { return [p.name, p.newClients, p.churnedClients, p.baseAtEnd]; });
+      var body = top.map(function (p) { return [p.name, p.newClients, p.churnedClients, p.pendingClients, p.baseAtEnd]; });
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН). Отток — не продлились 30+ дней. Новые/Отток — за весь выбранный период. Клиентов на конец периода — сколько осталось у партнёра прямо на дату конца периода (пришло + было − ушло). Последние ~30 дней периода обычно занижены, см. помесячную раскладку ниже.</div>'));
-      wrap.appendChild(makeSortableTable(
-        [{ label: "Партнёр" }, { label: "Новых клиентов", num: true }, { label: "Клиентов в оттоке", num: true }, { label: "Клиентов на конец периода", num: true }],
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН). Отток — не продлились 30+ дней (подтверждён). 0-30 дней — уже не продлились, но ещё в грейс-периоде (не факт оттока, может продлиться позже). Новые/Отток/0-30 дней — за весь выбранный период. Клиентов на конец периода — сколько осталось у партнёра прямо на дату конца периода (пришло + было − ушло). Последние ~30 дней периода обычно занижены, см. помесячную раскладку ниже. Клик по партнёру — кассы его клиентов с окончанием в текущем месяце.</div>'));
+      var tableWrap = makeSortableTable(
+        [{ label: "Партнёр" }, { label: "Новых клиентов", num: true }, { label: "Клиентов в оттоке", num: true }, { label: "0-30 дней (грейс)", num: true }, { label: "Клиентов на конец периода", num: true }],
         body
-      ));
+      );
+      wrap.appendChild(tableWrap);
+      var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
+      wrap.appendChild(expandArea);
+      var now = new Date();
+      tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function () {
+          // Партнёр из САМОЙ ЯЧЕЙКИ, не из индекса top[i] -- makeSortableTable переставляет
+          // строки в DOM по клику на заголовок, индекс после сортировки уже не совпадает.
+          var partnerName = tr.children[0].textContent;
+          var kassas = ctx.M.computePartnerKassasInMonth(model, partnerName, now.getFullYear(), now.getMonth());
+          expandArea.innerHTML = "";
+          expandArea.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>' + esc(partnerName) + '</b> · кассы с окончанием в текущем месяце (' + MONTHS_SHORT[now.getMonth()] + ' ' + now.getFullYear() + ') — ' + kassas.length + '</div>'));
+          var drillRows = kassas.map(function (k) { return [k.rnm, k.inn || "—", k.org || "—", k.tariff || "—", fmtDate(k.overallEnd)]; });
+          expandArea.appendChild(makeSortableTable([{ label: "РНМ" }, { label: "ИНН" }, { label: "Наименование" }, { label: "Тариф" }, { label: "Дата окончания" }], drillRows));
+        });
+      });
       wrap.appendChild(el('<div style="height:16px"></div>'));
       wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
       var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       wrap.appendChild(monthlyFlowTable(series, ctx));
-      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, НовыхКлиентов: p.newClients, КлиентовВОттоке: p.churnedClients, КлиентовНаКонецПериода: p.baseAtEnd }; }); };
+      wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, НовыхКлиентов: p.newClients, КлиентовВОттоке: p.churnedClients, Клиентов0_30Дней: p.pendingClients, КлиентовНаКонецПериода: p.baseAtEnd }; }); };
       return wrap;
     },
     exportable: true,
@@ -1566,7 +1691,11 @@
     names.forEach(function (name) {
       var eff = ccEffectiveChannel(name, autoMap);
       if (eff === "") { free.push(name); return; }
-      (byChannel[eff] || byChannel["Партнёры"]).push(name);
+      // Бакет создаём лениво -- eff может быть именем КАСТОМНОГО канала (2026-08-20,
+      // борд "Новый канал"), которого нет в CC_CHANNELS. Раньше был фолбэк на "Партнёры",
+      // из-за которого партнёр, явно назначенный в кастомный канал, тихо утекал в чужой бакет.
+      if (!byChannel[eff]) byChannel[eff] = [];
+      byChannel[eff].push(name);
     });
     return { byChannel: byChannel, free: free };
   }
@@ -1575,151 +1704,166 @@
     return '<label class="cc-partner-row"><input type="checkbox" data-partner="' + esc(name) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + '</label>';
   }
 
+  // Общее тело карточки канала (аккордеон партнёров + чек/%оттока/период + метрики
+  // кассы->тарифы->деньги->отток) -- переиспользуется и 3 фиксированными бордами
+  // (channelName неизменен на всё время жизни виджета), и кастомным "Новый канал"
+  // (channelName может смениться при переименовании -- тогда вызывающий код зовёт эту
+  // функцию ЗАНОВО с новым именем, а не пытается патчить уже построенный DOM).
+  // Регистрирует себя в ccActiveRefreshers[instanceId] -- единая точка live-sync между
+  // ВСЕМИ бордами каналов на холсте (2026-08-20), ключ instanceId (не channelName) --
+  // так у кастомных бордов с одинаковым/пустым именем нет коллизий в реестре.
+  function ccBuildChannelBody(channelName, model, ctx, instanceId) {
+    var asn = ccAssignment(model, ctx);
+    var mine = asn.byChannel[channelName] || [];
+    var free = asn.free;
+
+    var wrap = el('<div></div>');
+    var head = el(
+      '<div class="cc-settings">' +
+      '<button type="button" class="cc-toggle">▸ Партнёры канала (' + mine.length + ')</button>' +
+      '<div class="threshold-row" style="margin-top:8px">' +
+      '<label title="Смотрим на будущие продления -- касс, у которых дата окончания попадает в это окно">с <input type="date" class="cc-from"></label>' +
+      '<label>по <input type="date" class="cc-to"></label>' +
+      '</div>' +
+      '<div class="threshold-row" style="margin-top:8px">' +
+      '<label>чек, ₽ <input type="number" min="0" step="1" class="cc-check"></label>' +
+      '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="cc-churn" placeholder="—"></label>' +
+      '</div>' +
+      '<div class="cc-body hidden">' +
+      '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
+      '<div class="cc-list"></div>' +
+      '</div>' +
+      '</div>'
+    );
+    var resultsBox = el('<div class="cc-results"></div>');
+    wrap.appendChild(head);
+    wrap.appendChild(resultsBox);
+
+    var toggleBtn = head.querySelector(".cc-toggle");
+    var bodyEl = head.querySelector(".cc-body");
+    var searchInput = head.querySelector(".cc-search");
+    var listEl = head.querySelector(".cc-list");
+    var fromInput = head.querySelector(".cc-from");
+    var toInput = head.querySelector(".cc-to");
+    var checkInput = head.querySelector(".cc-check");
+    var churnInput = head.querySelector(".cc-churn");
+
+    function updateToggleLabel() {
+      var isOpen = !bodyEl.classList.contains("hidden");
+      toggleBtn.textContent = (isOpen ? "▾" : "▸") + " Партнёры канала (" + mine.length + ")";
+    }
+
+    // Свободные -- ПЕРВЫМИ (это и есть actionable-список, "кого можно добавить"),
+    // "В канале" -- ниже, справочно (Дима, дословно из ТЗ: "чтобы ИХ [свободных]
+    // выводило наверх списка, они же [ниже] находились те, что за ней уже закреплены" --
+    // раньше был перепутан порядок, свободные оказывались внизу под длинным "В канале").
+    function renderList() {
+      var term = searchInput.value.trim().toLowerCase();
+      var mineF = mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+      var freeF = free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+      var html = "";
+      if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
+      if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
+      if (!mineF.length && !freeF.length) html = '<div class="cc-empty">Ничего не найдено</div>';
+      listEl.innerHTML = html;
+      listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+        cb.addEventListener("change", function () {
+          var name = cb.dataset.partner;
+          ccOverrides[name] = cb.checked ? channelName : "";
+          ccSaveOverrides(ccOverrides);
+          // Пересчитывают и перерисовывают себя ВСЕ смонтированные борды каналов
+          // сразу (включая этот) -- см. ccBroadcastAssignmentChanged выше.
+          ccBroadcastAssignmentChanged();
+        });
+      });
+    }
+
+    // Полный пересчёт "с нуля" из ccAssignment (не точечная правка mine/free) --
+    // вызывается и на свою же карточку, и на остальные борды каналов через
+    // ccBroadcastAssignmentChanged, единая точка входа для live-sync.
+    function refreshAssignment() {
+      var fresh = ccAssignment(model, ctx);
+      mine = fresh.byChannel[channelName] || [];
+      free = fresh.free;
+      updateToggleLabel();
+      if (!bodyEl.classList.contains("hidden")) renderList();
+      renderResults();
+    }
+    ccActiveRefreshers[instanceId] = refreshAssignment;
+
+    toggleBtn.addEventListener("click", function () {
+      bodyEl.classList.toggle("hidden");
+      updateToggleLabel();
+      if (!bodyEl.classList.contains("hidden")) renderList();
+    });
+    searchInput.addEventListener("input", renderList);
+
+    function renderResults() {
+      var check = parseFloat(checkInput.value) || 0;
+      var churnRaw = churnInput.value.trim();
+      var hasChurn = churnRaw !== ""; // Дима, 2026-08-19: отток пуст, пока % явно не введён -- 0 и "не задано" разные вещи
+      var churn = hasChurn ? (parseFloat(churnRaw) || 0) : 0;
+      var fromVal = fromInput.value, toVal = toInput.value;
+      var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
+      var to = toVal ? new Date(toVal + "T23:59:59") : null;
+
+      if (!mine.length) {
+        resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">В канале нет партнёров — раскрой список выше и добавь.</div>';
+        return;
+      }
+      if (!from || !to || from > to) {
+        resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">Укажи период «с — по» (будущие продления), чтобы увидеть прогноз.</div>';
+        return;
+      }
+      var set = new Set(mine);
+      var kassas = ctx.M.computeChannelForecastKassas(model, set, from, to);
+
+      var byTariff = new Map();
+      kassas.forEach(function (k) {
+        var t = k.tariff || "—";
+        byTariff.set(t, (byTariff.get(t) || 0) + 1);
+      });
+      var tariffRows = Array.from(byTariff.entries()).sort(function (a, b) { return b[1] - a[1]; })
+        .map(function (e, i) { return { label: e[0], value: e[1], color: CC_TARIFF_COLORS[i % CC_TARIFF_COLORS.length] }; });
+
+      var revenue = kassas.length * check * (1 - churn / 100);
+
+      var html = "";
+      html += '<div class="cc-metric">' + statBlock(fmtNum(kassas.length), "Касс к продлению") + '</div>';
+      if (tariffRows.length) {
+        html += '<div class="cc-metric">' + barList(tariffRows, { caption: "разбивка по тарифам среди найденных касс" }) + '</div>';
+      }
+      html += '<div class="cc-metric"><div class="stat-value" style="color:var(--good)">' + fmtNum(Math.round(revenue)) + ' ₽</div><div class="stat-label">Прогноз выручки за период</div></div>';
+      // Отток -- прогноз потерь ОТ введённого % (не факт по истории): касс_к_продлению × %.
+      // Пусто, пока % не введён -- см. hasChurn выше.
+      if (hasChurn) {
+        var lostKassas = Math.round(kassas.length * churn / 100);
+        var lostMoney = lostKassas * check;
+        html += '<div class="cc-metric"><div class="stat-value" style="color:var(--crit)">' + fmtNum(lostKassas) + ' касс</div><div class="stat-label">Отток за период — потеряно ≈ ' + fmtNum(Math.round(lostMoney)) + ' ₽</div></div>';
+      } else {
+        html += '<div class="cc-metric"><div class="stat-label">Укажи % оттока выше, чтобы увидеть прогноз потерь.</div></div>';
+      }
+      resultsBox.innerHTML = html;
+    }
+
+    fromInput.addEventListener("change", renderResults);
+    toInput.addEventListener("change", renderResults);
+    checkInput.addEventListener("input", renderResults);
+    churnInput.addEventListener("input", renderResults);
+    renderResults();
+    return wrap;
+  }
+
   function makeChannelRevenueWidget(channelName) {
     return {
       // scope:"as-of" -- у каждого борда СВОЙ период "с-по" (ниже), не общий фильтр шапки:
       // Дима explicitly хочет сравнивать разные будущие окна на разных каналах одновременно.
       title: "Выручка канала: " + channelName, type: "калькулятор", scope: "as-of", span: true,
-      render: function (model, ctx) {
-        var asn = ccAssignment(model, ctx);
-        var mine = asn.byChannel[channelName] || [];
-        var free = asn.free;
-
-        var wrap = el('<div></div>');
-        var head = el(
-          '<div class="cc-settings">' +
-          '<button type="button" class="cc-toggle">▸ Партнёры канала (' + mine.length + ')</button>' +
-          '<div class="threshold-row" style="margin-top:8px">' +
-          '<label title="Смотрим на будущие продления -- касс, у которых дата окончания попадает в это окно">с <input type="date" class="cc-from"></label>' +
-          '<label>по <input type="date" class="cc-to"></label>' +
-          '</div>' +
-          '<div class="threshold-row" style="margin-top:8px">' +
-          '<label>чек, ₽ <input type="number" min="0" step="1" class="cc-check"></label>' +
-          '<label>% оттока (закладываем) <input type="number" min="0" max="100" step="1" class="cc-churn" placeholder="—"></label>' +
-          '</div>' +
-          '<div class="cc-body hidden">' +
-          '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
-          '<div class="cc-list"></div>' +
-          '</div>' +
-          '</div>'
-        );
-        var resultsBox = el('<div class="cc-results"></div>');
-        wrap.appendChild(head);
-        wrap.appendChild(resultsBox);
-
-        var toggleBtn = head.querySelector(".cc-toggle");
-        var bodyEl = head.querySelector(".cc-body");
-        var searchInput = head.querySelector(".cc-search");
-        var listEl = head.querySelector(".cc-list");
-        var fromInput = head.querySelector(".cc-from");
-        var toInput = head.querySelector(".cc-to");
-        var checkInput = head.querySelector(".cc-check");
-        var churnInput = head.querySelector(".cc-churn");
-
-        function updateToggleLabel() {
-          var isOpen = !bodyEl.classList.contains("hidden");
-          toggleBtn.textContent = (isOpen ? "▾" : "▸") + " Партнёры канала (" + mine.length + ")";
-        }
-
-        // Свободные -- ПЕРВЫМИ (это и есть actionable-список, "кого можно добавить"),
-        // "В канале" -- ниже, справочно (Дима, дословно из ТЗ: "чтобы ИХ [свободных]
-        // выводило наверх списка, они же [ниже] находились те, что за ней уже закреплены" --
-        // раньше был перепутан порядок, свободные оказывались внизу под длинным "В канале").
-        function renderList() {
-          var term = searchInput.value.trim().toLowerCase();
-          var mineF = mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
-          var freeF = free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
-          var html = "";
-          if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
-          if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
-          if (!mineF.length && !freeF.length) html = '<div class="cc-empty">Ничего не найдено</div>';
-          listEl.innerHTML = html;
-          listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
-            cb.addEventListener("change", function () {
-              var name = cb.dataset.partner;
-              ccOverrides[name] = cb.checked ? channelName : "";
-              ccSaveOverrides(ccOverrides);
-              // Пересчитывают и перерисовывают себя ВСЕ смонтированные борды каналов
-              // сразу (включая этот) -- см. ccBroadcastAssignmentChanged выше.
-              ccBroadcastAssignmentChanged();
-            });
-          });
-        }
-
-        // Полный пересчёт "с нуля" из ccAssignment (не точечная правка mine/free) --
-        // вызывается и на свою же карточку, и на остальные борды каналов через
-        // ccBroadcastAssignmentChanged, единая точка входа для live-sync.
-        function refreshAssignment() {
-          var fresh = ccAssignment(model, ctx);
-          mine = fresh.byChannel[channelName] || [];
-          free = fresh.free;
-          updateToggleLabel();
-          if (!bodyEl.classList.contains("hidden")) renderList();
-          renderResults();
-        }
-        ccActiveRefreshers[channelName] = refreshAssignment;
-
-        toggleBtn.addEventListener("click", function () {
-          bodyEl.classList.toggle("hidden");
-          updateToggleLabel();
-          if (!bodyEl.classList.contains("hidden")) renderList();
-        });
-        searchInput.addEventListener("input", renderList);
-
-        function renderResults() {
-          var check = parseFloat(checkInput.value) || 0;
-          var churnRaw = churnInput.value.trim();
-          var hasChurn = churnRaw !== ""; // Дима, 2026-08-19: отток пуст, пока % явно не введён -- 0 и "не задано" разные вещи
-          var churn = hasChurn ? (parseFloat(churnRaw) || 0) : 0;
-          var fromVal = fromInput.value, toVal = toInput.value;
-          var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
-          var to = toVal ? new Date(toVal + "T23:59:59") : null;
-
-          if (!mine.length) {
-            resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">В канале нет партнёров — раскрой список выше и добавь.</div>';
-            return;
-          }
-          if (!from || !to || from > to) {
-            resultsBox.innerHTML = '<div class="stat-label" style="margin-top:14px">Укажи период «с — по» (будущие продления), чтобы увидеть прогноз.</div>';
-            return;
-          }
-          var set = new Set(mine);
-          var kassas = ctx.M.computeChannelForecastKassas(model, set, from, to);
-
-          var byTariff = new Map();
-          kassas.forEach(function (k) {
-            var t = k.tariff || "—";
-            byTariff.set(t, (byTariff.get(t) || 0) + 1);
-          });
-          var tariffRows = Array.from(byTariff.entries()).sort(function (a, b) { return b[1] - a[1]; })
-            .map(function (e, i) { return { label: e[0], value: e[1], color: CC_TARIFF_COLORS[i % CC_TARIFF_COLORS.length] }; });
-
-          var revenue = kassas.length * check * (1 - churn / 100);
-
-          var html = "";
-          html += '<div class="cc-metric">' + statBlock(fmtNum(kassas.length), "Касс к продлению") + '</div>';
-          if (tariffRows.length) {
-            html += '<div class="cc-metric">' + barList(tariffRows, { caption: "разбивка по тарифам среди найденных касс" }) + '</div>';
-          }
-          html += '<div class="cc-metric"><div class="stat-value" style="color:var(--good)">' + fmtNum(Math.round(revenue)) + ' ₽</div><div class="stat-label">Прогноз выручки за период</div></div>';
-          // Отток -- прогноз потерь ОТ введённого % (не факт по истории): касс_к_продлению × %.
-          // Пусто, пока % не введён -- см. hasChurn выше.
-          if (hasChurn) {
-            var lostKassas = Math.round(kassas.length * churn / 100);
-            var lostMoney = lostKassas * check;
-            html += '<div class="cc-metric"><div class="stat-value" style="color:var(--crit)">' + fmtNum(lostKassas) + ' касс</div><div class="stat-label">Отток за период — потеряно ≈ ' + fmtNum(Math.round(lostMoney)) + ' ₽</div></div>';
-          } else {
-            html += '<div class="cc-metric"><div class="stat-label">Укажи % оттока выше, чтобы увидеть прогноз потерь.</div></div>';
-          }
-          resultsBox.innerHTML = html;
-        }
-
-        fromInput.addEventListener("change", renderResults);
-        toInput.addEventListener("change", renderResults);
-        checkInput.addEventListener("input", renderResults);
-        churnInput.addEventListener("input", renderResults);
-        renderResults();
-        return wrap;
+      render: function (model, ctx, instanceId) {
+        return ccBuildChannelBody(channelName, model, ctx, instanceId);
+      },
+      onRemove: function (instanceId) {
+        delete ccActiveRefreshers[instanceId];
       },
     };
   }
@@ -1727,6 +1871,86 @@
   WIDGETS["b5-revenue-olya"] = makeChannelRevenueWidget("Ольга Зибер");
   WIDGETS["b5-revenue-larisa"] = makeChannelRevenueWidget("Лариса Пенигина");
   WIDGETS["b5-revenue-partners"] = makeChannelRevenueWidget("Партнёры");
+
+  // Кастомный канал (2026-08-20) -- "есть вероятность, что каналов будет больше 3".
+  // Название редактируется ТЕКСТОВЫМ ПОЛЕМ внутри карточки (не заголовком борда --
+  // widgetShell/dnd.js общие на все 30+ виджетов, трогать не стали). Имя + состав
+  // партнёров переживают перезагрузку страницы через getPersistState/applyPersistState
+  // (см. dnd.js saveLayout/loadSavedLayout) -- партнёры уже персистентны сами по себе
+  // (ccOverrides в localStorage по имени партнёра), тут персистится только САМО ИМЯ,
+  // привязанное к конкретному instanceId размещения на холсте.
+  var ccCustomNames = new Map(); // instanceId -> имя канала ("" = ещё не задано)
+
+  WIDGETS["b5-revenue-custom"] = {
+    title: "Новый канал продаж", type: "калькулятор", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el('<div></div>');
+      var nameRow = el(
+        '<div class="cc-settings">' +
+        '<label class="cc-name-label">Название канала</label>' +
+        '<input type="text" class="cc-name-input" placeholder="Например, «Маркетплейсы»">' +
+        '</div>'
+      );
+      var bodyHost = el('<div></div>');
+      wrap.appendChild(nameRow);
+      wrap.appendChild(bodyHost);
+
+      var nameInput = nameRow.querySelector(".cc-name-input");
+      nameInput.value = ccCustomNames.get(instanceId) || "";
+
+      function renderBody() {
+        var channelName = ccCustomNames.get(instanceId) || "";
+        bodyHost.innerHTML = "";
+        if (!channelName) {
+          bodyHost.appendChild(el('<div class="stat-label" style="margin-top:12px">Введи название канала выше, чтобы начать назначать партнёров.</div>'));
+          delete ccActiveRefreshers[instanceId]; // нечего пересчитывать, пока канал не назван
+          return;
+        }
+        bodyHost.appendChild(ccBuildChannelBody(channelName, model, ctx, instanceId));
+      }
+
+      nameInput.addEventListener("change", function () {
+        var newName = nameInput.value.trim();
+        var oldName = ccCustomNames.get(instanceId) || "";
+        if (newName === oldName) return;
+        // Переименование переносит УЖЕ назначенных партнёров со старого имени на новое --
+        // иначе они потерялись бы, оставшись привязаны к имени, которого больше нет ни у
+        // одной карточки на холсте.
+        if (oldName) {
+          Object.keys(ccOverrides).forEach(function (partner) {
+            if (ccOverrides[partner] === oldName) ccOverrides[partner] = newName;
+          });
+          ccSaveOverrides(ccOverrides);
+        }
+        ccCustomNames.set(instanceId, newName);
+        renderBody();
+        ccBroadcastAssignmentChanged();
+      });
+
+      renderBody();
+      return wrap;
+    },
+    onRemove: function (instanceId) {
+      var name = ccCustomNames.get(instanceId);
+      if (name) {
+        // Партнёров канала не удаляем совсем -- освобождаем (снова видны как "Свободные"
+        // на остальных бордах), как и при обычном снятии галочки.
+        Object.keys(ccOverrides).forEach(function (partner) {
+          if (ccOverrides[partner] === name) ccOverrides[partner] = "";
+        });
+        ccSaveOverrides(ccOverrides);
+      }
+      ccCustomNames.delete(instanceId);
+      delete ccActiveRefreshers[instanceId];
+      ccBroadcastAssignmentChanged();
+    },
+    getPersistState: function (instanceId) {
+      return ccCustomNames.get(instanceId) || "";
+    },
+    applyPersistState: function (instanceId, saved) {
+      if (saved) ccCustomNames.set(instanceId, saved);
+    },
+  };
 
   var api = { WIDGETS: WIDGETS, widgetShell: widgetShell, fmtNum: fmtNum, fmtDate: fmtDate };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
