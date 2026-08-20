@@ -1057,6 +1057,7 @@
     computeFunnel: computeFunnel,
     kassaChurnStatus: kassaChurnStatus,
     clientChurnStatus: clientChurnStatus,
+    clientLapsedAt: clientLapsedAt,
     clientsOverdue: clientsOverdue,
     clientsOverdueInRange: clientsOverdueInRange,
     computeReturnedClients: computeReturnedClients,

@@ -397,31 +397,37 @@ async function main() {
   // клиента = сумма продлений по всем его кассам.
   const renewClientsNode = win.document.querySelector('[data-widget-id="b2-renewdist-clients"]');
   const renewClientsHeaders = Array.from(renewClientsNode.querySelectorAll("th")).map((th) => th.textContent);
-  const expectedHeaders = ["ИНН клиента", "Наименование", "Партнёр", "Продлений", "Тариф"];
-  const forbiddenHeaders = ["РНМ", "Окончание", "Статус"];
+  const expectedHeaders = ["ИНН клиента", "Наименование", "Партнёр", "Касс", "Продлений", "Тариф"];
+  const forbiddenHeaders = ["РНМ", "Окончание", "Статус"]; // "Статус" -- заголовок таблицы (не фильтр в controls), его тут нет
   const headersMatch = expectedHeaders.every((h) => renewClientsHeaders.includes(h)) && forbiddenHeaders.every((h) => !renewClientsHeaders.includes(h));
-  console.log("b2-renewdist-clients: колонки без РНМ/Окончания/Статуса, с Продлений/Тариф:", headersMatch ? "OK" : "FAIL", renewClientsHeaders);
+  console.log("b2-renewdist-clients: колонки без РНМ/Окончания/Статуса, с Касс/Продлений/Тариф:", headersMatch ? "OK" : "FAIL", renewClientsHeaders);
   if (!headersMatch) ok = false;
 
-  // независимая сверка: сумма продлений случайного клиента = сумма renewals по его кассам
+  // дефолт фильтра "Статус" -- "только активные" (Дима, 2026-08-20: "значения выглядят
+  // сильно завышенно, нужно приземлить")
+  const statusFilterDefault = renewClientsNode.querySelector(".f-status").value;
+  console.log("b2-renewdist-clients: фильтр «Статус» по умолчанию «активные»:", statusFilterDefault === "active" ? "OK" : "FAIL", statusFilterDefault);
+  if (statusFilterDefault !== "active") ok = false;
+
+  // независимая сверка: сумма продлений + число касс случайного клиента (снимаем фильтр
+  // "Статус" на "все", чтобы найти клиента гарантированно, независимо от его активности)
   const sampleClient = Array.from(model.clients.values()).find((c) => !c.phys && c.kassas.length > 1);
   const expectedRenewals = sampleClient.kassas.reduce((sum, k) => sum + k.renewals, 0);
-  const clientRow = Array.from(renewClientsNode.querySelectorAll("tbody tr")).find((tr) => tr.children[0].textContent === sampleClient.key);
-  if (clientRow) {
-    const shownRenewals = parseInt(clientRow.children[3].textContent.replace(/\s/g, ""), 10);
-    console.log("b2-renewdist-clients: продления клиента = сумма по его кассам:", shownRenewals === expectedRenewals ? "OK" : "FAIL", shownRenewals, "vs", expectedRenewals);
-    if (shownRenewals !== expectedRenewals) ok = false;
-  } else {
-    // клиент мог не попасть в топ-150 по умолчанию (сортировка по убыванию) -- фильтруем по ИНН, чтобы найти его гарантированно
-    renewClientsNode.querySelector(".f-inn").value = sampleClient.key;
-    renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
-    const filteredRow = renewClientsNode.querySelector("tbody tr");
-    const shownRenewals = filteredRow ? parseInt(filteredRow.children[3].textContent.replace(/\s/g, ""), 10) : null;
-    console.log("b2-renewdist-clients: продления клиента = сумма по его кассам (через фильтр ИНН):", shownRenewals === expectedRenewals ? "OK" : "FAIL", shownRenewals, "vs", expectedRenewals);
-    if (shownRenewals !== expectedRenewals) ok = false;
-    renewClientsNode.querySelector(".f-inn").value = "";
-    renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
-  }
+  renewClientsNode.querySelector(".f-status").value = "";
+  renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
+  renewClientsNode.querySelector(".f-inn").value = sampleClient.key;
+  renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
+  const filteredRow = renewClientsNode.querySelector("tbody tr");
+  const shownRenewals = filteredRow ? parseInt(filteredRow.children[4].textContent.replace(/\s/g, ""), 10) : null;
+  const shownKassaCount = filteredRow ? parseInt(filteredRow.children[3].textContent.replace(/\s/g, ""), 10) : null;
+  console.log("b2-renewdist-clients: продления клиента = сумма по его кассам:", shownRenewals === expectedRenewals ? "OK" : "FAIL", shownRenewals, "vs", expectedRenewals);
+  if (shownRenewals !== expectedRenewals) ok = false;
+  console.log("b2-renewdist-clients: колонка «Касс» = число касс клиента:", shownKassaCount === sampleClient.kassas.length ? "OK" : "FAIL", shownKassaCount, "vs", sampleClient.kassas.length);
+  if (shownKassaCount !== sampleClient.kassas.length) ok = false;
+  renewClientsNode.querySelector(".f-inn").value = "";
+  renewClientsNode.querySelector(".f-inn").dispatchEvent(new win.Event("input", { bubbles: true }));
+  renewClientsNode.querySelector(".f-status").value = "active";
+  renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
 
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;

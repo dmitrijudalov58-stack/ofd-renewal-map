@@ -201,6 +201,10 @@
       '<div class="threshold-row">' +
       '<label>Партнёр <select class="f-partner"><option value="">все</option>' +
       partners.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join("") + '</select></label>' +
+      // Дефолт "активные" (не "все", как у остальных фильтров) -- сырые числа по ВСЕМ
+      // клиентам (включая давно отвалившихся с историческими продлениями) выглядели
+      // завышенными (Дима, 2026-08-20: "нужно приземлить эту историю").
+      '<label>Статус <select class="f-status"><option value="active" selected>только активные</option><option value="">все</option></select></label>' +
       '<label>ИНН клиента <input type="text" class="f-inn" placeholder="поиск" style="width:110px"></label>' +
       '<span style="display:flex;gap:8px;align-items:center;color:var(--muted)">Продлений:' +
       RENEWAL_BUCKETS.map(function (b) { return '<label style="display:flex;gap:3px;align-items:center;color:var(--ink)"><input type="checkbox" class="f-ren" value="' + b.id + '"> ' + b.label + '</label>'; }).join("") +
@@ -213,26 +217,28 @@
 
     function apply() {
       var pf = controls.querySelector(".f-partner").value;
+      var sf = controls.querySelector(".f-status").value;
       var innf = controls.querySelector(".f-inn").value.trim().toLowerCase();
       var checkedBuckets = Array.from(controls.querySelectorAll(".f-ren:checked")).map(function (cb) { return cb.value; });
       var activeBuckets = RENEWAL_BUCKETS.filter(function (b) { return checkedBuckets.indexOf(b.id) !== -1; });
       var filtered = clientArray.filter(function (c) {
         if (pf && (c.partner || "—") !== pf) return false;
+        if (sf === "active" && !c.active) return false;
         if (innf && !(c.key || "").toLowerCase().includes(innf)) return false;
         if (activeBuckets.length && !activeBuckets.some(function (b) { return b.test(c.renewals); })) return false;
         return true;
       });
       filtered.sort(function (a, b) { return b.renewals - a.renewals; });
       var top = filtered.slice(0, limit);
-      var rows = top.map(function (c) { return [c.key, c.org || "—", c.partner || "—", c.renewals, c.tariff || "—"]; });
+      var rows = top.map(function (c) { return [c.key, c.org || "—", c.partner || "—", c.kassaCount, c.renewals, c.tariff || "—"]; });
       tableHolder.innerHTML = "";
       tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(filtered.length) + (filtered.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + '</div>'));
       tableHolder.appendChild(makeSortableTable(
-        [{ label: "ИНН клиента" }, { label: "Наименование" }, { label: "Партнёр" }, { label: "Продлений", num: true }, { label: "Тариф" }],
+        [{ label: "ИНН клиента" }, { label: "Наименование" }, { label: "Партнёр" }, { label: "Касс", num: true }, { label: "Продлений", num: true }, { label: "Тариф" }],
         rows
       ));
       wrap._getExportRows = function () {
-        return filtered.map(function (c) { return { ИННКлиента: c.key, Наименование: c.org || "", Партнёр: c.partner || "", Продлений: c.renewals, Тариф: c.tariff || "" }; });
+        return filtered.map(function (c) { return { ИННКлиента: c.key, Наименование: c.org || "", Партнёр: c.partner || "", Касс: c.kassaCount, Продлений: c.renewals, Тариф: c.tariff || "" }; });
       };
       wrap._getFilteredClients = function () { return filtered; };
     }
@@ -1249,7 +1255,9 @@
       var clientArr = Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) {
         var totalRenewals = c.kassas.reduce(function (sum, k) { return sum + k.renewals; }, 0);
         var lastKassa = c.kassas.reduce(function (last, k) { return (!last || k.appearance > last.appearance) ? k : last; }, null);
-        return { key: c.key, org: c.org, partner: c.partner, renewals: totalRenewals, tariff: lastKassa ? lastKassa.tariff : null };
+        // active -- та же "действующий сейчас" формула, что у "Распределение по числу
+        // касс"/"Возрастная структура базы" (clientLapsedAt, не завязана на strict/legacy).
+        return { key: c.key, org: c.org, partner: c.partner, kassaCount: c.kassas.length, renewals: totalRenewals, tariff: lastKassa ? lastKassa.tariff : null, active: !ctx.M.clientLapsedAt(c, ctx.asOf) };
       });
 
       function buildRows(clients) {
@@ -1268,9 +1276,11 @@
       }
 
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН), не кассы. «Продлений» — сумма продлений по ВСЕМ кассам клиента (сколько раз он в целом продлевался). Тариф — последней по дате активации кассы клиента (может быть несколько касс на разных тарифах).</div>'));
+      wrap.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">Считаем клиентов (ИНН), не кассы. «Продлений» — сумма продлений по ВСЕМ кассам клиента за всё время (сколько раз он в целом продлевался), «Касс» — сколько касс у него сейчас. Тариф — последней по дате активации кассы клиента (может быть несколько касс на разных тарифах). По умолчанию — только действующие клиенты (фильтр «Статус» ниже) — иначе давно отвалившиеся клиенты с историческими продлениями раздувают цифры.</div>'));
       var chartHolder = el('<div></div>');
-      chartHolder.appendChild(el(barList(buildRows(clientArr), { caption: "число клиентов в каждой корзине" })));
+      // График по умолчанию тоже только по активным -- совпадает с дефолтом фильтра таблицы
+      // ниже (2026-08-20, Дима: "значения выглядят сильно завышенно, нужно приземлить").
+      chartHolder.appendChild(el(barList(buildRows(clientArr.filter(function (c) { return c.active; })), { caption: "число клиентов в каждой корзине · только действующие" })));
       var refreshBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">⟳ обновить график по текущему фильтру</button>');
       wrap.appendChild(chartHolder);
       wrap.appendChild(refreshBtn);
