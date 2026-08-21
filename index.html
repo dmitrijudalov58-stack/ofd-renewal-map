@@ -7,7 +7,7 @@
      ничего никуда не отправляется. CSP закрепляет это на уровне браузера: connect-src 'none'
      физически блокирует любой fetch/XHR/beacon, даже если в код когда-нибудь попадёт XSS-баг. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'; object-src 'none';">
-<title>Карта продлений ОФД</title>
+<title>BI OFD</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧾</text></svg>">
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=4">
 <link rel="stylesheet" href="css/styles.css?v=4">
@@ -15,7 +15,7 @@
 <body>
 
 <div class="topbar">
-  <div class="brand"><span class="mark">🧾</span>Карта продлений ОФД</div>
+  <div class="brand"><span class="mark">🧾</span>BI OFD</div>
   <div class="range">
     <span>период</span>
     <input type="date" id="periodStart" aria-label="начало периода">
@@ -44,6 +44,7 @@
 <div class="shell">
 
   <aside class="rail">
+   <div class="rail-scroll">
     <p class="rail-title">Библиотека виджетов</p>
 
     <details class="board-group" open>
@@ -96,6 +97,14 @@
       <div class="lib-item" data-widget="b5-revenue-partners"><span class="grip">⋮⋮</span>Выручка: Партнёры<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b5-revenue-custom"><span class="grip">⋮⋮</span>Новый канал (переименовывается)<span class="lchip">as-of</span></div>
     </details>
+   </div>
+
+   <hr class="rail-divider">
+   <div class="rail-footer">
+     <a class="rail-footer-btn" href="docs/guide.html" target="_blank" rel="noopener">
+       <span class="rail-footer-icon">📖</span>Инструкция
+     </a>
+   </div>
   </aside>
 
   <div class="canvas-wrap">
