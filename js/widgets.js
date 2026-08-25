@@ -320,7 +320,7 @@
       var barH = (h - padB) - y(d.value);
       var color = opts.color || "var(--s1)";
       parts.push('<rect class="mark-bar" style="fill:' + color + '" x="' + (cx - barW / 2).toFixed(1) + '" y="' + y(d.value).toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(1, barH).toFixed(1) + '" rx="3"><title>' + d.label + ": " + fmtNum(d.value) + '</title></rect>');
-      parts.push('<text class="value-label" x="' + cx.toFixed(1) + '" y="' + (y(d.value) - 5).toFixed(1) + '" text-anchor="middle">' + fmtNum(d.value) + '</text>');
+      parts.push('<text class="value-label" x="' + cx.toFixed(1) + '" y="' + (y(d.value) - 5).toFixed(1) + '" text-anchor="middle">' + (d.valueLabel || fmtNum(d.value)) + '</text>');
       parts.push('<text class="tick-label" x="' + cx.toFixed(1) + '" y="' + (h - 8) + '" text-anchor="middle">' + d.label + '</text>');
     });
     return '<svg class="chart-svg" viewBox="0 0 ' + w + ' ' + h + '" width="100%" height="' + h + '" role="img">' + parts.join("") + '</svg>';
@@ -919,12 +919,14 @@
         '<label>Партнёр <select class="f-partner"><option value="">все</option>' + partnerOptions.map(function (p) { return "<option>" + esc(p) + "</option>"; }).join("") + '</select></label>' +
         '</div>'
       );
-      // Интервал дней (Дима, 2026-08-25) -- ДОБАВЛЕН рядом с контролами выше, не заменяет их.
-      // Сужает уже отобранный список: у каждого клиента остаются только те кассы, чей "дней
-      // до дедлайна" попадает в [от;до], счётчик касс пересчитывается под сужение.
+      // Интервал дней (Дима, 2026-08-25, фикс 2026-08-25) -- ДОБАВЛЕН рядом с контролами
+      // выше, не заменяет их. Как только заполнен хоть один край -- становится ГЛАВНЫМ
+      // режимом отбора (радио/дата-порог выше игнорируются ПОЛНОСТЬЮ), иначе интервал
+      // упирался в потолок радио (по умолчанию 30 дней) и выглядел как "не применяется",
+      // если границы интервала выходили за него (найдено Димой на боевом сайте).
       var intervalControls = el(
         '<div class="threshold-row" style="margin-top:6px">' +
-        '<label title="Сужает список выше: остаются только кассы, у которых «дней до дедлайна» попадает в этот диапазон. Оба поля пустые — интервал не применяется.">интервал дней до окончания: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
+        '<label title="Как только заполнено хоть одно поле -- этот интервал становится ГЛАВНЫМ отбором, контролы выше («дней до окончания» / «дата окончания») игнорируются. Показывает все кассы, у которых «дней до дедлайна» попадает в этот диапазон. Оба поля пустые — работают контролы выше, как раньше.">интервал дней до окончания: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
         '<span class="interval-summary stat-label"></span>' +
         '</div>'
       );
@@ -948,11 +950,25 @@
         // жив/дедлайн кассы (kassaDeadline) считается НА эту дату, иначе кассы, уже
         // просроченные к РЕАЛЬНОМУ сегодня, отвалятся ещё до применения порога.
         var refDate = from || asOf;
-        caption.textContent = from
-          ? "Ретроспективный запрос от " + fmtDate(from) + " — не срез на сегодня (сегодня факт. " + fmtDate(asOf) + ", момент загрузки файла)"
-          : "Всегда на сегодня (" + fmtDate(asOf) + ", момент загрузки файла) — не зависит от фильтра периода";
         var pf = controls.querySelector(".f-partner").value;
-        var fn = daysRadio.checked ? ctx.M.daysThresholdFn(refDate, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : refDate);
+
+        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
+        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
+        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
+        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
+
+        // Интервал -- ГЛАВНЫЙ отбор, если заполнен: deadlineFn пропускает ЛЮБУЮ живую кассу
+        // (не гейтится радио/датой выше), сама вырезка по [от;до] идёт ниже на уровне кассы.
+        // Без него -- прежнее поведение через радио "дней до окончания"/"дата окончания".
+        var fn = hasIv
+          ? function () { return true; }
+          : (daysRadio.checked ? ctx.M.daysThresholdFn(refDate, days) : ctx.M.dateThresholdFn(dateVal ? new Date(dateVal) : refDate));
+        caption.textContent = hasIv
+          ? "Интервал дней активен (ниже) — контролы «дней до окончания»/«дата окончания» сейчас не используются."
+          : (from
+            ? "Ретроспективный запрос от " + fmtDate(from) + " — не срез на сегодня (сегодня факт. " + fmtDate(asOf) + ", момент загрузки файла)"
+            : "Всегда на сегодня (" + fmtDate(asOf) + ", момент загрузки файла) — не зависит от фильтра периода");
+
         var raw = ctx.M.clientsAtRisk(model, refDate, fn, { strict: ctx.strict });
         if (pf) raw = raw.filter(function (r) { return (r.partner || "—") === pf; });
         raw.sort(function (a, b) { return a.end - b.end; });
@@ -963,10 +979,6 @@
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)), kassaDetails: kassaDetails };
         });
         // интервал дней -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
-        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
-        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
-        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
-        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
         if (hasIv) {
           var matchedKassas = 0;
           rows = rows.filter(function (r) {
@@ -1052,12 +1064,14 @@
         '<label>ИНН партнёра <input type="text" class="f-pinn" placeholder="поиск" style="width:110px"></label>' +
         '</div>'
       );
-      // Интервал дней просрочки (Дима, 2026-08-25) -- ДОБАВЛЕН рядом с "от-до по дате" выше,
-      // не заменяет его. Сужает уже отобранный список: у каждого клиента остаются только те
-      // кассы, чьи "дни просрочки" попадают в [от;до] (0-30 -- ровно грейс из счётчика выше).
+      // Интервал дней просрочки (Дима, 2026-08-25, фикс 2026-08-25) -- ДОБАВЛЕН рядом с
+      // "от-до по дате" выше, не заменяет его. Как только заполнен хоть один край -- ГЛАВНЫЙ
+      // отбор (окно 0-90 по умолчанию и "от-до по дате" выше игнорируются ПОЛНОСТЬЮ), иначе
+      // интервал упирался в потолок дефолтного окна и выглядел как "не применяется", если
+      // границы выходили за него (найдено Димой на боевом сайте).
       var intervalControls = el(
         '<div class="threshold-row" style="margin-top:6px">' +
-        '<label title="Сужает список выше: остаются только кассы, у которых «дней просрочки» попадает в этот диапазон. Оба поля пустые — интервал не применяется.">интервал дней просрочки: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
+        '<label title="Как только заполнено хоть одно поле -- этот интервал становится ГЛАВНЫМ отбором, «от-до по дате» выше игнорируется. Показывает все кассы, у которых «дней просрочки» попадает в этот диапазон. Оба поля пустые — работает «от-до по дате» / окно 0-90, как раньше.">интервал дней просрочки: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
         '<span class="interval-summary stat-label"></span>' +
         '</div>'
       );
@@ -1080,8 +1094,19 @@
         var toVal = controls.querySelector(".to-input").value;
         var from = fromVal ? new Date(fromVal + "T00:00:00") : null;
         var to = toVal ? new Date(toVal + "T23:59:59") : null;
+
+        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
+        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
+        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
+        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
+
         var raw;
-        if (from && to) {
+        if (hasIv) {
+          // Интервал -- ГЛАВНЫЙ отбор: берём ВСЕХ просроченных без верхней границы (окно
+          // 0-90 и "от-до по дате" сейчас не действуют), вырезка по [от;до] -- на уровне кассы ниже.
+          raw = ctx.M.clientsOverdue(model, asOf, 0, Infinity);
+          caption.textContent = "Интервал дней просрочки активен (ниже) — «от-до по дате» и окно 0-90 сейчас не используются.";
+        } else if (from && to) {
           raw = ctx.M.clientsOverdueInRange(model, asOf, from, to);
           caption.textContent = "Диапазон " + fmtDate(from) + " — " + fmtDate(to) + ": и клиент, и «касс к продлению» считаются только по кассам с окончанием в этом окне (сегодня факт. " + fmtDate(asOf) + ", момент загрузки файла).";
         } else {
@@ -1103,10 +1128,6 @@
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: r.daysOverdue, statusHtml: overduePill(r.daysOverdue), kassaDetails: kassaDetails };
         });
         // интервал дней просрочки -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
-        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
-        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
-        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
-        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
         if (hasIv) {
           var matchedKassas = 0;
           rows = rows.filter(function (r) {
@@ -1871,15 +1892,17 @@
     title: "Общая воронка", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
       var f = ctx.M.computeFunnel(model, ctx.periodStart, ctx.periodEnd);
+      // % конверсии (Дима, 2026-08-25) -- у КАЖДОГО столбца, относительно "Создано" (не
+      // относительно соседнего столбца) -- прямо под числом на графике.
+      function pctOfCreated(v) { return f.created ? " (" + fmtPct(v / f.created) + ")" : ""; }
       var chart = barChartVertical([
-        { label: "Создано", value: f.created },
-        { label: "Активировано", value: f.activated },
-        { label: "Неактивировано", value: f.notActivated },
-        { label: "Отозвано", value: f.revoked },
+        { label: "Создано", value: f.created, valueLabel: fmtNum(f.created) + pctOfCreated(f.created) },
+        { label: "Активировано", value: f.activated, valueLabel: fmtNum(f.activated) + pctOfCreated(f.activated) },
+        { label: "Неактивировано", value: f.notActivated, valueLabel: fmtNum(f.notActivated) + pctOfCreated(f.notActivated) },
+        { label: "Отозвано", value: f.revoked, valueLabel: fmtNum(f.revoked) + pctOfCreated(f.revoked) },
       ], { color: "var(--brand)" });
       var lag = f.avgLagDays !== null ? f.avgLagDays.toFixed(1) + " дн." : "—";
-      var conversion = f.created ? fmtPct(f.activated / f.created) : "—";
-      var caption = '<div class="stat-label" style="margin-top:6px">Активировано — клиент привязал код к себе (статус «Зарегистрировано»). Неактивировано — до сих пор в резерве партнёра (Новый/Выдан). Столбцы 2-4 честно делят «Создано». Конверсия создано → активировано: <b>' + conversion + '</b>. Среднее время создание → активация: ' + lag + '</div>';
+      var caption = '<div class="stat-label" style="margin-top:6px">Активировано — клиент привязал код к себе (статус «Зарегистрировано»). Неактивировано — до сих пор в резерве партнёра (Новый/Выдан). Столбцы 2-4 честно делят «Создано». % под каждым столбцом — доля от «Создано». Среднее время создание → активация: ' + lag + '</div>';
       return chart + caption;
     },
   };
