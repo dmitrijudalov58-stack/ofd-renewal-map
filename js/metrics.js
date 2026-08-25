@@ -555,6 +555,22 @@
     return out;
   }
 
+  // Плоский список клиентов в грейсе 0-30 дней (уже не продлились, но подтверждённым
+  // оттоком ещё не считаются) за период, по ВСЕМ партнёрам без ограничения -- для кнопки
+  // "скачать разбивку" на "Топ оттока по партнёрам" (в отличие от основной таблицы борда,
+  // где топ-100). Та же логика pending, что и computePartnerFlow (числа должны сходиться).
+  function computePendingClientsList(model, periodStart, periodEnd, asOf) {
+    asOf = asOf || periodEnd;
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      if (c.currentEnd && inRange(c.currentEnd, periodStart, periodEnd) && clientChurnStatus(c, asOf) === "pending") {
+        out.push({ partner: c.partner || "—", key: c.key, org: c.org || "" });
+      }
+    });
+    return out;
+  }
+
   // Возвращённые клиенты (91 день - 3 года) за период, по дате возврата.
   function computeReturnedClients(model, periodStart, periodEnd) {
     var out = [];
@@ -1065,6 +1081,7 @@
     kassaReturnInfo: kassaReturnInfo,
     computePartnerFlow: computePartnerFlow,
     computePartnerFlowKassas: computePartnerFlowKassas,
+    computePendingClientsList: computePendingClientsList,
     computePartnerKassasInMonth: computePartnerKassasInMonth,
     monthResolved: monthResolved,
     computeRevokedInPeriod: computeRevokedInPeriod,

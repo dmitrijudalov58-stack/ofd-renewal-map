@@ -903,6 +903,14 @@
       var wrap = el('<div></div>');
       var controlsId = "risk-days-" + Math.random().toString(36).slice(2, 7);
       var partnerOptions = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
+      // Грейс 0-30 дней (Дима, 2026-08-25) -- отдельный, ни от чего не зависящий счётчик:
+      // клиенты/кассы, у которых дедлайн УЖЕ прошёл, но подтверждённым оттоком (31+ дней)
+      // ещё не считаются -- та же логика, что и в "Просроченные клиенты" (clientsOverdue).
+      // Всегда от даты ЗАГРУЗКИ ФАЙЛА, не от фильтра периода.
+      var graceStat = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      var grace = ctx.M.clientsOverdue(model, asOf, 0, 30);
+      var graceKassas = grace.reduce(function (sum, r) { return sum + r.kassasToRenew; }, 0);
+      graceStat.textContent = "В грейсе 0-30 дней (уже не продлились, отток ещё не подтверждён): " + fmtNum(grace.length) + " клиентов · " + fmtNum(graceKassas) + " касс";
       var controls = el(
         '<div class="threshold-row">' +
         '<label title="Точка отсчёта для ретроспективного запроса — например «кто заканчивается в августе», даже если сегодня уже середина месяца. Жив/дедлайн кассы считается НА ЭТУ дату, не на сегодня. Пусто — как раньше, всё считается от сегодня (as-of).">с даты <input type="date" class="from-input"></label>' +
@@ -911,11 +919,22 @@
         '<label>Партнёр <select class="f-partner"><option value="">все</option>' + partnerOptions.map(function (p) { return "<option>" + esc(p) + "</option>"; }).join("") + '</select></label>' +
         '</div>'
       );
+      // Интервал дней (Дима, 2026-08-25) -- ДОБАВЛЕН рядом с контролами выше, не заменяет их.
+      // Сужает уже отобранный список: у каждого клиента остаются только те кассы, чей "дней
+      // до дедлайна" попадает в [от;до], счётчик касс пересчитывается под сужение.
+      var intervalControls = el(
+        '<div class="threshold-row" style="margin-top:6px">' +
+        '<label title="Сужает список выше: остаются только кассы, у которых «дней до дедлайна» попадает в этот диапазон. Оба поля пустые — интервал не применяется.">интервал дней до окончания: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
+        '<span class="interval-summary stat-label"></span>' +
+        '</div>'
+      );
       var tableHolder = el('<div></div>');
       var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
       var caption = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      wrap.appendChild(graceStat);
       wrap.appendChild(caption);
       wrap.appendChild(controls);
+      wrap.appendChild(intervalControls);
       wrap.appendChild(tableHolder);
       wrap.appendChild(expandArea);
 
@@ -939,14 +958,32 @@
         raw.sort(function (a, b) { return a.end - b.end; });
         var rows = raw.map(function (r) {
           var kassaDetails = (r.kassaDetails || []).map(function (kd) {
-            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, statusText: riskPillText(daysBetween(refDate, kd.end)) };
+            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, days: daysBetween(refDate, kd.end), statusText: riskPillText(daysBetween(refDate, kd.end)) };
           });
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)), kassaDetails: kassaDetails };
         });
+        // интервал дней -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
+        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
+        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
+        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
+        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
+        if (hasIv) {
+          var matchedKassas = 0;
+          rows = rows.filter(function (r) {
+            r.kassaDetails = r.kassaDetails.filter(function (kd) { return kd.days >= lo && kd.days <= hi; });
+            r.kassasToRenew = r.kassaDetails.length;
+            matchedKassas += r.kassasToRenew;
+            return r.kassasToRenew > 0;
+          });
+          intervalControls.querySelector(".interval-summary").textContent = "касс в интервале: " + fmtNum(matchedKassas) + " · клиентов: " + fmtNum(rows.length);
+        } else {
+          intervalControls.querySelector(".interval-summary").textContent = "";
+        }
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
       controls.addEventListener("input", renderTable);
       controls.addEventListener("change", renderTable);
+      intervalControls.addEventListener("input", renderTable);
       renderTable();
       return wrap;
     },
@@ -999,6 +1036,13 @@
       var asOf = ctx.loadAsOf || ctx.asOf;
       var wrap = el('<div></div>');
       var partnerOptions = Array.from(new Set(Array.from(model.clients.values()).filter(function (c) { return !c.phys; }).map(function (c) { return c.partner || "—"; }))).sort();
+      // Грейс 0-30 дней (Дима, 2026-08-25) -- отдельный, ни от чего не зависящий счётчик,
+      // тот же, что и на "Клиенты под риском" (clientsOverdue(asOf,0,30) -- всегда от даты
+      // загрузки файла, не от фильтров ниже).
+      var graceStat = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      var grace = ctx.M.clientsOverdue(model, asOf, 0, 30);
+      var graceKassas = grace.reduce(function (sum, r) { return sum + r.kassasToRenew; }, 0);
+      graceStat.textContent = "В грейсе 0-30 дней (уже не продлились, отток ещё не подтверждён): " + fmtNum(grace.length) + " клиентов · " + fmtNum(graceKassas) + " касс";
       var controls = el(
         '<div class="threshold-row">' +
         '<label title="Если заполнено -- и клиент, и счётчик «касс к продлению» считаются ТОЛЬКО по кассам с датой окончания в этом диапазоне (старые кассы вне диапазона не попадают в счёт). Пусто -- как раньше, окно 0-90 дней от сегодня.">от <input type="date" class="from-input"> до <input type="date" class="to-input"></label>' +
@@ -1008,11 +1052,22 @@
         '<label>ИНН партнёра <input type="text" class="f-pinn" placeholder="поиск" style="width:110px"></label>' +
         '</div>'
       );
+      // Интервал дней просрочки (Дима, 2026-08-25) -- ДОБАВЛЕН рядом с "от-до по дате" выше,
+      // не заменяет его. Сужает уже отобранный список: у каждого клиента остаются только те
+      // кассы, чьи "дни просрочки" попадают в [от;до] (0-30 -- ровно грейс из счётчика выше).
+      var intervalControls = el(
+        '<div class="threshold-row" style="margin-top:6px">' +
+        '<label title="Сужает список выше: остаются только кассы, у которых «дней просрочки» попадает в этот диапазон. Оба поля пустые — интервал не применяется.">интервал дней просрочки: от <input type="number" class="interval-from" style="width:70px"> до <input type="number" class="interval-to" style="width:70px"></label>' +
+        '<span class="interval-summary stat-label"></span>' +
+        '</div>'
+      );
       var tableHolder = el('<div></div>');
       var expandArea = el('<div class="expand-scroll" style="margin-top:10px"></div>');
       var caption = el('<div class="stat-label" style="margin-bottom:6px"></div>');
+      wrap.appendChild(graceStat);
       wrap.appendChild(caption);
       wrap.appendChild(controls);
+      wrap.appendChild(intervalControls);
       wrap.appendChild(tableHolder);
       wrap.appendChild(expandArea);
 
@@ -1043,14 +1098,32 @@
         raw.sort(function (a, b) { return a.daysOverdue - b.daysOverdue; }); // недавно ушедшие сверху -- самые актуальные для дозвона
         var rows = raw.map(function (r) {
           var kassaDetails = (r.kassaDetails || []).map(function (kd) {
-            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, statusText: overduePillText(daysBetween(kd.end, asOf)) };
+            return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, days: daysBetween(kd.end, asOf), statusText: overduePillText(daysBetween(kd.end, asOf)) };
           });
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: r.daysOverdue, statusHtml: overduePill(r.daysOverdue), kassaDetails: kassaDetails };
         });
+        // интервал дней просрочки -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
+        var ivFrom = parseFloat(intervalControls.querySelector(".interval-from").value);
+        var ivTo = parseFloat(intervalControls.querySelector(".interval-to").value);
+        var hasIv = !isNaN(ivFrom) || !isNaN(ivTo);
+        var lo = isNaN(ivFrom) ? -Infinity : ivFrom, hi = isNaN(ivTo) ? Infinity : ivTo;
+        if (hasIv) {
+          var matchedKassas = 0;
+          rows = rows.filter(function (r) {
+            r.kassaDetails = r.kassaDetails.filter(function (kd) { return kd.days >= lo && kd.days <= hi; });
+            r.kassasToRenew = r.kassaDetails.length;
+            matchedKassas += r.kassasToRenew;
+            return r.kassasToRenew > 0;
+          });
+          intervalControls.querySelector(".interval-summary").textContent = "касс в интервале: " + fmtNum(matchedKassas) + " · клиентов: " + fmtNum(rows.length);
+        } else {
+          intervalControls.querySelector(".interval-summary").textContent = "";
+        }
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
       controls.addEventListener("input", renderTable);
       controls.addEventListener("change", renderTable);
+      intervalControls.addEventListener("input", renderTable);
       renderTable();
       return wrap;
     },
@@ -1239,7 +1312,7 @@
           { label: "6+", value: b["6+"], color: "#104281" },
         ];
       }
-      return chartPlusFilterableTable(arr, ctx, buildRows, { caption: "число касс в каждой корзине" }, { hideTariff: true });
+      return chartPlusFilterableTable(arr, ctx, buildRows, { caption: "число касс в каждой корзине" }, {});
     },
     exportable: true,
   };
@@ -1299,7 +1372,7 @@
   };
 
   WIDGETS["b2-tariff"] = {
-    title: "Распределение по сроку тарифа", type: "график + таблица", scope: "as-of", span: true,
+    title: "Распределение касс по сроку тарифа", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var arr = Array.from(model.kassas.values());
       function buildRows(kassas) {
@@ -1397,72 +1470,206 @@
     title: "Топ по зависшему резерву", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var reserve = ctx.M.computeReserve(model, ctx.asOf);
-      var arr = Array.from(reserve.byPartner.entries()).map(function (e) { return { name: e[0], count: e[1] }; });
-      arr.sort(function (a, b) { return b.count - a.count; });
-      var top = arr.slice(0, 50);
+      var detail = ctx.M.computeReserveDetail(model);
+      var years = Object.keys(reserve.byYear).sort(function (a, b) { return b - a; });
       var wrap = el('<div><div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">всего в резерве ' + fmtNum(reserve.total) + ' · старше года — ' + fmtNum(reserve.olderThanYear) + ' · выгрузка — детально по каждому коду, все поля исходной выгрузки</div></div>');
-      wrap.appendChild(makeSortableTable([{ label: "Партнёр" }, { label: "Неактивир. кодов", num: true }], top.map(function (p) { return [p.name, p.count]; })));
-      // детальная выгрузка (п.22, 2026-08-06) -- как в оригинальной выгрузке, по каждому
-      // коду резерва все поля, а не агрегат "партнёр+count"
-      wrap._getExportRows = function () {
-        return model.reserveRows.map(function (r) {
-          return {
-            PIN: r.pin, Статус: r.status, Тариф: r.tariff, ТипАктивации: r.activationType,
-            ДатаСоздания: fmtDate(r.created), ДатаАктивации: fmtDate(r.activated),
-            ДатаОкончания: fmtDate(r.endDate), ОбщаяДатаОкончания: fmtDate(r.overallEnd), РНМ: r.rnm || "",
-            Организация: r.org || "", ИННОрганизации: r.innOrg || "", ИННФизлица: r.innPhys || "",
-            Партнёр: r.partner || "", ИННПартнёра: r.partnerInn || "", ЦентрПродаж: r.salesCenter || "", ТипПродажи: r.salesType || "",
-          };
-        });
-      };
+      // Фильтр по году (Дима, 2026-08-25) -- год берётся по ДАТЕ СОЗДАНИЯ кода (та же
+      // разбивка, что уже используется на "Неактивированные коды по годам", computeReserveDetail).
+      var controls = el(
+        '<div class="threshold-row" style="margin-bottom:8px">' +
+        '<label>Год <select class="f-year"><option value="">все</option>' + years.map(function (y) { return "<option>" + y + "</option>"; }).join("") + '</select></label>' +
+        '</div>'
+      );
+      var tableHolder = el('<div></div>');
+      wrap.appendChild(controls);
+      wrap.appendChild(tableHolder);
+
+      function apply() {
+        var yf = controls.querySelector(".f-year").value;
+        var arr;
+        if (yf) {
+          var y = parseInt(yf, 10);
+          arr = Array.from(detail.entries()).map(function (e) {
+            var ym = e[1].years.get(y);
+            var count = 0;
+            if (ym) ym.forEach(function (c) { count += c; });
+            return { name: e[0], count: count };
+          }).filter(function (p) { return p.count > 0; });
+        } else {
+          arr = Array.from(reserve.byPartner.entries()).map(function (e) { return { name: e[0], count: e[1] }; });
+        }
+        arr.sort(function (a, b) { return b.count - a.count; });
+        var top = arr.slice(0, 50);
+        tableHolder.innerHTML = "";
+        tableHolder.appendChild(makeSortableTable([{ label: "Партнёр" }, { label: "Неактивир. кодов", num: true }], top.map(function (p) { return [p.name, p.count]; })));
+        // детальная выгрузка (п.22, 2026-08-06) -- как в оригинальной выгрузке, по каждому
+        // коду резерва все поля, а не агрегат "партнёр+count"; выгрузка тоже сужается по году
+        wrap._getExportRows = function () {
+          return model.reserveRows.filter(function (r) {
+            return !yf || (r.created instanceof Date && r.created.getFullYear() === parseInt(yf, 10));
+          }).map(function (r) {
+            return {
+              PIN: r.pin, Статус: r.status, Тариф: r.tariff, ТипАктивации: r.activationType,
+              ДатаСоздания: fmtDate(r.created), ДатаАктивации: fmtDate(r.activated),
+              ДатаОкончания: fmtDate(r.endDate), ОбщаяДатаОкончания: fmtDate(r.overallEnd), РНМ: r.rnm || "",
+              Организация: r.org || "", ИННОрганизации: r.innOrg || "", ИННФизлица: r.innPhys || "",
+              Партнёр: r.partner || "", ИННПартнёра: r.partnerInn || "", ЦентрПродаж: r.salesCenter || "", ТипПродажи: r.salesType || "",
+            };
+          });
+        };
+      }
+      controls.addEventListener("change", apply);
+      apply();
       return wrap;
     },
     exportable: true,
   };
 
+  // Ручная привязка партнёра к каналу (Дима, 2026-08-25) -- тот же инструмент, что у
+  // калькуляторов B5 (ccOverrides/ccAssignment/ccBroadcastAssignmentChanged, определены
+  // ниже по файлу как function-декларации -- hoisted, доступны здесь на момент вызова
+  // render(), т.к. вызывается позже, уже после полной загрузки скрипта). График сверху
+  // тоже пересчитывается через ccAssignment -- согласован с редактируемой таблицей снизу.
   WIDGETS["b3-channels"] = {
     title: "Разбивка по каналам", type: "таблица + график", scope: "as-of", span: true,
-    render: function (model, ctx) {
-      var ch = ctx.M.computeChannels(model, ctx.asOf);
-      var chart = barList([
-        { label: "Оля Зибер", value: ch["Ольга Зибер"], color: "var(--s1)" },
-        { label: "Лариса П.", value: ch["Лариса Пенигина"], color: "var(--s2)" },
-        { label: "Партнёры", value: ch["Партнёры"], color: "var(--s3)" },
-      ], { caption: "число активных клиентов, закреплённых за каналом, на as-of" });
-
-      var byChannel = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
+    render: function (model, ctx, instanceId) {
       var wrap = el('<div></div>');
-      wrap.appendChild(el(chart));
+      var chartHolder = el('<div></div>');
       var controls = el(
         '<div class="threshold-row" style="margin-top:12px">' +
-        '<label>Канал <select class="f-channel"><option value="">выбери канал, чтобы увидеть партнёров</option>' +
+        '<label>Канал <select class="f-channel"><option value="">выбери канал, чтобы увидеть и отредактировать партнёров</option>' +
         '<option>Ольга Зибер</option><option>Лариса Пенигина</option><option>Партнёры</option>' +
         '</select></label></div>'
       );
       var tableHolder = el('<div style="margin-top:8px"></div>');
+      wrap.appendChild(chartHolder);
       wrap.appendChild(controls);
       wrap.appendChild(tableHolder);
 
-      function apply() {
-        var sel = controls.querySelector(".f-channel").value;
+      var selectEl = controls.querySelector(".f-channel");
+      var editorState = null;
+
+      function statsMap() {
+        return new Map(ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict }).map(function (p) { return [p.name, p]; }));
+      }
+
+      function renderChart(asn, stats) {
+        var rows = CC_CHANNELS.map(function (chName, i) {
+          var names = asn.byChannel[chName] || [];
+          var clients = names.reduce(function (sum, n) { var s = stats.get(n); return sum + (s ? s.clients : 0); }, 0);
+          var short = chName === "Ольга Зибер" ? "Оля Зибер" : chName === "Лариса Пенигина" ? "Лариса П." : chName;
+          return { label: short, value: clients, color: i === 0 ? "var(--s1)" : i === 1 ? "var(--s2)" : "var(--s3)" };
+        });
+        chartHolder.innerHTML = "";
+        chartHolder.appendChild(el(barList(rows, { caption: "число активных клиентов, закреплённых за каналом, на as-of (с учётом ручных правок партнёров ниже)" })));
+      }
+
+      function renderPartnerList() {
+        var term = editorState.searchInput.value.trim().toLowerCase();
+        var mineF = editorState.mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+        var freeF = editorState.free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+        var html = "";
+        if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
+        if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
+        if (!mineF.length && !freeF.length) html = '<div class="cc-empty">Ничего не найдено</div>';
+        editorState.listEl.innerHTML = html;
+        editorState.listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+          cb.addEventListener("change", function () {
+            var name = cb.dataset.partner;
+            ccOverrides[name] = cb.checked ? editorState.channel : "";
+            ccSaveOverrides(ccOverrides);
+            ccBroadcastAssignmentChanged();
+          });
+        });
+      }
+
+      function renderPartnerTable(stats) {
+        var sortedMine = editorState.mine.slice().sort(function (a, b) {
+          var sa = stats.get(a), sb = stats.get(b);
+          return (sb ? sb.clients : 0) - (sa ? sa.clients : 0);
+        });
+        editorState.summaryEl.textContent = "партнёров в канале «" + editorState.channel + "»: " + fmtNum(sortedMine.length);
+        editorState.tableEl.innerHTML = "";
+        editorState.tableEl.appendChild(makeSortableTable(
+          [{ label: "Партнёр" }, { label: "Клиентов", num: true }, { label: "Касс", num: true }, { label: "Резерв", num: true }],
+          sortedMine.map(function (n) { var s = stats.get(n) || { clients: 0, kassas: 0, reserve: 0 }; return [n, s.clients, s.kassas, s.reserve]; })
+        ));
+        wrap._getExportRows = function () {
+          return sortedMine.map(function (n) { var s = stats.get(n) || { clients: 0, kassas: 0, reserve: 0 }; return { Партнёр: n, Канал: editorState.channel, Клиенты: s.clients, Кассы: s.kassas, Резерв: s.reserve }; });
+        };
+      }
+
+      // Шапку редактора (аккордеон + поиск) пересоздаём только при смене ВЫБРАННОГО канала,
+      // не на каждый refresh() -- иначе открытый аккордеон/введённый поиск сбрасывались бы
+      // при любой правке чек-бокса в ЛЮБОМ борде каналов на холсте (ccBroadcastAssignmentChanged
+      // дёргает refresh() у всех сразу). Тот же паттерн, что и в ccBuildChannelBody.
+      function buildEditorShell(channel) {
+        tableHolder.innerHTML = "";
+        var shell = el(
+          '<div>' +
+          '<div class="cc-settings">' +
+          '<button type="button" class="cc-toggle">▸ Управлять партнёрами канала</button>' +
+          '<div class="cc-body hidden">' +
+          '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
+          '<div class="cc-list"></div>' +
+          '</div>' +
+          '</div>' +
+          '<div class="cc-summary" style="font-size:11.5px;color:var(--muted);margin:8px 0"></div>' +
+          '<div class="cc-table"></div>' +
+          '</div>'
+        );
+        tableHolder.appendChild(shell);
+        editorState = {
+          channel: channel, mine: [], free: [],
+          toggleBtn: shell.querySelector(".cc-toggle"),
+          bodyEl: shell.querySelector(".cc-body"),
+          searchInput: shell.querySelector(".cc-search"),
+          listEl: shell.querySelector(".cc-list"),
+          summaryEl: shell.querySelector(".cc-summary"),
+          tableEl: shell.querySelector(".cc-table"),
+        };
+        editorState.toggleBtn.addEventListener("click", function () {
+          editorState.bodyEl.classList.toggle("hidden");
+          editorState.toggleBtn.textContent = (!editorState.bodyEl.classList.contains("hidden") ? "▾" : "▸") + " Управлять партнёрами канала";
+          if (!editorState.bodyEl.classList.contains("hidden")) renderPartnerList();
+        });
+        editorState.searchInput.addEventListener("input", renderPartnerList);
+      }
+
+      function refresh() {
+        var asn = ccAssignment(model, ctx);
+        var stats = statsMap();
+        renderChart(asn, stats);
+        var sel = selectEl.value;
         if (!sel) {
+          editorState = null;
           tableHolder.innerHTML = "";
-          wrap._getExportRows = function () { return byChannel.map(function (p) { return { Партнёр: p.name, Канал: p.channel, Клиенты: p.clients, Кассы: p.kassas, Резерв: p.reserve }; }); };
+          wrap._getExportRows = function () {
+            var out = [];
+            CC_CHANNELS.forEach(function (chName) {
+              (asn.byChannel[chName] || []).forEach(function (n) {
+                var s = stats.get(n) || { clients: 0, kassas: 0, reserve: 0 };
+                out.push({ Партнёр: n, Канал: chName, Клиенты: s.clients, Кассы: s.kassas, Резерв: s.reserve });
+              });
+            });
+            return out;
+          };
           return;
         }
-        var filtered = byChannel.filter(function (p) { return p.channel === sel; });
-        filtered.sort(function (a, b) { return b.clients - a.clients; });
-        tableHolder.innerHTML = "";
-        tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">партнёров в канале «' + sel + '»: ' + fmtNum(filtered.length) + '</div>'));
-        tableHolder.appendChild(makeSortableTable(
-          [{ label: "Партнёр" }, { label: "Клиентов", num: true }, { label: "Касс", num: true }, { label: "Резерв", num: true }],
-          filtered.map(function (p) { return [p.name, p.clients, p.kassas, p.reserve]; })
-        ));
-        wrap._getExportRows = function () { return filtered.map(function (p) { return { Партнёр: p.name, Канал: p.channel, Клиенты: p.clients, Кассы: p.kassas, Резерв: p.reserve }; }); };
+        if (!editorState || editorState.channel !== sel) buildEditorShell(sel);
+        editorState.mine = asn.byChannel[sel] || [];
+        editorState.free = asn.free;
+        if (!editorState.bodyEl.classList.contains("hidden")) renderPartnerList();
+        renderPartnerTable(stats);
       }
-      controls.addEventListener("change", apply);
-      apply();
+
+      ccActiveRefreshers[instanceId] = refresh;
+      selectEl.addEventListener("change", refresh);
+      refresh();
       return wrap;
+    },
+    onRemove: function (instanceId) {
+      delete ccActiveRefreshers[instanceId];
     },
     exportable: true,
   };
@@ -1500,6 +1707,19 @@
           expandArea.appendChild(makeSortableTable([{ label: "РНМ" }, { label: "ИНН" }, { label: "Наименование" }, { label: "Тариф" }, { label: "Дата окончания" }], drillRows));
         });
       });
+      // Кнопка "скачать грейс 0-30 по всем партнёрам" (Дима, 2026-08-25) -- отдельная выгрузка,
+      // НЕ ограниченная топ-100 (в отличие от основной таблицы выше): один клиент = одна
+      // строка, первый столбец -- имя партнёра (повторяется во всех строках этого партнёра).
+      // Только скачивание CSV, на экране ничего не показываем.
+      var graceBtn = el('<button class="export-grace-btn" style="margin-top:10px">⬇ скачать грейс 0-30 дней — все клиенты по всем партнёрам</button>');
+      wrap.appendChild(graceBtn);
+      graceBtn.addEventListener("click", function () {
+        var pending = ctx.M.computePendingClientsList(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+        pending.sort(function (a, b) { return (a.partner || "").localeCompare(b.partner || "", "ru"); });
+        var exportRows = pending.map(function (p) { return { Партнёр: p.partner, ИННКлиента: p.key, НаименованиеКлиента: p.org }; });
+        OFDExport.downloadCSV("грейс_0-30_по_партнёрам", exportRows);
+      });
+
       wrap.appendChild(el('<div style="height:16px"></div>'));
       wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
       var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
@@ -1605,14 +1825,32 @@
         tr.style.cursor = "pointer";
         tr.addEventListener("click", function () {
           var p = top[i];
-          var lines = [];
-          Array.from(p.years.keys()).sort().forEach(function (y) {
+          var years = Array.from(p.years.keys()).sort(function (a, b) { return b - a; });
+          var yearRows = years.map(function (y) {
             var months = p.years.get(y);
-            var parts = [];
-            for (var m = 0; m < 12; m++) if (months.get(m)) parts.push(MONTHS_SHORT[m] + ": " + months.get(m));
-            lines.push('<div style="margin-bottom:4px"><b>' + y + '</b> — ' + parts.join(", ") + '</div>');
+            var yearTotal = 0;
+            var monthRows = [];
+            for (var m = 0; m < 12; m++) {
+              var cnt = months.get(m) || 0;
+              yearTotal += cnt;
+              if (cnt) monthRows.push('<div class="rd-month-row"><span>' + MONTHS_SHORT[m] + '</span><span>' + fmtNum(cnt) + '</span></div>');
+            }
+            return '<div class="rd-year-block">'
+              + '<div class="rd-year-row"><span class="rd-caret">▸</span><span class="rd-year-label">' + y + '</span><span class="rd-year-count">' + fmtNum(yearTotal) + '</span></div>'
+              + '<div class="rd-months" hidden>' + (monthRows.join("") || '<div class="rd-month-row"><span>нет данных</span></div>') + '</div>'
+              + '</div>';
           });
-          expandArea.innerHTML = '<div style="font-size:12px;border-top:1px solid var(--line);padding-top:8px">' + (lines.join("") || "нет данных по датам") + '</div>';
+          expandArea.innerHTML = '<div class="rd-detail">' + (yearRows.join("") || "нет данных по датам") + '</div>';
+          expandArea.querySelectorAll(".rd-year-row").forEach(function (row) {
+            row.addEventListener("click", function () {
+              var block = row.parentElement;
+              var months = block.querySelector(".rd-months");
+              var caret = row.querySelector(".rd-caret");
+              var open = !months.hidden;
+              months.hidden = open;
+              caret.textContent = open ? "▸" : "▾";
+            });
+          });
         });
       });
       wrap._getExportRows = function () { return arr.map(function (p) { return { Партнёр: p.name, НеактивированныеКоды: p.total }; }); };
@@ -1640,7 +1878,8 @@
         { label: "Отозвано", value: f.revoked },
       ], { color: "var(--brand)" });
       var lag = f.avgLagDays !== null ? f.avgLagDays.toFixed(1) + " дн." : "—";
-      var caption = '<div class="stat-label" style="margin-top:6px">Активировано — клиент привязал код к себе (статус «Зарегистрировано»). Неактивировано — до сих пор в резерве партнёра (Новый/Выдан). Столбцы 2-4 честно делят «Создано». Среднее время создание → активация: ' + lag + '</div>';
+      var conversion = f.created ? fmtPct(f.activated / f.created) : "—";
+      var caption = '<div class="stat-label" style="margin-top:6px">Активировано — клиент привязал код к себе (статус «Зарегистрировано»). Неактивировано — до сих пор в резерве партнёра (Новый/Выдан). Столбцы 2-4 честно делят «Создано». Конверсия создано → активировано: <b>' + conversion + '</b>. Среднее время создание → активация: ' + lag + '</div>';
       return chart + caption;
     },
   };
