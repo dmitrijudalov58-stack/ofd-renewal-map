@@ -971,26 +971,37 @@
 
         var raw = ctx.M.clientsAtRisk(model, refDate, fn, { strict: ctx.strict });
         if (pf) raw = raw.filter(function (r) { return (r.partner || "—") === pf; });
-        raw.sort(function (a, b) { return a.end - b.end; });
         var rows = raw.map(function (r) {
           var kassaDetails = (r.kassaDetails || []).map(function (kd) {
             return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, days: daysBetween(refDate, kd.end), statusText: riskPillText(daysBetween(refDate, kd.end)) };
           });
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: daysBetween(refDate, r.end), statusHtml: riskPill(daysBetween(refDate, r.end)), kassaDetails: kassaDetails };
         });
-        // интервал дней -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
+        // интервал дней -- сужает kassaDetails каждого клиента, клиенты без совпавших касс
+        // выпадают. КРИТИЧНО: дата/статус/сортировка строки клиента ДО этого места ссылались
+        // на его ближайший дедлайн ВООБЩЕ (часто "критично · 0 дн." от совсем другой кассы,
+        // не имеющей отношения к интервалу) -- Дима поймал именно это ("фильтр 15-30, а
+        // первыми в списке критично 0 дней"). После сужения пересчитываем end/статус/сортировку
+        // от БЛИЖАЙШЕЙ ИЗ ОТОБРАННЫХ касс -- ровно тех, что реально попали в [от;до].
         if (hasIv) {
           var matchedKassas = 0;
           rows = rows.filter(function (r) {
             r.kassaDetails = r.kassaDetails.filter(function (kd) { return kd.days >= lo && kd.days <= hi; });
             r.kassasToRenew = r.kassaDetails.length;
             matchedKassas += r.kassasToRenew;
+            if (r.kassasToRenew > 0) {
+              var nearest = r.kassaDetails.reduce(function (a, b) { return b.days < a.days ? b : a; });
+              r.end = nearest.end;
+              r.exportDays = nearest.days;
+              r.statusHtml = riskPill(nearest.days);
+            }
             return r.kassasToRenew > 0;
           });
           intervalControls.querySelector(".interval-summary").textContent = "касс в интервале: " + fmtNum(matchedKassas) + " · клиентов: " + fmtNum(rows.length);
         } else {
           intervalControls.querySelector(".interval-summary").textContent = "";
         }
+        rows.sort(function (a, b) { return a.end - b.end; });
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
       controls.addEventListener("input", renderTable);
@@ -1120,26 +1131,37 @@
           if (pinnf && !(r.partnerInn || "").toLowerCase().includes(pinnf)) return false;
           return true;
         });
-        raw.sort(function (a, b) { return a.daysOverdue - b.daysOverdue; }); // недавно ушедшие сверху -- самые актуальные для дозвона
         var rows = raw.map(function (r) {
           var kassaDetails = (r.kassaDetails || []).map(function (kd) {
             return { rnm: kd.rnm, tariff: kd.tariff, end: kd.end, days: daysBetween(kd.end, asOf), statusText: overduePillText(daysBetween(kd.end, asOf)) };
           });
           return { key: r.key, org: r.org, partner: r.partner, partnerInn: r.partnerInn, kassasToRenew: r.kassasToRenew, end: r.end, exportDays: r.daysOverdue, statusHtml: overduePill(r.daysOverdue), kassaDetails: kassaDetails };
         });
-        // интервал дней просрочки -- сужает kassaDetails каждого клиента, клиенты без совпавших касс выпадают
+        // интервал дней просрочки -- сужает kassaDetails каждого клиента, клиенты без совпавших
+        // касс выпадают. КРИТИЧНО: дата/статус/сортировка строки клиента ДО этого места
+        // ссылались на просрочку САМОЙ СВЕЖЕЙ его кассы (часто 0-5 дней, вне интервала вообще) --
+        // Дима поймал именно это ("фильтр 15-30, а показывает тех, кто отвалился вчера").
+        // После сужения пересчитываем end/статус/сортировку от НАИМЕНЕЕ просроченной ИЗ
+        // ОТОБРАННЫХ касс -- ровно тех, что реально попали в [от;до].
         if (hasIv) {
           var matchedKassas = 0;
           rows = rows.filter(function (r) {
             r.kassaDetails = r.kassaDetails.filter(function (kd) { return kd.days >= lo && kd.days <= hi; });
             r.kassasToRenew = r.kassaDetails.length;
             matchedKassas += r.kassasToRenew;
+            if (r.kassasToRenew > 0) {
+              var nearest = r.kassaDetails.reduce(function (a, b) { return b.days < a.days ? b : a; });
+              r.end = nearest.end;
+              r.exportDays = nearest.days;
+              r.statusHtml = overduePill(nearest.days);
+            }
             return r.kassasToRenew > 0;
           });
           intervalControls.querySelector(".interval-summary").textContent = "касс в интервале: " + fmtNum(matchedKassas) + " · клиентов: " + fmtNum(rows.length);
         } else {
           intervalControls.querySelector(".interval-summary").textContent = "";
         }
+        rows.sort(function (a, b) { return a.exportDays - b.exportDays; }); // недавно ушедшие сверху -- самые актуальные для дозвона
         renderClientListTable(tableHolder, expandArea, rows, wrap, model);
       }
       controls.addEventListener("input", renderTable);
