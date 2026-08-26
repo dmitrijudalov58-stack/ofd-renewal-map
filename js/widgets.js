@@ -2246,6 +2246,96 @@
     },
   };
 
+  // ---------- B6 Обзвон ----------
+
+  // Список для обзвона (Дима, 2026-08-26): выбираешь месяц (по ДАТЕ ОКОНЧАНИЯ кассы) и один
+  // или несколько каналов -- отдаёт готовый контактный список: одна КАССА = одна строка (не
+  // клиент -- если у клиента несколько касс, заканчивающихся в этом месяце, будет несколько
+  // строк). Канал -- тот же, что в "Разбивка по каналам"/калькуляторах B5 (ccAssignment, с
+  // учётом ручных правок партнёров), не сырое поле "Тип продаж" из выгрузки.
+  WIDGETS["b6-callsheet"] = {
+    title: "Список для обзвона", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      var wrap = el('<div></div>');
+      var controls = el(
+        '<div class="threshold-row">' +
+        '<label>Месяц окончания <input type="month" class="f-month"></label>' +
+        '<span style="display:flex;gap:10px;align-items:center;color:var(--muted)">Каналы:' +
+        CC_CHANNELS.map(function (ch) { return '<label style="display:flex;gap:3px;align-items:center;color:var(--ink)"><input type="checkbox" class="f-channel" value="' + esc(ch) + '" checked> ' + esc(ch) + '</label>'; }).join("") +
+        '</span>' +
+        '</div>'
+      );
+      var tableHolder = el('<div style="margin-top:8px"></div>');
+      wrap.appendChild(controls);
+      wrap.appendChild(tableHolder);
+
+      var limit = 150;
+
+      function apply() {
+        var monthVal = controls.querySelector(".f-month").value; // "YYYY-MM" или ""
+        var checkedChannels = Array.from(controls.querySelectorAll(".f-channel:checked")).map(function (cb) { return cb.value; });
+
+        if (!monthVal) {
+          tableHolder.innerHTML = '<div class="stat-label">Выбери месяц окончания, чтобы увидеть список.</div>';
+          wrap._getExportRows = function () { return []; };
+          return;
+        }
+        if (!checkedChannels.length) {
+          tableHolder.innerHTML = '<div class="stat-label">Выбери хотя бы один канал.</div>';
+          wrap._getExportRows = function () { return []; };
+          return;
+        }
+
+        var parts = monthVal.split("-");
+        var y = parseInt(parts[0], 10), m = parseInt(parts[1], 10) - 1;
+        var monthStart = new Date(y, m, 1);
+        var monthEnd = new Date(y, m + 1, 0, 23, 59, 59);
+
+        var autoMap = new Map(ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict }).map(function (p) { return [p.name, p.channel]; }));
+        function channelOf(partnerName) {
+          var name = partnerName || "—";
+          var eff = Object.prototype.hasOwnProperty.call(ccOverrides, name) ? ccOverrides[name] : autoMap.get(name);
+          return CC_CHANNELS.indexOf(eff) !== -1 ? eff : null; // кастомные/неназначенные каналы сюда не попадают
+        }
+
+        var matched = [];
+        model.kassas.forEach(function (k) {
+          if (!k.overallEnd || k.overallEnd < monthStart || k.overallEnd > monthEnd) return;
+          var ch = channelOf(k.partner);
+          if (!ch || checkedChannels.indexOf(ch) === -1) return;
+          matched.push({
+            channel: ch, partner: k.partner || "—", partnerInn: k.partnerInn || "",
+            org: k.org || "—", clientKey: k.clientKey || "—", phone: k.phone || "",
+            email: k.email || "", tariff: k.tariff || "—", end: k.overallEnd,
+          });
+        });
+        matched.sort(function (a, b) { return a.end - b.end; });
+
+        var top = matched.slice(0, limit);
+        tableHolder.innerHTML = "";
+        tableHolder.appendChild(el('<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">найдено ' + fmtNum(matched.length) + (matched.length > top.length ? " · показаны первые " + top.length + ", остальное — через экспорт" : "") + '</div>'));
+        tableHolder.appendChild(makeSortableTable(
+          [{ label: "Канал продаж" }, { label: "Партнёр" }, { label: "ИНН партнёра" }, { label: "Наименование клиента" }, { label: "ИНН клиента" }, { label: "Номер телефона" }, { label: "Почта" }, { label: "Последний тариф" }, { label: "Дата окончания тарифа" }],
+          top.map(function (r) { return [r.channel, r.partner, r.partnerInn, r.org, r.clientKey, r.phone, r.email, r.tariff, fmtDate(r.end)]; })
+        ));
+        wrap._getExportRows = function () {
+          return matched.map(function (r) {
+            return {
+              КаналПродаж: r.channel, Партнёр: r.partner, ИННПартнёра: r.partnerInn,
+              НаименованиеКлиента: r.org, ИННКлиента: r.clientKey, НомерТелефона: r.phone,
+              Почта: r.email, ПоследнийТариф: r.tariff, ДатаОкончанияТарифа: fmtDate(r.end),
+            };
+          });
+        };
+      }
+      controls.addEventListener("input", apply);
+      controls.addEventListener("change", apply);
+      apply();
+      return wrap;
+    },
+    exportable: true,
+  };
+
   var api = { WIDGETS: WIDGETS, widgetShell: widgetShell, fmtNum: fmtNum, fmtDate: fmtDate };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDWidgets = api;

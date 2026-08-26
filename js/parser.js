@@ -23,7 +23,7 @@
   var IDX = {
     pin: 2, created: 3, status: 4, tariff: 5, innPhys: 6,
     activationType: 8, activated: 9, endDate: 10, overallEnd: 11, rnm: 12,
-    org: 13, innOrg: 14, partner: 19, partnerInn: 20, salesCenter: 22, salesType: 23,
+    org: 13, innOrg: 14, phone: 16, email: 17, partner: 19, partnerInn: 20, salesCenter: 22, salesType: 23,
   };
 
   function checkHeader(header) {
@@ -87,6 +87,8 @@
       rnm: cleanStr(cells[IDX.rnm]),
       org: cleanStr(cells[IDX.org]),
       innOrg: cleanInn(cells[IDX.innOrg]),
+      phone: cleanStr(cells[IDX.phone]),
+      email: cleanStr(cells[IDX.email]),
       partner: cleanStr(cells[IDX.partner]),
       partnerInn: cleanInn(cells[IDX.partnerInn]),
       salesCenter: cleanStr(cells[IDX.salesCenter]),

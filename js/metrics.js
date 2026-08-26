@@ -96,6 +96,8 @@
         salesCenter: last.salesCenter,
         clientKey: last.innOrg || last.innPhys || null,
         org: last.org,
+        phone: last.phone,
+        email: last.email,
         channel: classifyChannel(last.partner, last.salesCenter),
       });
     });
