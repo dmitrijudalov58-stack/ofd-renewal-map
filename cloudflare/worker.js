@@ -115,7 +115,7 @@ const ADMIN_PAGE_HTML = `<!doctype html>
   <button onclick="createUser()">Создать доступ</button>
 </div>
 <div id="credBox" class="cred-box"></div>
-<table id="usersTable"><thead><tr><th>ФИО</th><th>Логин</th><th>Создан</th><th></th></tr></thead><tbody></tbody></table>
+<table id="usersTable"><thead><tr><th>ФИО</th><th>Логин</th><th>Создан</th><th>Последний вход</th><th>Входов</th><th></th></tr></thead><tbody></tbody></table>
 <script>
 async function loadUsers() {
   const res = await fetch("/admin/api/users");
@@ -124,15 +124,17 @@ async function loadUsers() {
   tbody.innerHTML = "";
   data.users.forEach(u => {
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
     tr.children[0].textContent = u.fio;
     tr.children[1].textContent = u.username;
     tr.children[2].textContent = new Date(u.createdAt).toLocaleDateString("ru-RU");
+    tr.children[3].textContent = u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("ru-RU") : "ещё не заходил";
+    tr.children[4].textContent = u.loginCount;
     const btn = document.createElement("button");
     btn.textContent = "Отозвать";
     btn.className = "danger";
     btn.onclick = () => revokeUser(u.username);
-    tr.children[3].appendChild(btn);
+    tr.children[5].appendChild(btn);
     tbody.appendChild(tr);
   });
 }
@@ -170,7 +172,7 @@ async function handleAdmin(request, env, url) {
       const raw = await env.OFD_USERS.get(key.name);
       if (!raw) continue;
       const rec = JSON.parse(raw);
-      users.push({ username: key.name, fio: rec.fio, createdAt: rec.createdAt });
+      users.push({ username: key.name, fio: rec.fio, createdAt: rec.createdAt, lastLoginAt: rec.lastLoginAt || null, loginCount: rec.loginCount || 0 });
     }
     users.sort((a, b) => b.createdAt - a.createdAt);
     return Response.json({ users });
@@ -196,7 +198,7 @@ async function handleAdmin(request, env, url) {
   return new Response("Not found", { status: 404 });
 }
 
-async function handleSite(request, env) {
+async function handleSite(request, env, url) {
   const creds = parseBasicAuth(request);
   if (!creds) return unauthorized("OFD Renewal Map");
   const raw = await env.OFD_USERS.get(creds.user);
@@ -204,6 +206,14 @@ async function handleSite(request, env) {
   const rec = JSON.parse(raw);
   const ok = await verifyPassword(creds.pass, rec.saltB64, rec.hashB64);
   if (!ok) return unauthorized("OFD Renewal Map");
+  // Журнал посещений (Дима, 2026-08-26) -- только последний вход + счётчик, не полный лог.
+  // Пишем ТОЛЬКО на заход на index.html, не на каждый js/css-ассет одного визита --
+  // иначе один визит = 7-10 записей в KV, упёрлись бы в дневной лимит писей гораздо раньше.
+  if (url.pathname === "/" || url.pathname === "/index.html") {
+    rec.lastLoginAt = Date.now();
+    rec.loginCount = (rec.loginCount || 0) + 1;
+    await env.OFD_USERS.put(creds.user, JSON.stringify(rec));
+  }
   return env.ASSETS.fetch(request);
 }
 
@@ -213,6 +223,6 @@ export default {
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
       return handleAdmin(request, env, url);
     }
-    return handleSite(request, env);
+    return handleSite(request, env, url);
   },
 };
