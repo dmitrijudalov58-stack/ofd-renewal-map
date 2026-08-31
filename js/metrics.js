@@ -1046,6 +1046,294 @@
   }
 
 
+  // ---------- «Календарь продлений» + «Переток тарифов» (2026-08-31, ТЗ tmp/plans/2026-08-31-renewal-calendar-tz.md) ----------
+  //
+  // Тарифные срезы календаря — только 13/15/36 мес (1/3/6 нерепрезентативны, решение из
+  // исходного запроса). Переток тарифов — БЕЗ этого ограничения, туда попадает любой
+  // фактический тариф выгрузки (короткие тарифы нужны как точки назначения перехода).
+  var CALENDAR_TARIFFS = [13, 15, 36];
+  var CALENDAR_FORECAST_MONTHS = 36; // перекрывает самый длинный тариф календаря
+
+  // Один код кассы -> до 3 "событий" в его жизни (см. ТЗ §1.1):
+  // - "new" -- ТОЛЬКО у самого первого кода кассы (дата прихода, ось = created/activated,
+  //   НЕ связана с истечением чего-либо -- отдельная метрика, тот же паттерн, что вкладки
+  //   Новые/Отток в "Прирост базы").
+  // - "renewedFirst"/"renewedRepeat" -- у ВСЕХ кодов, кроме последнего: раз есть следующий
+  //   код в цепочке, это заведомо продление, без грейса/статуса. i===0 -- первое продление
+  //   кассы вообще, i>0 -- повторное.
+  // - у ПОСЛЕДНЕГО кода -- "forecast" (конец в будущем), либо "churn"/"pending" через ту же
+  //   churnStatusFromEnd/kassaLapsedAt, что и everywhere в проекте (30/31 день). "safe"
+  //   структурно недостижим тут (последний код кассы не может быть покрыт ничем ПОСЛЕ
+  //   своего конца -- иначе он не был бы последним), но на случай неучтённого края данных
+  //   трактуем его как повторное продление, не роняем событие молча.
+  function collectKassaEvents(k, asOf) {
+    var events = [];
+    var codes = k.codes;
+    if (!codes.length) return events;
+    events.push({ type: "new", tariff: parseTariffMonths(codes[0].tariff), tariffLabel: codes[0].tariff, date: k.appearance });
+    for (var i = 0; i < codes.length - 1; i++) {
+      var end = individualEnd(codes[i]);
+      if (!end) continue;
+      events.push({
+        type: i === 0 ? "renewedFirst" : "renewedRepeat",
+        tariff: parseTariffMonths(codes[i].tariff), tariffLabel: codes[i].tariff, date: end,
+      });
+    }
+    var last = codes[codes.length - 1];
+    var lastEnd = individualEnd(last);
+    if (lastEnd) {
+      var lastTariff = parseTariffMonths(last.tariff);
+      if (lastEnd > asOf) {
+        events.push({ type: "forecast", tariff: lastTariff, tariffLabel: last.tariff, date: lastEnd });
+      } else {
+        var status = churnStatusFromEnd(lastEnd, asOf, function (d) { return kassaLapsedAt(k, d); });
+        var type = status === "churned" ? "churn" : status === "pending" ? "pending" : "renewedRepeat";
+        events.push({ type: type, tariff: lastTariff, tariffLabel: last.tariff, date: lastEnd });
+      }
+    }
+    return events;
+  }
+
+  // С самой ранней даты в файле (появление кассы/резерва) до +forecastMonths от asOf.
+  function calendarMonthRange(model, asOf, forecastMonths) {
+    var minDate = null;
+    model.kassas.forEach(function (k) { if (k.appearance && (!minDate || k.appearance < minDate)) minDate = k.appearance; });
+    model.reserveRows.forEach(function (r) { if (r.created instanceof Date && (!minDate || r.created < minDate)) minDate = r.created; });
+    if (!minDate) minDate = asOf;
+    var start = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+    var end = addMonths(new Date(asOf.getFullYear(), asOf.getMonth(), 1), forecastMonths || 0);
+    return buildMonthRange(start, end);
+  }
+
+  function emptyCalendarCounts() { return { new: 0, renewedFirst: 0, renewedRepeat: 0, churn: 0, pending: 0, forecast: 0 }; }
+
+  function makeCalendarBuckets(months) {
+    var b = {};
+    CALENDAR_TARIFFS.concat(["total"]).forEach(function (t) {
+      b[t] = months.map(function () { return emptyCalendarCounts(); });
+    });
+    return b;
+  }
+
+  function addEventToBuckets(buckets, months, ev) {
+    if (CALENDAR_TARIFFS.indexOf(ev.tariff) === -1) return; // короткие тарифы вне календаря (см. верх блока)
+    var idx = monthIndexOf(months, ev.date);
+    if (idx < 0) return;
+    buckets[ev.tariff][idx][ev.type] += 1;
+    buckets.total[idx][ev.type] += 1;
+  }
+
+  // opts: { unit: "kassa"|"client" (default kassa), forecastMonths }. Юнит "клиент" --
+  // события собираются со ВСЕХ касс клиента, но дедуплицируются по (тип, тариф, месяц) --
+  // 2 кассы одного клиента, продлившиеся в один месяц на один тариф, считаются ОДНИМ
+  // клиентским событием, не двумя (иначе тумблер РНМ/ИНН ничего бы не менял).
+  function computeRenewalCalendar(model, asOf, opts) {
+    opts = opts || {};
+    var forecastMonths = opts.forecastMonths || CALENDAR_FORECAST_MONTHS;
+    var unit = opts.unit === "client" ? "client" : "kassa";
+    var months = calendarMonthRange(model, asOf, forecastMonths);
+    var buckets = makeCalendarBuckets(months);
+
+    if (unit === "kassa") {
+      model.kassas.forEach(function (k) {
+        collectKassaEvents(k, asOf).forEach(function (ev) { addEventToBuckets(buckets, months, ev); });
+      });
+    } else {
+      model.clients.forEach(function (c) {
+        if (c.phys) return;
+        var seen = new Set();
+        c.kassas.forEach(function (k) {
+          collectKassaEvents(k, asOf).forEach(function (ev) {
+            var idx = monthIndexOf(months, ev.date);
+            if (idx < 0) return;
+            var key = ev.type + "|" + ev.tariff + "|" + idx;
+            if (seen.has(key)) return;
+            seen.add(key);
+            addEventToBuckets(buckets, months, ev);
+          });
+        });
+      });
+    }
+    return { months: months, buckets: buckets, unit: unit };
+  }
+
+  // Раскрытие по клику на сегмент "Календаря продлений" -- список клиентов/касс за
+  // конкретный (месяц, тариф, тип события). tariffMonths -- число (13/15/36), не строка.
+  function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    var seenClients = new Set();
+    model.kassas.forEach(function (k) {
+      var events = collectKassaEvents(k, asOf);
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        if (ev.tariff !== tariffMonths || ev.type !== type) continue;
+        if (!ev.date || ev.date.getFullYear() !== y || ev.date.getMonth() !== m) continue;
+        var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+        if (unit === "client") {
+          if (!client || seenClients.has(client.key)) break;
+          seenClients.add(client.key);
+          out.push({
+            inn: client.key, org: client.org, rnm: null,
+            activeKassas: activeKassaCountOf(client, asOf),
+            tariff: ev.tariffLabel, end: ev.date,
+            partnerInn: client.partnerInn, partner: client.partner,
+          });
+        } else {
+          out.push({
+            inn: k.clientKey || "—", org: client ? client.org : null, rnm: k.rnm,
+            tariff: ev.tariffLabel, end: ev.date,
+            partnerInn: k.partnerInn, partner: k.partner,
+          });
+        }
+        break; // у одной кассы не может быть двух событий одного типа/тарифа в одном месяце
+      }
+    });
+    return out;
+  }
+
+  // ---------- переток тарифов (Борд 2) ----------
+  //
+  // Переход = смена тарифа между ДВУМЯ ПОСЛЕДОВАТЕЛЬНЫМИ кодами ОДНОЙ КАССЫ, по хронологии
+  // активации. Разрыв (грейс/отток+возврат) не выделяется отдельно -- любой переход
+  // считается одинаково (согласовано с Димой, фаза 2).
+  //
+  // Юнит "клиент" -- НЕ мердж кодов разных касс клиента в одну искусственную цепочку
+  // (пробовали, сломалось: у клиента с несколькими параллельными кассами это создаёт
+  // переходы МЕЖДУ НЕСВЯЗАННЫМИ кодами разных касс просто по совпадению соседства по
+  // дате -- на реальном файле давало числа в разы больше кассового юнита, что физически
+  // невозможно, поймано сверкой 2026-08-31). Вместо этого: переход всегда считается на
+  // уровне СВОЕЙ кассы (как и в юните "касса"), а на юнит "клиент" переходим ДЕДУПОМ --
+  // если у клиента 2 кассы дали одинаковый переход (тариф X -> тариф Y) в одном месяце,
+  // это ОДНО клиентское событие, не два (тот же принцип, что уже в computeRenewalCalendar).
+  function kassaTransitionEvents(k) {
+    var events = [];
+    var codes = k.codes;
+    for (var i = 0; i < codes.length - 1; i++) {
+      var fromT = parseTariffMonths(codes[i].tariff);
+      var toT = parseTariffMonths(codes[i + 1].tariff);
+      if (fromT == null || toT == null) continue;
+      events.push({ from: fromT, to: toT, fromLabel: codes[i].tariff, toLabel: codes[i + 1].tariff, end: individualEnd(codes[i]) });
+    }
+    return events;
+  }
+
+  // Все реальные тарифы выгрузки участвуют (не только 13/15/36) -- переток НЕ ограничен
+  // календарными тарифами, короткие тарифы нужны как точки назначения.
+  function computeTariffTransitions(model, unit) {
+    var agg = new Map(); // "from|to" -> count
+    function bump(fromT, toT) {
+      var key = fromT + "|" + toT;
+      agg.set(key, (agg.get(key) || 0) + 1);
+    }
+    if (unit === "client") {
+      model.clients.forEach(function (c) {
+        if (c.phys) return;
+        var seen = new Set();
+        c.kassas.forEach(function (k) {
+          kassaTransitionEvents(k).forEach(function (ev) {
+            var key = ev.from + "|" + ev.to;
+            if (seen.has(key)) return;
+            seen.add(key);
+            bump(ev.from, ev.to);
+          });
+        });
+      });
+    } else {
+      model.kassas.forEach(function (k) { kassaTransitionEvents(k).forEach(function (ev) { bump(ev.from, ev.to); }); });
+    }
+    var rows = [];
+    agg.forEach(function (count, key) {
+      var parts = key.split("|");
+      rows.push({ from: parseInt(parts[0], 10), to: parseInt(parts[1], 10), count: count });
+    });
+    return rows;
+  }
+
+  // Разбивка перетока по месяцам -- ТОЛЬКО источник из CALENDAR_TARIFFS (синхронно с
+  // Бордом 1), назначение -- любой тариф. Месяц -- дата окончания ИСХОДНОГО кода (та же
+  // ось, что и когорта "должны продлиться" в Борде 1 -- сумма столбца тут = "продлилось"
+  // там). Диапазон месяцев -- ТОТ ЖЕ горизонт, что у календаря (не обрезан по asOf), хотя
+  // переход по смыслу "уже случился" (codes[i+1] существует) -- на реальных данных дата
+  // ОКОНЧАНИЯ исходного кода иногда оказывается позже asOf (нашли на выгрузке 2026-08-31:
+  // тариф 13 мес, начатый в марте, официально кончается в мае следующего года, хотя
+  // следующий код на кассе появился почти сразу — аномалия исходных данных, не баг). Без
+  // запаса такие события тихо терялись (idx=-1) -- проект держит "событие = месяц ДАТЫ
+  // ОКОНЧАНИЯ" как сквозной инвариант (см. HISTORY.md), подрезать его для этого виджета
+  // нельзя -- расширяем диапазон, а не меняем ось.
+  function computeTariffTransitionsMonthly(model, asOf, unit) {
+    var months = calendarMonthRange(model, asOf, CALENDAR_FORECAST_MONTHS);
+    var bySource = {};
+    CALENDAR_TARIFFS.forEach(function (t) { bySource[t] = months.map(function () { return {}; }); });
+    function bump(fromT, toT, idx) {
+      if (CALENDAR_TARIFFS.indexOf(fromT) === -1 || idx < 0) return;
+      var bucket = bySource[fromT][idx];
+      bucket[toT] = (bucket[toT] || 0) + 1;
+    }
+    if (unit === "client") {
+      model.clients.forEach(function (c) {
+        if (c.phys) return;
+        var seen = new Set();
+        c.kassas.forEach(function (k) {
+          kassaTransitionEvents(k).forEach(function (ev) {
+            var idx = monthIndexOf(months, ev.end);
+            var key = ev.from + "|" + ev.to + "|" + idx;
+            if (seen.has(key)) return;
+            seen.add(key);
+            bump(ev.from, ev.to, idx);
+          });
+        });
+      });
+    } else {
+      model.kassas.forEach(function (k) {
+        kassaTransitionEvents(k).forEach(function (ev) { bump(ev.from, ev.to, monthIndexOf(months, ev.end)); });
+      });
+    }
+    return { months: months, bySource: bySource };
+  }
+
+  // Раскрытие по клику на полосу Sankey (monthDate=null -- вся история) или сегмент
+  // месячного столбца (monthDate задан). Юнит "клиент" -- 1 строка на клиента (дедуп, тот
+  // же критерий, что и в агрегатах выше), не по строке на каждую кассу.
+  function tariffTransitionDrill(model, asOf, unit, fromT, toT, monthDate) {
+    var out = [];
+    function matches(ev) {
+      if (ev.from !== fromT || ev.to !== toT) return false;
+      if (!monthDate) return true;
+      return ev.end && ev.end.getFullYear() === monthDate.getFullYear() && ev.end.getMonth() === monthDate.getMonth();
+    }
+    if (unit === "client") {
+      model.clients.forEach(function (c) {
+        if (c.phys) return;
+        var hit = null;
+        for (var i = 0; i < c.kassas.length && !hit; i++) {
+          var evs = kassaTransitionEvents(c.kassas[i]);
+          for (var j = 0; j < evs.length; j++) { if (matches(evs[j])) { hit = evs[j]; break; } }
+        }
+        if (!hit) return;
+        out.push({
+          inn: c.key, org: c.org, rnm: null, activeKassas: activeKassaCountOf(c, asOf),
+          tariffFrom: hit.fromLabel, tariffTo: hit.toLabel, end: hit.end,
+          partnerInn: c.partnerInn, partner: c.partner,
+        });
+      });
+    } else {
+      model.kassas.forEach(function (k) {
+        var evs = kassaTransitionEvents(k);
+        for (var i = 0; i < evs.length; i++) {
+          if (!matches(evs[i])) continue;
+          var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+          out.push({
+            inn: k.clientKey || "—", org: client ? client.org : null, rnm: k.rnm,
+            tariffFrom: evs[i].fromLabel, tariffTo: evs[i].toLabel, end: evs[i].end,
+            partnerInn: k.partnerInn, partner: k.partner,
+          });
+        }
+      });
+    }
+    return out;
+  }
+
   var api = {
     buildModel: buildModel,
     computeFlow: computeFlow,
@@ -1089,6 +1377,12 @@
     computeRevokedInPeriod: computeRevokedInPeriod,
     computeReserveShare: computeReserveShare,
     computeChannelForecastKassas: computeChannelForecastKassas,
+    computeRenewalCalendar: computeRenewalCalendar,
+    renewalCalendarDrill: renewalCalendarDrill,
+    computeTariffTransitions: computeTariffTransitions,
+    computeTariffTransitionsMonthly: computeTariffTransitionsMonthly,
+    tariffTransitionDrill: tariffTransitionDrill,
+    CALENDAR_TARIFFS: CALENDAR_TARIFFS,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,

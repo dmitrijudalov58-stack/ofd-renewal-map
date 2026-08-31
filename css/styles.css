@@ -316,6 +316,25 @@ table.wtable tbody tr:hover { background: var(--paper); }
    бесконечно и обрезались бы .widget{overflow:hidden} при ручном ресайзе виджета */
 .expand-scroll { max-height: 240px; overflow-y: auto; }
 
+/* аккордеон год → месяцы (b4-партнёры, детализация резерва) */
+.rd-detail { font-size: 12.5px; }
+.rd-year-row {
+  display: flex; align-items: center; gap: 8px; padding: 8px 4px; cursor: pointer;
+  border-bottom: 1px solid var(--line);
+}
+.rd-year-row:hover { background: var(--paper); }
+.rd-caret { color: var(--muted); font-size: 10px; width: 10px; flex-shrink: 0; }
+.rd-year-label { font-weight: 700; }
+.rd-year-count { margin-left: auto; font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.rd-months { padding: 2px 4px 6px 26px; }
+.rd-month-row {
+  display: flex; align-items: center; padding: 5px 0; color: var(--muted);
+  border-bottom: 1px dashed var(--line);
+}
+.rd-month-row span:first-child { flex: 1; }
+.rd-month-row span:last-child { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--ink); }
+.rd-month-row:last-child { border-bottom: none; }
+
 .status-pill {
   display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 999px;
   padding: 3px 10px 3px 8px; font-weight: 700; white-space: nowrap;
@@ -339,6 +358,16 @@ table.wtable tbody tr:hover { background: var(--paper); }
   border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; color: var(--ink);
 }
 .threshold-row label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+
+/* Борд 7 -- "Календарь продлений" / "Переток тарифов" (2026-08-31). Блоки идут друг под
+   другом внутри карточки (не отдельные карточки холста -- 4 блока на Борде 1, до 4 на
+   Борде 2), каждый со своим горизонтально скроллящимся графиком -- десятки месяцев истории
+   + прогноз не помещаются по ширине карточки, и это ожидаемо (см. риск в ТЗ про "видимый
+   диапазон"). Переиспользует .chart-svg/.tick-label/.gridline из общего блока графиков выше. */
+.rc-block + .rc-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.rc-block-title { font-size: 12.5px; margin-bottom: 6px; }
+.hscroll-chart { overflow-x: auto; overflow-y: hidden; }
+.hscroll-chart svg { display: block; }
 
 .empty-state {
   display: flex; align-items: center; justify-content: center; min-height: 260px;
