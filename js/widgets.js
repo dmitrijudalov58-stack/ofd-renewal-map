@@ -2351,6 +2351,7 @@
   // на каждый rerenderAll (смена периода/as-of/юнита).
   var RC_UNIT = "kassa";
   var RC_VIEWPORT = new Map(); // instanceId -> {from: idx, to: idx}
+  var RC_FLOW_VIEWPORT = new Map(); // то же самое, для "по месяцам" на Борде 2
 
   var RC_TARIFFS = [13, 15, 36];
   var RC_TARIFF_LABEL = { 13: "13 мес", 15: "15 мес", 36: "36 мес" };
@@ -2368,10 +2369,43 @@
     for (var k in attrs) node.setAttribute(k, attrs[k]);
     return node;
   }
-  function rcTitle(text) {
-    var t = document.createElementNS("http://www.w3.org/2000/svg", "title");
-    t.textContent = text;
-    return t;
+  // Наведение на сегмент -- своя плавающая подсказка вместо нативного SVG <title>
+  // (Дима, 2026-08-31: "при наведении не появляются значения" -- у <title> в браузере
+  // задержка ~600-1000мс до показа, на узких сегментах/при быстром движении мыши это
+  // читается как "ничего не происходит"). Один общий div на всю страницу, лениво создаётся.
+  var rcTooltipEl = null;
+  function rcTooltip() {
+    if (!rcTooltipEl) {
+      rcTooltipEl = document.createElement("div");
+      rcTooltipEl.className = "rc-tooltip";
+      document.body.appendChild(rcTooltipEl);
+    }
+    return rcTooltipEl;
+  }
+  function rcAttachTooltip(node, textFn) {
+    node.addEventListener("mouseenter", function () {
+      var tip = rcTooltip();
+      tip.textContent = textFn();
+      tip.style.display = "block";
+    });
+    node.addEventListener("mousemove", function (e) {
+      var tip = rcTooltip();
+      tip.style.left = e.clientX + "px";
+      tip.style.top = e.clientY + "px";
+    });
+    node.addEventListener("mouseleave", function () { rcTooltip().style.display = "none"; });
+  }
+  // Несколько горизонтально скроллящихся графиков (4 блока календаря / 3 строки перетока)
+  // должны листаться СИНХРОННО -- иначе визуально кажется, что у каждого своя дата начала
+  // (Дима, 2026-08-31: "почему тринадцатимесячные идут только от августа 18, пятнадцати- --
+  // от 19, тридцать шесть -- только от 21", хотя ось месяцев у всех ОДНА и та же, просто
+  // независимые скроллы разъезжались/читались как разные точки отсчёта).
+  function rcLinkScroll(containers) {
+    containers.forEach(function (c) {
+      c.addEventListener("scroll", function () {
+        containers.forEach(function (other) { if (other !== c) other.scrollLeft = c.scrollLeft; });
+      });
+    });
   }
   function rcMonthLabel(d) { return MONTHS_SHORT[d.getMonth()] + " " + String(d.getFullYear()).slice(2); }
   function rcAsOfIndex(months, asOf) {
@@ -2385,8 +2419,6 @@
     var idx = nodeOrder.indexOf(tariffMonths);
     return RC_FLOW_PALETTE[(idx < 0 ? 0 : idx) % RC_FLOW_PALETTE.length];
   }
-  function rcIsoMonth(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); }
-
   // Колонки drill-таблиц -- см. ТЗ §1.3/§2.4. Юнит "клиент": РНМ заменён на "Кол-во
   // активных касс" (у клиента может быть несколько касс, единого РНМ нет).
   var RC_DRILL_COLUMNS_KASSA = [
@@ -2492,7 +2524,7 @@
       if (isFuture) {
         var h = s.forecast * mainScale, y = mainH - h;
         var rect = rcSvgEl("rect", { x: bx, y: y, width: barW, height: Math.max(0, h), rx: 2, style: "fill:none;stroke:" + color + ";stroke-width:1.3;stroke-dasharray:3 2;cursor:pointer" });
-        rect.appendChild(rcTitle("Ожидается продлений · " + rcMonthLabel(monthDate) + ": " + s.forecast));
+        rcAttachTooltip(rect, function () { return "Ожидается продлений · " + rcMonthLabel(monthDate) + ": " + s.forecast; });
         rect.addEventListener("click", function () { onSegmentClick(monthDate, "forecast"); });
         svg.appendChild(rect);
       } else {
@@ -2500,7 +2532,7 @@
         if (showRenewed && (s.renewedFirst + s.renewedRepeat) > 0) {
           var hR = (s.renewedFirst + s.renewedRepeat) * mainScale;
           var rRenew = rcSvgEl("rect", { x: bx, y: cursorY - hR, width: barW, height: hR, rx: 2, style: "fill:" + color + ";cursor:pointer" });
-          rRenew.appendChild(rcTitle("Продлилось · " + rcMonthLabel(monthDate) + ": " + (s.renewedFirst + s.renewedRepeat) + " (впервые " + s.renewedFirst + ", повторно " + s.renewedRepeat + ")"));
+          rcAttachTooltip(rRenew, function () { return "Продлилось · " + rcMonthLabel(monthDate) + ": " + (s.renewedFirst + s.renewedRepeat) + " (впервые " + s.renewedFirst + ", повторно " + s.renewedRepeat + ")"; });
           rRenew.addEventListener("click", function () { onSegmentClick(monthDate, "renewed"); });
           svg.appendChild(rRenew);
           cursorY -= hR;
@@ -2508,7 +2540,7 @@
         if (showNew && s.new > 0) {
           var hN = s.new * mainScale;
           var rNew = rcSvgEl("rect", { x: bx, y: cursorY - hN, width: barW, height: hN, rx: 2, style: "fill:" + colorNew + ";cursor:pointer" });
-          rNew.appendChild(rcTitle("Новые · " + rcMonthLabel(monthDate) + ": " + s.new));
+          rcAttachTooltip(rNew, function () { return "Новые · " + rcMonthLabel(monthDate) + ": " + s.new; });
           rNew.addEventListener("click", function () { onSegmentClick(monthDate, "new"); });
           svg.appendChild(rNew);
         }
@@ -2516,7 +2548,7 @@
         if (s.pending > 0) {
           var hP = s.pending * churnScale;
           var rP = rcSvgEl("rect", { x: bx, y: cursorC, width: barW, height: hP, rx: 2, style: "fill:var(--warn);cursor:pointer" });
-          rP.appendChild(rcTitle("Ожидание (грейс) · " + rcMonthLabel(monthDate) + ": " + s.pending));
+          rcAttachTooltip(rP, function () { return "Ожидание (грейс) · " + rcMonthLabel(monthDate) + ": " + s.pending; });
           rP.addEventListener("click", function () { onSegmentClick(monthDate, "pending"); });
           svg.appendChild(rP);
           cursorC += hP;
@@ -2524,7 +2556,7 @@
         if (s.churn > 0) {
           var hC = s.churn * churnScale;
           var rC = rcSvgEl("rect", { x: bx, y: cursorC, width: barW, height: hC, rx: 2, style: "fill:var(--crit);cursor:pointer" });
-          rC.appendChild(rcTitle("Отток · " + rcMonthLabel(monthDate) + ": " + s.churn));
+          rcAttachTooltip(rC, function () { return "Отток · " + rcMonthLabel(monthDate) + ": " + s.churn; });
           rC.addEventListener("click", function () { onSegmentClick(monthDate, "churn"); });
           svg.appendChild(rC);
         }
@@ -2534,6 +2566,18 @@
       svg.appendChild(lbl);
     });
     return svg;
+  }
+
+  // <select> вместо <input type="month"> для видимого диапазона -- надёжнее (Дима,
+  // 2026-08-31: "после переключения фильтр автоматически не применяется" -- нативный
+  // date/month-picker в разных браузерах ведёт себя по-разному, где-то change прилетает
+  // только после потери фокуса; select с готовыми опциями всегда даёт валидное значение и
+  // всегда стреляет change сразу по выбору).
+  function rcMonthSelectHTML(className, months, selectedIdx) {
+    var opts = months.map(function (d, i) {
+      return '<option value="' + i + '"' + (i === selectedIdx ? " selected" : "") + '>' + esc(rcMonthLabel(d)) + '</option>';
+    }).join("");
+    return '<select class="' + className + '">' + opts + '</select>';
   }
 
   WIDGETS["b7-renewal-calendar"] = {
@@ -2561,14 +2605,15 @@
         '<label><input type="radio" name="rc-unit-' + instanceId + '" value="kassa"' + (RC_UNIT === "kassa" ? " checked" : "") + '> РНМ (кассы)</label>' +
         '<label><input type="radio" name="rc-unit-' + instanceId + '" value="client"' + (RC_UNIT === "client" ? " checked" : "") + '> ИНН (клиенты)</label>' +
         '<span style="color:var(--muted);margin-left:10px">видимый диапазон</span>' +
-        '<input type="month" class="rc-from"> <span>—</span> <input type="month" class="rc-to">' +
+        rcMonthSelectHTML("rc-from", months, vp.from) + ' <span>—</span> ' + rcMonthSelectHTML("rc-to", months, vp.to) +
+        '<button type="button" class="refresh-chart-btn rc-full-range">весь период</button>' +
         '</div>'
       );
       var legendRow = el(
         '<div class="threshold-row" style="margin-top:-4px">' +
         '<label><input type="checkbox" class="rc-show-new" checked> <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--s1t,#8fb8e8);vertical-align:-1px;margin-right:3px"></span>Новые</label>' +
         '<label><input type="checkbox" class="rc-show-renewed" checked> Продлилось</label>' +
-        '<span style="color:var(--muted)">Отток/грейс — своя панель под графиком · пунктир — прогноз</span>' +
+        '<span style="color:var(--muted)">Отток/грейс — своя панель под графиком · пунктир — прогноз · наведи на столбец — точное число</span>' +
         '</div>'
       );
       var blocksHolder = el("<div></div>");
@@ -2577,9 +2622,6 @@
       wrap.appendChild(legendRow);
       wrap.appendChild(blocksHolder);
       wrap.appendChild(drillHolder);
-
-      unitRow.querySelector(".rc-from").value = rcIsoMonth(months[vp.from]);
-      unitRow.querySelector(".rc-to").value = rcIsoMonth(months[vp.to]);
 
       function buildBlock(label, tariffKeyOrNull) {
         var block = el('<div class="rc-block"></div>');
@@ -2603,19 +2645,33 @@
         blocksHolder.innerHTML = "";
         blocksHolder.appendChild(buildBlock("Итого", null));
         RC_TARIFFS.forEach(function (t) { blocksHolder.appendChild(buildBlock(RC_TARIFF_LABEL[t], t)); });
+        // синхронный скролл -- все 4 блока листаются вместе, иначе кажется, что у каждого
+        // своя точка отсчёта на оси месяцев (Дима, 2026-08-31)
+        rcLinkScroll(Array.from(blocksHolder.querySelectorAll(".hscroll-chart")));
       }
       renderBlocks();
+
+      function syncRangeSelects() {
+        unitRow.querySelector(".rc-from").value = String(vp.from);
+        unitRow.querySelector(".rc-to").value = String(vp.to);
+      }
 
       unitRow.querySelectorAll('input[name="rc-unit-' + instanceId + '"]').forEach(function (r) {
         r.addEventListener("change", function () { RC_UNIT = r.value; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
       });
       unitRow.querySelector(".rc-from").addEventListener("change", function (e) {
-        var idx = months.findIndex(function (d) { return rcIsoMonth(d) === e.target.value; });
-        if (idx >= 0) { vp.from = idx; if (vp.to < vp.from) vp.to = vp.from; renderBlocks(); }
+        vp.from = parseInt(e.target.value, 10);
+        if (vp.to < vp.from) vp.to = vp.from;
+        syncRangeSelects(); renderBlocks();
       });
       unitRow.querySelector(".rc-to").addEventListener("change", function (e) {
-        var idx = months.findIndex(function (d) { return rcIsoMonth(d) === e.target.value; });
-        if (idx >= 0) { vp.to = idx; if (vp.from > vp.to) vp.from = vp.to; renderBlocks(); }
+        vp.to = parseInt(e.target.value, 10);
+        if (vp.from > vp.to) vp.from = vp.to;
+        syncRangeSelects(); renderBlocks();
+      });
+      unitRow.querySelector(".rc-full-range").addEventListener("click", function () {
+        vp.from = 0; vp.to = months.length - 1;
+        syncRangeSelects(); renderBlocks();
       });
       legendRow.querySelectorAll(".rc-show-new, .rc-show-renewed").forEach(function (cb) { cb.addEventListener("change", renderBlocks); });
 
@@ -2659,7 +2715,7 @@
           " L " + x2 + " " + (y2top + hR) +
           " C " + xm + " " + (y2top + hR) + " " + xm + " " + (y1top + hL) + " " + x1 + " " + (y1top + hL) + " Z";
         var path = rcSvgEl("path", { d: d, style: "fill:" + rcColorForTariff(from, nodeOrder) + ";opacity:.35;cursor:pointer" });
-        path.appendChild(rcTitle(tariffLabelFn(from) + " → " + tariffLabelFn(to) + ": " + r.count));
+        rcAttachTooltip(path, function () { return tariffLabelFn(from) + " → " + tariffLabelFn(to) + ": " + r.count; });
         path.addEventListener("mouseenter", function () { path.style.opacity = ".7"; });
         path.addEventListener("mouseleave", function () { path.style.opacity = ".35"; });
         path.addEventListener("click", function () { onFlowClick(from, to); });
@@ -2697,7 +2753,7 @@
         var v = b[destT]; if (!v) return;
         var h = v * yScale;
         var rect = rcSvgEl("rect", { x: bx, y: cursor - h, width: barW, height: h, style: "fill:" + rcColorForTariff(destT, nodeOrder) + ";cursor:pointer" });
-        rect.appendChild(rcTitle(tariffLabelFn(destT) + " · " + rcMonthLabel(m) + ": " + v));
+        rcAttachTooltip(rect, function () { return tariffLabelFn(destT) + " · " + rcMonthLabel(m) + ": " + v; });
         rect.addEventListener("click", function () { onSegmentClick(destT, m); });
         svg.appendChild(rect);
         cursor -= h;
@@ -2722,12 +2778,23 @@
       if (!nodeOrder.length) nodeOrder = RC_TARIFFS.slice();
       function tariffLabelFn(m) { return m + " мес"; }
 
+      // viewport "по месяцам" -- дефолт ВЕСЬ диапазон (Дима, 2026-08-31: "почему не с самого
+      // начала" -- в отличие от Борда 1, тут по умолчанию ничего не обрезаем, "от" и "до"
+      // только чтобы при желании сузить). Общая ось с Бордом 1 (тот же calendarMonthRange).
+      var flowVp = RC_FLOW_VIEWPORT.get(instanceId);
+      if (!flowVp) { flowVp = { from: 0, to: monthly.months.length - 1 }; RC_FLOW_VIEWPORT.set(instanceId, flowVp); }
+      flowVp.from = Math.min(Math.max(flowVp.from, 0), monthly.months.length - 1);
+      flowVp.to = Math.min(Math.max(flowVp.to, flowVp.from), monthly.months.length - 1);
+
       var wrap = el("<div></div>");
       var unitRow = el(
         '<div class="threshold-row">' +
         '<span style="color:var(--muted)">Единица</span>' +
         '<label><input type="radio" name="tf-unit-' + instanceId + '" value="kassa"' + (RC_UNIT === "kassa" ? " checked" : "") + '> РНМ (кассы)</label>' +
         '<label><input type="radio" name="tf-unit-' + instanceId + '" value="client"' + (RC_UNIT === "client" ? " checked" : "") + '> ИНН (клиенты)</label>' +
+        '<span style="color:var(--muted);margin-left:10px">видимый диапазон ("по месяцам")</span>' +
+        rcMonthSelectHTML("tf-from", monthly.months, flowVp.from) + ' <span>—</span> ' + rcMonthSelectHTML("tf-to", monthly.months, flowVp.to) +
+        '<button type="button" class="refresh-chart-btn tf-full-range">весь период</button>' +
         '</div>'
       );
       var sankeyBlock = el('<div class="rc-block"></div>');
@@ -2766,19 +2833,47 @@
         }));
       }
 
-      RC_TARIFFS.forEach(function (srcT) {
-        var block = el('<div class="rc-block"></div>');
-        block.appendChild(el('<div class="rc-block-title">Из ' + esc(tariffLabelFn(srcT)) + '</div>'));
-        var chartWrap = el('<div class="hscroll-chart"></div>');
-        chartWrap.appendChild(rcBuildMonthlyFlow(monthly.bySource[srcT], monthly.months, nodeOrder, tariffLabelFn, function (destT, monthDate) {
-          showDrill(srcT, destT, monthDate, tariffLabelFn(srcT) + " → " + tariffLabelFn(destT) + " · " + rcMonthLabel(monthDate));
-        }));
-        block.appendChild(chartWrap);
-        monthlyBlocksHolder.appendChild(block);
-      });
+      function renderMonthlyBlocks() {
+        monthlyBlocksHolder.innerHTML = "";
+        var visMonths = monthly.months.slice(flowVp.from, flowVp.to + 1);
+        RC_TARIFFS.forEach(function (srcT) {
+          var block = el('<div class="rc-block"></div>');
+          block.appendChild(el('<div class="rc-block-title">Из ' + esc(tariffLabelFn(srcT)) + '</div>'));
+          var chartWrap = el('<div class="hscroll-chart"></div>');
+          var visBucket = monthly.bySource[srcT].slice(flowVp.from, flowVp.to + 1);
+          chartWrap.appendChild(rcBuildMonthlyFlow(visBucket, visMonths, nodeOrder, tariffLabelFn, function (destT, monthDate) {
+            showDrill(srcT, destT, monthDate, tariffLabelFn(srcT) + " → " + tariffLabelFn(destT) + " · " + rcMonthLabel(monthDate));
+          }));
+          block.appendChild(chartWrap);
+          monthlyBlocksHolder.appendChild(block);
+        });
+        // синхронный скролл -- 3 строки "по месяцам" листаются вместе (та же причина, что
+        // на Борде 1: иначе кажется, что у каждого тарифа своя точка отсчёта)
+        rcLinkScroll(Array.from(monthlyBlocksHolder.querySelectorAll(".hscroll-chart")));
+      }
+      renderMonthlyBlocks();
+
+      function syncFlowRangeSelects() {
+        unitRow.querySelector(".tf-from").value = String(flowVp.from);
+        unitRow.querySelector(".tf-to").value = String(flowVp.to);
+      }
 
       unitRow.querySelectorAll('input[name="tf-unit-' + instanceId + '"]').forEach(function (r) {
         r.addEventListener("change", function () { RC_UNIT = r.value; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
+      });
+      unitRow.querySelector(".tf-from").addEventListener("change", function (e) {
+        flowVp.from = parseInt(e.target.value, 10);
+        if (flowVp.to < flowVp.from) flowVp.to = flowVp.from;
+        syncFlowRangeSelects(); renderMonthlyBlocks();
+      });
+      unitRow.querySelector(".tf-to").addEventListener("change", function (e) {
+        flowVp.to = parseInt(e.target.value, 10);
+        if (flowVp.from > flowVp.to) flowVp.from = flowVp.to;
+        syncFlowRangeSelects(); renderMonthlyBlocks();
+      });
+      unitRow.querySelector(".tf-full-range").addEventListener("click", function () {
+        flowVp.from = 0; flowVp.to = monthly.months.length - 1;
+        syncFlowRangeSelects(); renderMonthlyBlocks();
       });
 
       return wrap;

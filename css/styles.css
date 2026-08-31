@@ -368,6 +368,14 @@ table.wtable tbody tr:hover { background: var(--paper); }
 .rc-block-title { font-size: 12.5px; margin-bottom: 6px; }
 .hscroll-chart { overflow-x: auto; overflow-y: hidden; }
 .hscroll-chart svg { display: block; }
+/* Своя подсказка на hover (не нативный SVG <title> -- у того задержка ~600-1000мс).
+   Один элемент на всю страницу, position:fixed следует за курсором. */
+.rc-tooltip {
+  position: fixed; pointer-events: none; z-index: 1000; display: none;
+  background: var(--ink); color: var(--card-bg); font-size: 11.5px; font-family: var(--sans);
+  font-variant-numeric: tabular-nums; padding: 5px 9px; border-radius: 6px; box-shadow: var(--shadow);
+  white-space: nowrap; transform: translate(-50%, -100%); margin-top: -10px;
+}
 
 .empty-state {
   display: flex; align-items: center; justify-content: center; min-height: 260px;
