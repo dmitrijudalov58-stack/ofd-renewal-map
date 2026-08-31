@@ -2442,13 +2442,6 @@
     { label: "Дата окончания", key: "end", date: true },
     { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
   ];
-  var RC_TRANSITION_COLUMNS_CLIENT = [
-    { label: "ИНН клиента", key: "inn" }, { label: "Наименование клиента", key: "org" },
-    { label: "Кол-во активных касс", key: "activeKassas", num: true }, { label: "Тариф до", key: "tariffFrom" }, { label: "Тариф после", key: "tariffTo" },
-    { label: "Дата окончания", key: "end", date: true },
-    { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
-  ];
-
   function renderDrillList(container, list, columns, caption) {
     container.innerHTML = "";
     container.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>' + esc(caption) + '</b></div>'));
@@ -2779,8 +2772,12 @@
     title: "Переток тарифов", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
       var asOf = ctx.asOf;
-      var rows = ctx.M.computeTariffTransitions(model, RC_UNIT);
-      var monthly = ctx.M.computeTariffTransitionsMonthly(model, asOf, RC_UNIT);
+      // Только кассы -- юнит-тумблер убран по просьбе Димы (2026-09-01): переход всегда
+      // физически привязан к конкретной кассе (цепочка её кодов), клиентский разрез — лишний
+      // слой дедупа поверх, не нужен на этом борде (в отличие от Борда 1, где юнит важен).
+      var unit = "kassa";
+      var rows = ctx.M.computeTariffTransitions(model, unit);
+      var monthly = ctx.M.computeTariffTransitionsMonthly(model, asOf, unit);
 
       var volume = {};
       rows.forEach(function (r) { volume[r.from] = (volume[r.from] || 0) + r.count; volume[r.to] = (volume[r.to] || 0) + r.count; });
@@ -2799,10 +2796,7 @@
       var wrap = el("<div></div>");
       var unitRow = el(
         '<div class="threshold-row">' +
-        '<span style="color:var(--muted)">Единица</span>' +
-        '<label><input type="radio" name="tf-unit-' + instanceId + '" value="kassa"' + (RC_UNIT === "kassa" ? " checked" : "") + '> РНМ (кассы)</label>' +
-        '<label><input type="radio" name="tf-unit-' + instanceId + '" value="client"' + (RC_UNIT === "client" ? " checked" : "") + '> ИНН (клиенты)</label>' +
-        '<span style="color:var(--muted);margin-left:10px">видимый диапазон ("по месяцам")</span>' +
+        '<span style="color:var(--muted)">видимый диапазон ("по месяцам")</span>' +
         rcMonthSelectHTML("tf-from", monthly.months, flowVp.from) + ' <span>—</span> ' + rcMonthSelectHTML("tf-to", monthly.months, flowVp.to) +
         '<button type="button" class="refresh-chart-btn tf-full-range">весь период</button>' +
         '</div>'
@@ -2810,16 +2804,33 @@
       var zoom = RC_SANKEY_ZOOM.get(instanceId) || 1;
       var sankeyBlock = el('<div class="rc-block"></div>');
       sankeyBlock.appendChild(el('<div class="rc-block-title"><b>Общая картина (весь период)</b></div>'));
+
+      // График/Таблица -- переключение вида (Дима, 2026-09-01): таблица даёт точные числа
+      // построчно (Тариф до / Тариф после / Сумма), график — общую картину потоков.
+      var viewToggleId = "tf-view-" + instanceId;
+      var viewToggle = el(
+        '<div class="threshold-row" style="margin-top:-4px">' +
+        '<label><input type="radio" name="' + viewToggleId + '" value="chart" checked> График</label>' +
+        '<label><input type="radio" name="' + viewToggleId + '" value="table"> Таблица</label>' +
+        '</div>'
+      );
+      sankeyBlock.appendChild(viewToggle);
+
+      var chartArea = el("<div></div>");
       var zoomRow = el(
         '<div class="threshold-row" style="margin-top:-4px">' +
         '<span style="color:var(--muted)">Масштаб</span>' +
         RC_ZOOM_LEVELS.map(function (z) { return '<button type="button" class="refresh-chart-btn rc-zoom-btn" data-zoom="' + z + '">' + Math.round(z * 100) + '%</button>'; }).join(" ") +
         '</div>'
       );
-      sankeyBlock.appendChild(zoomRow);
+      chartArea.appendChild(zoomRow);
       var sankeyWrap = el('<div class="hscroll-chart rc-zoomable"></div>');
-      sankeyBlock.appendChild(sankeyWrap);
-      sankeyBlock.appendChild(el('<div class="stat-label">Клик по полосе — список клиентов/касс этого перехода за весь период · наведи — точное число</div>'));
+      chartArea.appendChild(sankeyWrap);
+      chartArea.appendChild(el('<div class="stat-label">Клик по полосе — список клиентов/касс этого перехода за весь период · наведи — точное число</div>'));
+      sankeyBlock.appendChild(chartArea);
+
+      var tableArea = el('<div style="display:none"></div>');
+      sankeyBlock.appendChild(tableArea);
 
       function markActiveZoomBtn() {
         zoomRow.querySelectorAll(".rc-zoom-btn").forEach(function (b) {
@@ -2847,9 +2858,8 @@
       wrap.appendChild(drillHolder);
 
       function showDrill(fromT, toT, monthDate, caption) {
-        var columns = RC_UNIT === "client" ? RC_TRANSITION_COLUMNS_CLIENT : RC_TRANSITION_COLUMNS_KASSA;
-        var list = ctx.M.tariffTransitionDrill(model, asOf, RC_UNIT, fromT, toT, monthDate || null);
-        renderDrillList(drillHolder, list, columns, caption);
+        var list = ctx.M.tariffTransitionDrill(model, asOf, unit, fromT, toT, monthDate || null);
+        renderDrillList(drillHolder, list, RC_TRANSITION_COLUMNS_KASSA, caption);
       }
 
       function renderSankey() {
@@ -2869,6 +2879,41 @@
           RC_SANKEY_ZOOM.set(instanceId, zoom);
           markActiveZoomBtn();
           renderSankey();
+        });
+      });
+
+      // Таблица -- плоский список "Тариф до / Тариф после / Сумма" (Дима, 2026-09-01: "36 на
+      // 36 - сумма, 36 на 1 - сумма"), не матрица -- проще читать построчно. Клик по строке =
+      // тот же drill, что и клик по полосе Sankey.
+      function renderTable() {
+        tableArea.innerHTML = "";
+        if (!rows.length) {
+          tableArea.appendChild(el('<div class="placeholder-body">Пока нет ни одного перехода тарифов в данных.</div>'));
+          return;
+        }
+        var sorted = rows.slice().sort(function (a, b) { return b.count - a.count; });
+        var body = sorted.map(function (r) { return [tariffLabelFn(r.from), tariffLabelFn(r.to), r.count]; });
+        var tableWrap = makeSortableTable(
+          [{ label: "Тариф до" }, { label: "Тариф после" }, { label: "Сумма", num: true }],
+          body
+        );
+        tableArea.appendChild(tableWrap);
+        tableArea.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список клиентов/касс этого перехода за весь период</div>'));
+        tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () {
+            var fromT = parseInt(tr.children[0].textContent, 10);
+            var toT = parseInt(tr.children[1].textContent, 10);
+            showDrill(fromT, toT, null, tariffLabelFn(fromT) + " → " + tariffLabelFn(toT) + " · весь период");
+          });
+        });
+      }
+      viewToggle.querySelectorAll('input[name="' + viewToggleId + '"]').forEach(function (r) {
+        r.addEventListener("change", function () {
+          var checkedVal = viewToggle.querySelector("input:checked").value;
+          chartArea.style.display = checkedVal === "chart" ? "" : "none";
+          tableArea.style.display = checkedVal === "table" ? "" : "none";
+          if (checkedVal === "table") renderTable();
         });
       });
 
@@ -2897,9 +2942,6 @@
         unitRow.querySelector(".tf-to").value = String(flowVp.to);
       }
 
-      unitRow.querySelectorAll('input[name="tf-unit-' + instanceId + '"]').forEach(function (r) {
-        r.addEventListener("change", function () { RC_UNIT = r.value; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
-      });
       unitRow.querySelector(".tf-from").addEventListener("change", function (e) {
         flowVp.from = parseInt(e.target.value, 10);
         if (flowVp.to < flowVp.from) flowVp.to = flowVp.from;
