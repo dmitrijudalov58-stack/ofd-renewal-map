@@ -1232,7 +1232,16 @@
         var seen = new Set();
         c.kassas.forEach(function (k) {
           kassaTransitionEvents(k).forEach(function (ev) {
-            var key = ev.from + "|" + ev.to;
+            // Дедуп-ключ ОБЯЗАН включать месяц, не только (from,to) -- иначе клиент с
+            // ПОВТОРЯЮЩИМСЯ переходом (например 13->13 каждый год подряд с 2017-го) считался
+            // бы 1 раз за ВЕСЬ период вместо каждого фактического повторения: агрегат тогда
+            // расходится с суммой помесячной разбивки (`computeTariffTransitionsMonthly`,
+            // та дедуплицирует по (from,to,месяц) правильно) и выглядит так, будто ранних лет
+            // почти нет данных -- один в целом произвольный (по порядку перебора касс) экземпляр
+            // "съедал" все остальные (найдено Димой, 2026-09-01: "нет информации с 2017 года").
+            var end = ev.end;
+            var monthKey = end ? end.getFullYear() + "-" + end.getMonth() : "no-date";
+            var key = ev.from + "|" + ev.to + "|" + monthKey;
             if (seen.has(key)) return;
             seen.add(key);
             bump(ev.from, ev.to);

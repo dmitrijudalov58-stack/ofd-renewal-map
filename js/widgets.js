@@ -2352,6 +2352,8 @@
   var RC_UNIT = "kassa";
   var RC_VIEWPORT = new Map(); // instanceId -> {from: idx, to: idx}
   var RC_FLOW_VIEWPORT = new Map(); // то же самое, для "по месяцам" на Борде 2
+  var RC_SANKEY_ZOOM = new Map(); // instanceId -> множитель (1 / 1.5 / 2 / 3)
+  var RC_ZOOM_LEVELS = [1, 1.5, 2, 3];
 
   var RC_TARIFFS = [13, 15, 36];
   var RC_TARIFF_LABEL = { 13: "13 мес", 15: "15 мес", 36: "36 мес" };
@@ -2523,7 +2525,10 @@
 
       if (isFuture) {
         var h = s.forecast * mainScale, y = mainH - h;
-        var rect = rcSvgEl("rect", { x: bx, y: y, width: barW, height: Math.max(0, h), rx: 2, style: "fill:none;stroke:" + color + ";stroke-width:1.3;stroke-dasharray:3 2;cursor:pointer" });
+        // pointer-events:all -- ОБЯЗАТЕЛЕН при fill:none: без него SVG считает "покрашенной"
+        // только саму пунктирную обводку, наведение работает лишь на тонкую линию контура,
+        // не на весь столбец (Дима, 2026-09-01: "нужно наводиться на тонкую линию").
+        var rect = rcSvgEl("rect", { x: bx, y: y, width: barW, height: Math.max(0, h), rx: 2, style: "fill:none;stroke:" + color + ";stroke-width:1.3;stroke-dasharray:3 2;cursor:pointer;pointer-events:all" });
         rcAttachTooltip(rect, function () { return "Ожидается продлений · " + rcMonthLabel(monthDate) + ": " + s.forecast; });
         rect.addEventListener("click", function () { onSegmentClick(monthDate, "forecast"); });
         svg.appendChild(rect);
@@ -2682,8 +2687,9 @@
   // Sankey (alluvial) -- узлы слева "тариф ДО"/справа "тариф ПОСЛЕ" (nodeOrder общий для
   // обеих сторон), self-flow (X->X) рисуется как почти горизонтальная полоса. Раскладка --
   // накопительный offset по узлам (та же техника, что и в мокапе, согласованном с Димой).
-  function rcBuildSankey(rows, nodeOrder, tariffLabelFn, onFlowClick) {
-    var W = 560, H = Math.max(220, nodeOrder.length * 46), x1 = 92, x2 = W - 92, gap = 8;
+  function rcBuildSankey(rows, nodeOrder, tariffLabelFn, onFlowClick, zoom) {
+    zoom = zoom || 1;
+    var W = 680, H = Math.max(260, nodeOrder.length * 52), x1 = 92, x2 = W - 92, gap = 8;
     var leftTotal = {}, rightTotal = {};
     nodeOrder.forEach(function (n) { leftTotal[n] = 0; rightTotal[n] = 0; });
     rows.forEach(function (r) {
@@ -2701,12 +2707,16 @@
     var offL = {}, offR = {};
     nodeOrder.forEach(function (n) { offL[n] = 0; offR[n] = 0; });
 
-    var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, class: "chart-svg" });
+    // width/height масштабируются zoom'ом, viewBox -- нет: это и есть "увеличить график"
+    // (Дима, 2026-09-01), не просто больше пикселей той же плотности.
+    var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W * zoom, height: H * zoom, class: "chart-svg" });
     nodeOrder.forEach(function (from) {
       nodeOrder.forEach(function (to) {
         var r = rows.filter(function (x) { return x.from === from && x.to === to; })[0];
         if (!r || !r.count) return;
-        var hL = r.count * scaleL, hR = r.count * scaleR;
+        // минимум 2px толщины -- иначе мелкие переходы (Дима: "не видно мелкие линии")
+        // тонут в линейном масштабе рядом с self-flow X->X (обычно на порядки больше)
+        var hL = Math.max(2, r.count * scaleL), hR = Math.max(2, r.count * scaleR);
         var y1top = yL[from] + offL[from], y2top = yR[to] + offR[to];
         offL[from] += hL; offR[to] += hR;
         var xm = (x1 + x2) / 2;
@@ -2797,11 +2807,28 @@
         '<button type="button" class="refresh-chart-btn tf-full-range">весь период</button>' +
         '</div>'
       );
+      var zoom = RC_SANKEY_ZOOM.get(instanceId) || 1;
       var sankeyBlock = el('<div class="rc-block"></div>');
       sankeyBlock.appendChild(el('<div class="rc-block-title"><b>Общая картина (весь период)</b></div>'));
-      var sankeyWrap = el('<div class="hscroll-chart"></div>');
+      var zoomRow = el(
+        '<div class="threshold-row" style="margin-top:-4px">' +
+        '<span style="color:var(--muted)">Масштаб</span>' +
+        RC_ZOOM_LEVELS.map(function (z) { return '<button type="button" class="refresh-chart-btn rc-zoom-btn" data-zoom="' + z + '">' + Math.round(z * 100) + '%</button>'; }).join(" ") +
+        '</div>'
+      );
+      sankeyBlock.appendChild(zoomRow);
+      var sankeyWrap = el('<div class="hscroll-chart rc-zoomable"></div>');
       sankeyBlock.appendChild(sankeyWrap);
-      sankeyBlock.appendChild(el('<div class="stat-label">Клик по полосе — список клиентов/касс этого перехода за весь период</div>'));
+      sankeyBlock.appendChild(el('<div class="stat-label">Клик по полосе — список клиентов/касс этого перехода за весь период · наведи — точное число</div>'));
+
+      function markActiveZoomBtn() {
+        zoomRow.querySelectorAll(".rc-zoom-btn").forEach(function (b) {
+          var active = parseFloat(b.dataset.zoom) === zoom;
+          b.style.borderColor = active ? "var(--brand)" : "";
+          b.style.color = active ? "var(--brand)" : "";
+        });
+      }
+      markActiveZoomBtn();
 
       var monthlyBlock = el('<div class="rc-block"></div>');
       monthlyBlock.appendChild(el('<div class="rc-block-title"><b>По месяцам — из каждого тарифа Борда 1</b></div>'));
@@ -2825,13 +2852,25 @@
         renderDrillList(drillHolder, list, columns, caption);
       }
 
-      if (!rows.length) {
-        sankeyWrap.appendChild(el('<div class="placeholder-body">Пока нет ни одного перехода тарифов в данных.</div>'));
-      } else {
+      function renderSankey() {
+        sankeyWrap.innerHTML = "";
+        if (!rows.length) {
+          sankeyWrap.appendChild(el('<div class="placeholder-body">Пока нет ни одного перехода тарифов в данных.</div>'));
+          return;
+        }
         sankeyWrap.appendChild(rcBuildSankey(rows, nodeOrder, tariffLabelFn, function (fromT, toT) {
           showDrill(fromT, toT, null, tariffLabelFn(fromT) + " → " + tariffLabelFn(toT) + " · весь период");
-        }));
+        }, zoom));
       }
+      renderSankey();
+      zoomRow.querySelectorAll(".rc-zoom-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          zoom = parseFloat(btn.dataset.zoom);
+          RC_SANKEY_ZOOM.set(instanceId, zoom);
+          markActiveZoomBtn();
+          renderSankey();
+        });
+      });
 
       function renderMonthlyBlocks() {
         monthlyBlocksHolder.innerHTML = "";

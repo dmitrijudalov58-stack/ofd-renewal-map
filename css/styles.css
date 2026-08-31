@@ -368,6 +368,9 @@ table.wtable tbody tr:hover { background: var(--paper); }
 .rc-block-title { font-size: 12.5px; margin-bottom: 6px; }
 .hscroll-chart { overflow-x: auto; overflow-y: hidden; }
 .hscroll-chart svg { display: block; }
+/* Sankey с зумом растёт и по высоте (Дима, 2026-09-01: "нужна возможность увеличить
+   график") -- вертикальный скролл в рамке карточки вместо бесконечного роста самой карточки. */
+.hscroll-chart.rc-zoomable { overflow-y: auto; max-height: 560px; }
 /* Своя подсказка на hover (не нативный SVG <title> -- у того задержка ~600-1000мс).
    Один элемент на всю страницу, position:fixed следует за курсором. */
 .rc-tooltip {
