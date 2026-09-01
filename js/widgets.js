@@ -2353,6 +2353,7 @@
   var RC_VIEWPORT = new Map(); // instanceId -> {from: idx, to: idx}
   var RC_FLOW_VIEWPORT = new Map(); // то же самое, для "по месяцам" на Борде 2
   var RC_SANKEY_ZOOM = new Map(); // instanceId -> множитель (1 / 1.5 / 2 / 3)
+  var RC_FLOW_ONLY_ACTIVE = false; // Переток тарифов: все переходы / только у живых сейчас касс
   var RC_ZOOM_LEVELS = [1, 1.5, 2, 3];
 
   var RC_TARIFFS = [13, 15, 36];
@@ -2697,33 +2698,60 @@
     var yL = {}, cursorL = 0, yR = {}, cursorR = 0;
     nodeOrder.forEach(function (n) { yL[n] = cursorL; cursorL += leftTotal[n] * scaleL + gap; });
     nodeOrder.forEach(function (n) { yR[n] = cursorR; cursorR += rightTotal[n] * scaleR + gap; });
-    var offL = {}, offR = {};
-    nodeOrder.forEach(function (n) { offL[n] = 0; offR[n] = 0; });
+    // Список реальных потоков (count>0), нужен для двух НЕЗАВИСИМЫХ сортировок ниже.
+    var flows = [];
+    nodeOrder.forEach(function (from) {
+      nodeOrder.forEach(function (to) {
+        var r = rows.filter(function (x) { return x.from === from && x.to === to; })[0];
+        if (r && r.count) flows.push(r);
+      });
+    });
+
+    // Сортировка ВНУТРИ узла по убыванию (Дима, 2026-09-01: "в рамках одного тарифа тоже
+    // от большего к меньшему") -- НЕЗАВИСИМО для левой стороны (исходящие потоки узла) и
+    // правой (входящие потоки узла): порядок потоков внутри "13 мес" слева определяется их
+    // размером КАК ИСТОЧНИКА, а порядок внутри "13 мес" справа -- их размером КАК
+    // НАЗНАЧЕНИЯ, это разные числа для одного и того же (from,to). Два прохода вместо
+    // мутирующего офсета, чтобы каждая сторона сортировалась сама по себе.
+    var posL = {}, posR = {}; // "from|to" -> {top, bot}
+    nodeOrder.forEach(function (from) {
+      var outgoing = flows.filter(function (r) { return r.from === from; }).sort(function (a, b) { return b.count - a.count; });
+      var cursor = yL[from];
+      outgoing.forEach(function (r) {
+        // минимум 2px толщины -- иначе мелкие переходы (Дима: "не видно мелкие линии")
+        // тонут в линейном масштабе рядом с self-flow X->X (обычно на порядки больше)
+        var h = Math.max(2, r.count * scaleL);
+        posL[r.from + "|" + r.to] = { top: cursor, bot: cursor + h };
+        cursor += h;
+      });
+    });
+    nodeOrder.forEach(function (to) {
+      var incoming = flows.filter(function (r) { return r.to === to; }).sort(function (a, b) { return b.count - a.count; });
+      var cursor = yR[to];
+      incoming.forEach(function (r) {
+        var h = Math.max(2, r.count * scaleR);
+        posR[r.from + "|" + r.to] = { top: cursor, bot: cursor + h };
+        cursor += h;
+      });
+    });
 
     // width/height масштабируются zoom'ом, viewBox -- нет: это и есть "увеличить график"
     // (Дима, 2026-09-01), не просто больше пикселей той же плотности.
     var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W * zoom, height: H * zoom, class: "chart-svg" });
-    nodeOrder.forEach(function (from) {
-      nodeOrder.forEach(function (to) {
-        var r = rows.filter(function (x) { return x.from === from && x.to === to; })[0];
-        if (!r || !r.count) return;
-        // минимум 2px толщины -- иначе мелкие переходы (Дима: "не видно мелкие линии")
-        // тонут в линейном масштабе рядом с self-flow X->X (обычно на порядки больше)
-        var hL = Math.max(2, r.count * scaleL), hR = Math.max(2, r.count * scaleR);
-        var y1top = yL[from] + offL[from], y2top = yR[to] + offR[to];
-        offL[from] += hL; offR[to] += hR;
-        var xm = (x1 + x2) / 2;
-        var d = "M " + x1 + " " + y1top +
-          " C " + xm + " " + y1top + " " + xm + " " + y2top + " " + x2 + " " + y2top +
-          " L " + x2 + " " + (y2top + hR) +
-          " C " + xm + " " + (y2top + hR) + " " + xm + " " + (y1top + hL) + " " + x1 + " " + (y1top + hL) + " Z";
-        var path = rcSvgEl("path", { d: d, style: "fill:" + rcColorForTariff(from, nodeOrder) + ";opacity:.35;cursor:pointer" });
-        rcAttachTooltip(path, function () { return tariffLabelFn(from) + " → " + tariffLabelFn(to) + ": " + r.count; });
-        path.addEventListener("mouseenter", function () { path.style.opacity = ".7"; });
-        path.addEventListener("mouseleave", function () { path.style.opacity = ".35"; });
-        path.addEventListener("click", function () { onFlowClick(from, to); });
-        svg.appendChild(path);
-      });
+    flows.forEach(function (r) {
+      var key = r.from + "|" + r.to;
+      var p1 = posL[key], p2 = posR[key];
+      var xm = (x1 + x2) / 2;
+      var d = "M " + x1 + " " + p1.top +
+        " C " + xm + " " + p1.top + " " + xm + " " + p2.top + " " + x2 + " " + p2.top +
+        " L " + x2 + " " + p2.bot +
+        " C " + xm + " " + p2.bot + " " + xm + " " + p1.bot + " " + x1 + " " + p1.bot + " Z";
+      var path = rcSvgEl("path", { d: d, style: "fill:" + rcColorForTariff(r.from, nodeOrder) + ";opacity:.35;cursor:pointer" });
+      rcAttachTooltip(path, function () { return tariffLabelFn(r.from) + " → " + tariffLabelFn(r.to) + ": " + r.count; });
+      path.addEventListener("mouseenter", function () { path.style.opacity = ".7"; });
+      path.addEventListener("mouseleave", function () { path.style.opacity = ".35"; });
+      path.addEventListener("click", function () { onFlowClick(r.from, r.to); });
+      svg.appendChild(path);
     });
     nodeOrder.forEach(function (n) {
       var hL = Math.max(1, leftTotal[n] * scaleL), hR = Math.max(1, rightTotal[n] * scaleR);
@@ -2776,8 +2804,8 @@
       // физически привязан к конкретной кассе (цепочка её кодов), клиентский разрез — лишний
       // слой дедупа поверх, не нужен на этом борде (в отличие от Борда 1, где юнит важен).
       var unit = "kassa";
-      var rows = ctx.M.computeTariffTransitions(model, unit);
-      var monthly = ctx.M.computeTariffTransitionsMonthly(model, asOf, unit);
+      var rows = ctx.M.computeTariffTransitions(model, unit, asOf, RC_FLOW_ONLY_ACTIVE);
+      var monthly = ctx.M.computeTariffTransitionsMonthly(model, asOf, unit, RC_FLOW_ONLY_ACTIVE);
 
       var volume = {};
       rows.forEach(function (r) { volume[r.from] = (volume[r.from] || 0) + r.count; volume[r.to] = (volume[r.to] || 0) + r.count; });
@@ -2794,13 +2822,23 @@
       flowVp.to = Math.min(Math.max(flowVp.to, flowVp.from), monthly.months.length - 1);
 
       var wrap = el("<div></div>");
+      var activeToggleId = "tf-active-" + instanceId;
       var unitRow = el(
         '<div class="threshold-row">' +
-        '<span style="color:var(--muted)">видимый диапазон ("по месяцам")</span>' +
+        '<span style="color:var(--muted)">Кассы</span>' +
+        '<label><input type="radio" name="' + activeToggleId + '" value="all"' + (RC_FLOW_ONLY_ACTIVE ? "" : " checked") + '> все за всё время</label>' +
+        '<label><input type="radio" name="' + activeToggleId + '" value="active"' + (RC_FLOW_ONLY_ACTIVE ? " checked" : "") + '> только действующие сейчас</label>' +
+        '<span style="color:var(--muted);margin-left:10px">видимый диапазон ("по месяцам")</span>' +
         rcMonthSelectHTML("tf-from", monthly.months, flowVp.from) + ' <span>—</span> ' + rcMonthSelectHTML("tf-to", monthly.months, flowVp.to) +
         '<button type="button" class="refresh-chart-btn tf-full-range">весь период</button>' +
         '</div>'
       );
+      unitRow.querySelectorAll('input[name="' + activeToggleId + '"]').forEach(function (r) {
+        r.addEventListener("change", function () {
+          RC_FLOW_ONLY_ACTIVE = unitRow.querySelector("input:checked").value === "active";
+          root.OFDCanvas && root.OFDCanvas.rerenderAll();
+        });
+      });
       var zoom = RC_SANKEY_ZOOM.get(instanceId) || 1;
       var sankeyBlock = el('<div class="rc-block"></div>');
       sankeyBlock.appendChild(el('<div class="rc-block-title"><b>Общая картина (весь период)</b></div>'));
@@ -2858,7 +2896,7 @@
       wrap.appendChild(drillHolder);
 
       function showDrill(fromT, toT, monthDate, caption) {
-        var list = ctx.M.tariffTransitionDrill(model, asOf, unit, fromT, toT, monthDate || null);
+        var list = ctx.M.tariffTransitionDrill(model, asOf, unit, fromT, toT, monthDate || null, RC_FLOW_ONLY_ACTIVE);
         renderDrillList(drillHolder, list, RC_TRANSITION_COLUMNS_KASSA, caption);
       }
 
@@ -2955,6 +2993,83 @@
       unitRow.querySelector(".tf-full-range").addEventListener("click", function () {
         flowVp.from = 0; flowVp.to = monthly.months.length - 1;
         syncFlowRangeSelects(); renderMonthlyBlocks();
+      });
+
+      return wrap;
+    },
+  };
+
+  // "Стартовый тариф" = тариф ПЕРВОГО кода (см. metrics.js kassaStartTariff/clientStartTariff)
+  // -- когорта "с чем пришли", не текущий/последний тариф. Касса и клиент показаны РЯДОМ
+  // (не тумблером -- Оксана, 2026-09-01: "для всех, отдельно вынести"), на ВСЕХ тарифах
+  // выгрузки (не только 13/15/36 -- Дима: "делай на все").
+  WIDGETS["b7-tariff-conversion"] = {
+    title: "Тарифы: доля / конверсия / продления", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      var asOf = ctx.asOf;
+      var convKassa = ctx.M.computeTariffConversion(model, asOf, "kassa");
+      var convClient = ctx.M.computeTariffConversion(model, asOf, "client");
+      var distKassa = ctx.M.computeTariffStartDistribution(model, "kassa");
+      var distClient = ctx.M.computeTariffStartDistribution(model, "client");
+
+      var byTariff = new Map();
+      function ensure(t) {
+        var e = byTariff.get(t);
+        if (!e) { e = { tariff: t, totalK: 0, totalC: 0 }; byTariff.set(t, e); }
+        return e;
+      }
+      convKassa.forEach(function (r) { var e = ensure(r.tariff); e.totalK = r.total; e.shareK = r.share; e.convK = r.conversion; e.decidedK = r.decided; });
+      convClient.forEach(function (r) { var e = ensure(r.tariff); e.totalC = r.total; e.shareC = r.share; e.convC = r.conversion; e.decidedC = r.decided; });
+      var tariffs = Array.from(byTariff.values()).sort(function (a, b) { return b.totalK - a.totalK; });
+
+      function pct(v) { return v == null ? "—" : (v * 100).toFixed(1) + "%"; }
+
+      var wrap = el("<div></div>");
+      wrap.appendChild(el(
+        '<div class="stat-label" style="margin-bottom:8px">«Стартовый тариф» — тариф ПЕРВОГО кода кассы/клиента (не текущий). ' +
+        'Конверсия — доля тех, кто продлился хоть раз (пусть и на другой тариф), среди тех чья судьба уже решена ' +
+        '(касса/клиент ещё в грейсе или срок вообще не наступил — не считается, рано). Доля — % от всей базы за всё время. ' +
+        'Клик по строке — распределение по числу продлений.</div>'
+      ));
+      var headers = [
+        { label: "Тариф" },
+        { label: "Всего касс", num: true }, { label: "Доля базы, касс", num: true }, { label: "Конверсия, касс", num: true },
+        { label: "Всего клиентов", num: true }, { label: "Доля базы, клиентов", num: true }, { label: "Конверсия, клиентов", num: true },
+      ];
+      var rows = tariffs.map(function (t) {
+        return [t.tariff + " мес", fmtNum(t.totalK), pct(t.shareK), pct(t.convK), fmtNum(t.totalC), pct(t.shareC), pct(t.convC)];
+      });
+      var tableWrap = makeSortableTable(headers, rows);
+      wrap.appendChild(tableWrap);
+
+      var drillHolder = el('<div style="margin-top:10px"></div>');
+      wrap.appendChild(drillHolder);
+
+      tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function () {
+          var tariff = parseInt(tr.children[0].textContent, 10);
+          var dK = distKassa.filter(function (d) { return d.tariff === tariff; })[0];
+          var dC = distClient.filter(function (d) { return d.tariff === tariff; })[0];
+          var maxN = 0;
+          if (dK) dK.rows.forEach(function (r) { if (r.renewals > maxN) maxN = r.renewals; });
+          if (dC) dC.rows.forEach(function (r) { if (r.renewals > maxN) maxN = r.renewals; });
+          function countAt(dist, n) {
+            if (!dist) return 0;
+            var row = dist.rows.filter(function (r) { return r.renewals === n; })[0];
+            return row ? row.count : 0;
+          }
+          var distRows = [];
+          for (var n = 0; n <= maxN; n++) {
+            distRows.push([n === 0 ? "0 (ни разу)" : String(n), fmtNum(countAt(dK, n)), fmtNum(countAt(dC, n))]);
+          }
+          drillHolder.innerHTML = "";
+          drillHolder.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>' + tariff + ' мес — распределение по числу продлений</b></div>'));
+          drillHolder.appendChild(makeSortableTable(
+            [{ label: "Продлений" }, { label: "Касс", num: true }, { label: "Клиентов", num: true }],
+            distRows
+          ));
+        });
       });
 
       return wrap;
