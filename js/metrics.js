@@ -1048,11 +1048,30 @@
 
   // ---------- «Календарь продлений» + «Переток тарифов» (2026-08-31, ТЗ tmp/plans/2026-08-31-renewal-calendar-tz.md) ----------
   //
-  // Тарифные срезы календаря — только 13/15/36 мес (1/3/6 нерепрезентативны, решение из
-  // исходного запроса). Переток тарифов — БЕЗ этого ограничения, туда попадает любой
-  // фактический тариф выгрузки (короткие тарифы нужны как точки назначения перехода).
-  var CALENDAR_TARIFFS = [13, 15, 36];
-  var CALENDAR_FORECAST_MONTHS = 36; // перекрывает самый длинный тариф календаря
+  // Тарифные срезы календаря — изначально были ограничены 13/15/36 мес (короткие тарифы
+  // считались нерепрезентативными). Дима отменил это ограничение 2026-09-01: список
+  // тарифов теперь ДИНАМИЧЕСКИЙ, считается из реальных данных выгрузки (allTariffsSorted),
+  // общий для Календаря и для "Переток → по месяцам" — держать два списка вручную в
+  // синхроне было бы источником рассинхрона (см. HISTORY.md).
+  var CALENDAR_FORECAST_MONTHS = 36; // перекрывает самый длинный обычный тариф
+
+  // Все РЕАЛЬНО встречающиеся тарифы (по кодам "Зарегистрировано"), по убыванию
+  // длительности: 36, 15, 13, ..., 1 (Дима: "чёткий список — 36, потом 15, потом 13, так
+  // далее до первого месяца"). Считается один раз на рендер и передаётся в
+  // computeRenewalCalendar/computeTariffTransitionsMonthly через opts.tariffs, чтобы не
+  // пересчитывать по 5 раз за один рендер борда.
+  function allTariffsSorted(model) {
+    var set = new Set();
+    model.kassas.forEach(function (k) {
+      k.codes.forEach(function (c) {
+        var t = parseTariffMonths(c.tariff);
+        if (t != null) set.add(t);
+      });
+    });
+    var arr = Array.from(set);
+    arr.sort(function (a, b) { return b - a; });
+    return arr;
+  }
 
   // Один код кассы -> до 3 "событий" в его жизни (см. ТЗ §1.1):
   // - "new" -- ТОЛЬКО у самого первого кода кассы (дата прихода, ось = created/activated,
@@ -1107,40 +1126,49 @@
 
   function emptyCalendarCounts() { return { new: 0, renewedFirst: 0, renewedRepeat: 0, churn: 0, pending: 0, forecast: 0 }; }
 
-  function makeCalendarBuckets(months) {
+  function makeCalendarBuckets(months, tariffs) {
     var b = {};
-    CALENDAR_TARIFFS.concat(["total"]).forEach(function (t) {
+    tariffs.concat(["total"]).forEach(function (t) {
       b[t] = months.map(function () { return emptyCalendarCounts(); });
     });
     return b;
   }
 
   function addEventToBuckets(buckets, months, ev) {
-    if (CALENDAR_TARIFFS.indexOf(ev.tariff) === -1) return; // короткие тарифы вне календаря (см. верх блока)
+    if (!buckets[ev.tariff]) return; // защита -- тариф события не попал в переданный tariffs (не должно случаться)
     var idx = monthIndexOf(months, ev.date);
     if (idx < 0) return;
     buckets[ev.tariff][idx][ev.type] += 1;
     buckets.total[idx][ev.type] += 1;
   }
 
-  // opts: { unit: "kassa"|"client" (default kassa), forecastMonths }. Юнит "клиент" --
-  // события собираются со ВСЕХ касс клиента, но дедуплицируются по (тип, тариф, месяц) --
-  // 2 кассы одного клиента, продлившиеся в один месяц на один тариф, считаются ОДНИМ
-  // клиентским событием, не двумя (иначе тумблер РНМ/ИНН ничего бы не менял).
+  // opts: { unit: "kassa"|"client" (default kassa), forecastMonths, tariffs (иначе
+  // allTariffsSorted(model)), onlyActive }. Юнит "клиент" -- события собираются со ВСЕХ
+  // касс клиента, но дедуплицируются по (тип, тариф, месяц) -- 2 кассы одного клиента,
+  // продлившиеся в один месяц на один тариф, считаются ОДНИМ клиентским событием, не двумя
+  // (иначе тумблер РНМ/ИНН ничего бы не менял).
+  // onlyActive (Дима, 2026-09-01) -- считать только касс/клиентов, кто ЖИВ СЕЙЧАС (as-of),
+  // применяется ко ВСЕЙ истории (не только к текущему месяцу) -- та же семантика, что уже
+  // на "Перетоке": "продлилось в январе 2020" под onlyActive покажет только тех, кто из
+  // этой когорты дожил до сегодня.
   function computeRenewalCalendar(model, asOf, opts) {
     opts = opts || {};
     var forecastMonths = opts.forecastMonths || CALENDAR_FORECAST_MONTHS;
     var unit = opts.unit === "client" ? "client" : "kassa";
+    var tariffs = opts.tariffs || allTariffsSorted(model);
+    var onlyActive = !!opts.onlyActive;
     var months = calendarMonthRange(model, asOf, forecastMonths);
-    var buckets = makeCalendarBuckets(months);
+    var buckets = makeCalendarBuckets(months, tariffs);
 
     if (unit === "kassa") {
       model.kassas.forEach(function (k) {
+        if (onlyActive && kassaLapsedAt(k, asOf)) return;
         collectKassaEvents(k, asOf).forEach(function (ev) { addEventToBuckets(buckets, months, ev); });
       });
     } else {
       model.clients.forEach(function (c) {
         if (c.phys) return;
+        if (onlyActive && clientLapsedAt(c, asOf)) return;
         var seen = new Set();
         c.kassas.forEach(function (k) {
           collectKassaEvents(k, asOf).forEach(function (ev) {
@@ -1154,16 +1182,21 @@
         });
       });
     }
-    return { months: months, buckets: buckets, unit: unit };
+    return { months: months, buckets: buckets, unit: unit, tariffs: tariffs };
   }
 
   // Раскрытие по клику на сегмент "Календаря продлений" -- список клиентов/касс за
   // конкретный (месяц, тариф, тип события). tariffMonths -- число (13/15/36), не строка.
-  function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit) {
+  function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit, onlyActive) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
     var seenClients = new Set();
     model.kassas.forEach(function (k) {
+      // onlyActive -- проверяем "жив ли" на уровне ТОГО юнита, что показываем: для касс --
+      // сама касса, для клиентов -- клиент-владелец (у клиента может быть ЖИВАЯ касса B,
+      // пока конкретно ЭТА касса A, породившая событие, уже в оттоке -- клиент всё равно
+      // действующий, отфильтровывать по k здесь для юнита "клиент" было бы неверно).
+      if (onlyActive && unit !== "client" && kassaLapsedAt(k, asOf)) return;
       var events = collectKassaEvents(k, asOf);
       for (var i = 0; i < events.length; i++) {
         var ev = events[i];
@@ -1172,6 +1205,7 @@
         var client = k.clientKey ? model.clients.get(k.clientKey) : null;
         if (unit === "client") {
           if (!client || seenClients.has(client.key)) break;
+          if (onlyActive && clientLapsedAt(client, asOf)) break;
           seenClients.add(client.key);
           out.push({
             inn: client.key, org: client.org, rnm: null,
@@ -1267,8 +1301,8 @@
     return rows;
   }
 
-  // Разбивка перетока по месяцам -- ТОЛЬКО источник из CALENDAR_TARIFFS (синхронно с
-  // Бордом 1), назначение -- любой тариф. Месяц -- дата окончания ИСХОДНОГО кода (та же
+  // Разбивка перетока по месяцам -- источник из tariffs (по умолчанию allTariffsSorted,
+  // синхронно с Бордом 1), назначение -- любой тариф. Месяц -- дата окончания ИСХОДНОГО кода (та же
   // ось, что и когорта "должны продлиться" в Борде 1 -- сумма столбца тут = "продлилось"
   // там). Диапазон месяцев -- ТОТ ЖЕ горизонт, что у календаря (не обрезан по asOf), хотя
   // переход по смыслу "уже случился" (codes[i+1] существует) -- на реальных данных дата
@@ -1278,12 +1312,13 @@
   // запаса такие события тихо терялись (idx=-1) -- проект держит "событие = месяц ДАТЫ
   // ОКОНЧАНИЯ" как сквозной инвариант (см. HISTORY.md), подрезать его для этого виджета
   // нельзя -- расширяем диапазон, а не меняем ось.
-  function computeTariffTransitionsMonthly(model, asOf, unit, onlyActive) {
+  function computeTariffTransitionsMonthly(model, asOf, unit, onlyActive, tariffs) {
+    tariffs = tariffs || allTariffsSorted(model);
     var months = calendarMonthRange(model, asOf, CALENDAR_FORECAST_MONTHS);
     var bySource = {};
-    CALENDAR_TARIFFS.forEach(function (t) { bySource[t] = months.map(function () { return {}; }); });
+    tariffs.forEach(function (t) { bySource[t] = months.map(function () { return {}; }); });
     function bump(fromT, toT, idx) {
-      if (CALENDAR_TARIFFS.indexOf(fromT) === -1 || idx < 0) return;
+      if (!bySource[fromT] || idx < 0) return;
       var bucket = bySource[fromT][idx];
       bucket[toT] = (bucket[toT] || 0) + 1;
     }
@@ -1355,111 +1390,6 @@
     return out;
   }
 
-  // ---------- стартовый тариф: распределение по продлениям + конверсия/доля (Дима,
-  // 2026-09-01, Оксана: "выбираю тариф... вижу 0 продлений — 3500, одно продление — 500...
-  // конверсия в продление у 36-месячных 95%") ----------
-  //
-  // "Стартовый тариф" = тариф ПЕРВОГО кода кассы/клиента (когорта "с чем пришли"), НЕ
-  // текущий/последний -- отслеживаем судьбу с момента прихода, как и просила Оксана
-  // ("я купил себе 15-ти месячные, и как они потом идут"). Работает на ЛЮБОМ тарифе
-  // выгрузки (не ограничено 13/15/36, в отличие от календаря Борда 1).
-  function kassaStartTariff(k) {
-    return k.codes.length ? parseTariffMonths(k.codes[0].tariff) : null;
-  }
-  function clientStartTariff(c) {
-    if (c.phys || !c.kassas.length) return null;
-    var earliest = c.kassas.reduce(function (a, b) { return b.appearance < a.appearance ? b : a; });
-    return kassaStartTariff(earliest);
-  }
-
-  // Распределение: сколько касс/клиентов с данным стартовым тарифом продлились ровно N раз
-  // (N=0,1,2,...). Клиентское "продлений" -- сумма продлений по ВСЕМ его кассам (холистично,
-  // не по одной кассе).
-  function computeTariffStartDistribution(model, unit) {
-    var buckets = new Map(); // tariff -> Map(renewalsCount -> count)
-    function addTo(tariff, renewals) {
-      if (tariff == null) return;
-      var b = buckets.get(tariff);
-      if (!b) { b = new Map(); buckets.set(tariff, b); }
-      b.set(renewals, (b.get(renewals) || 0) + 1);
-    }
-    if (unit === "client") {
-      model.clients.forEach(function (c) {
-        if (c.phys || !c.kassas.length) return;
-        var renewals = c.kassas.reduce(function (s, k) { return s + k.renewals; }, 0);
-        addTo(clientStartTariff(c), renewals);
-      });
-    } else {
-      model.kassas.forEach(function (k) { addTo(kassaStartTariff(k), k.renewals); });
-    }
-    var out = [];
-    buckets.forEach(function (renewalsMap, tariff) {
-      var rows = [];
-      renewalsMap.forEach(function (count, renewals) { rows.push({ renewals: renewals, count: count }); });
-      rows.sort(function (a, b) { return a.renewals - b.renewals; });
-      out.push({ tariff: tariff, total: rows.reduce(function (s, r) { return s + r.count; }, 0), rows: rows });
-    });
-    out.sort(function (a, b) { return b.total - a.total; });
-    return out;
-  }
-
-  // "Судьба решена" на первом же цикле кассы: 1+ продление уже случилось (дальнейшее
-  // неважно -- Оксана явно: "если оно продлилось, то значит он уже продлился", т.е. факт
-  // необратим), ИЛИ подтверждённый отток БЕЗ единого продления. Ещё не подошедший срок или
-  // грейс (churnStatus null/"pending") -- не решено, в конверсию не идёт (иначе занижаем
-  // знаменатель совсем свежими кассами, которым просто рано).
-  function kassaConversionFate(k, asOf) {
-    if (k.renewals >= 1) return "renewed";
-    return kassaChurnStatus(k, asOf) === "churned" ? "not-renewed" : "undecided";
-  }
-  function clientConversionFate(c, asOf) {
-    if (c.phys || !c.kassas.length) return "undecided";
-    if (c.kassas.some(function (k) { return k.renewals >= 1; })) return "renewed";
-    var allChurned = c.kassas.every(function (k) { return kassaChurnStatus(k, asOf) === "churned"; });
-    return allChurned ? "not-renewed" : "undecided";
-  }
-
-  // share -- доля стартового тарифа от ВСЕЙ базы за всю историю (не только действующих
-  // сейчас -- Оксана: "это за всё время"). conversion -- доля "renewed" среди решённых
-  // (decided), null если ещё ни одной решённой судьбы нет для этого тарифа.
-  function computeTariffConversion(model, asOf, unit) {
-    var totalAll = 0;
-    var byTariff = new Map();
-    function bucket(t) {
-      var b = byTariff.get(t);
-      if (!b) { b = { total: 0, decided: 0, renewed: 0 }; byTariff.set(t, b); }
-      return b;
-    }
-    function walk(startTariffFn, fateFn, coll, filterFn) {
-      coll.forEach(function (e) {
-        if (filterFn && !filterFn(e)) return;
-        var t = startTariffFn(e);
-        if (t == null) return;
-        totalAll++;
-        var b = bucket(t);
-        b.total++;
-        var fate = fateFn(e, asOf);
-        if (fate === "undecided") return;
-        b.decided++;
-        if (fate === "renewed") b.renewed++;
-      });
-    }
-    if (unit === "client") {
-      walk(clientStartTariff, clientConversionFate, model.clients, function (c) { return !c.phys && c.kassas.length; });
-    } else {
-      walk(kassaStartTariff, kassaConversionFate, model.kassas, null);
-    }
-    var out = [];
-    byTariff.forEach(function (b, tariff) {
-      out.push({
-        tariff: tariff, total: b.total, share: totalAll ? b.total / totalAll : 0,
-        decided: b.decided, conversion: b.decided ? b.renewed / b.decided : null,
-      });
-    });
-    out.sort(function (a, b) { return b.total - a.total; });
-    return out;
-  }
-
   var api = {
     buildModel: buildModel,
     computeFlow: computeFlow,
@@ -1508,9 +1438,7 @@
     computeTariffTransitions: computeTariffTransitions,
     computeTariffTransitionsMonthly: computeTariffTransitionsMonthly,
     tariffTransitionDrill: tariffTransitionDrill,
-    computeTariffStartDistribution: computeTariffStartDistribution,
-    computeTariffConversion: computeTariffConversion,
-    CALENDAR_TARIFFS: CALENDAR_TARIFFS,
+    allTariffsSorted: allTariffsSorted,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,
