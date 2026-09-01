@@ -1122,6 +1122,55 @@
     return events;
   }
 
+  // Клиент -- НЕ то же самое, что "продублировать логику кассы с дедупом по (тип,тариф,
+  // месяц)": отток/грейс должны отражать судьбу КЛИЕНТА ЦЕЛИКОМ, не отдельной его кассы
+  // (Дима, 2026-09-02: "может быть несколько касс, по одной грейс/неопределённость, по
+  // другим всё хорошо -- учитывать это в статистике было бы ошибкой"). Поэтому:
+  // - "новые" -- по самой ранней кассе клиента (её первый код), однозначно.
+  // - "продлилось" (впервые/повторно) -- по-прежнему по КАЖДОЙ кассе клиента, дедуп по
+  //   (тип,тариф,месяц) -- это реальные, НЕпротиворечивые события конкретной кассы.
+  // - "отток"/"прогноз" -- на уровне ВСЕГО клиента: clientChurnStatus/client.currentEnd,
+  //   та же формула клиентского оттока, что и everywhere в проекте (отток клиента = отток
+  //   ВСЕХ его касс), НЕ по отдельной кассе.
+  // - "грейс" -- НЕ считается для клиента вообще: если clientChurnStatus вернул "pending",
+  //   событие просто не создаётся (грейса у клиента как понятия нет -- см. обоснование
+  //   Димы выше).
+  function collectClientEvents(c, asOf) {
+    var events = [];
+    if (c.phys || !c.kassas.length) return events;
+
+    var earliest = c.kassas.reduce(function (a, b) { return b.appearance < a.appearance ? b : a; });
+    var firstCode = earliest.codes[0];
+    events.push({ type: "new", tariff: parseTariffMonths(firstCode.tariff), tariffLabel: firstCode.tariff, date: c.appearance });
+
+    var seen = new Set();
+    c.kassas.forEach(function (k) {
+      collectKassaEvents(k, asOf).forEach(function (ev) {
+        if (ev.type !== "renewedFirst" && ev.type !== "renewedRepeat") return;
+        var key = ev.type + "|" + ev.tariff + "|" + (ev.date ? ev.date.getFullYear() + "-" + ev.date.getMonth() : "no-date");
+        if (seen.has(key)) return;
+        seen.add(key);
+        events.push(ev);
+      });
+    });
+
+    if (c.currentEnd) {
+      var endKassa = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd.getTime() === c.currentEnd.getTime(); })[0];
+      var last = endKassa ? endKassa.codes[endKassa.codes.length - 1] : null;
+      var tariff = last ? parseTariffMonths(last.tariff) : null;
+      if (tariff != null) {
+        if (c.currentEnd > asOf) {
+          events.push({ type: "forecast", tariff: tariff, tariffLabel: last.tariff, date: c.currentEnd });
+        } else {
+          var status = clientChurnStatus(c, asOf);
+          if (status === "churned") events.push({ type: "churn", tariff: tariff, tariffLabel: last.tariff, date: c.currentEnd });
+          // status === "pending" -- грейса у клиента нет, событие не создаём
+        }
+      }
+    }
+    return events;
+  }
+
   // С самой ранней даты в файле (появление кассы/резерва) до +forecastMonths от asOf.
   function calendarMonthRange(model, asOf, forecastMonths) {
     var minDate = null;
@@ -1169,25 +1218,31 @@
     var months = calendarMonthRange(model, asOf, forecastMonths);
     var buckets = makeCalendarBuckets(months, tariffs);
 
+    // onlyActive гейтит ТОЛЬКО "новые"/"продлилось" -- "выживаемость" осмысленна именно
+    // там. Отток/грейс/прогноз НЕ гейтятся: касса/клиент в оттоке или грейсе по
+    // определению "не жива(а) сейчас" (kassaLapsedAt/clientLapsedAt = true) -- фильтр по
+    // "жива сейчас" тогда выкидывал бы СОБСТВЕННОЕ событие оттока целиком, и отток/грейс
+    // под "только действующие" обнулялся бы структурно, а не потому что их правда нет
+    // (Дима, 2026-09-02: "почему в перетоке отсутствует грейс период при переключении на
+    // действующих" / "формулы должны быть аналогичные Приросту базы" -- у того тоже нет
+    // такого фильтра на отток, значит и здесь он не должен ничего фильтровать).
+    function isSurvivalGated(type) { return type === "new" || type === "renewedFirst" || type === "renewedRepeat"; }
+
     if (unit === "kassa") {
       model.kassas.forEach(function (k) {
-        if (onlyActive && kassaLapsedAt(k, asOf)) return;
-        collectKassaEvents(k, asOf).forEach(function (ev) { addEventToBuckets(buckets, months, ev); });
+        var alive = !kassaLapsedAt(k, asOf);
+        collectKassaEvents(k, asOf).forEach(function (ev) {
+          if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
+          addEventToBuckets(buckets, months, ev);
+        });
       });
     } else {
       model.clients.forEach(function (c) {
         if (c.phys) return;
-        if (onlyActive && clientLapsedAt(c, asOf)) return;
-        var seen = new Set();
-        c.kassas.forEach(function (k) {
-          collectKassaEvents(k, asOf).forEach(function (ev) {
-            var idx = monthIndexOf(months, ev.date);
-            if (idx < 0) return;
-            var key = ev.type + "|" + ev.tariff + "|" + idx;
-            if (seen.has(key)) return;
-            seen.add(key);
-            addEventToBuckets(buckets, months, ev);
-          });
+        var alive = !clientLapsedAt(c, asOf);
+        collectClientEvents(c, asOf).forEach(function (ev) {
+          if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
+          addEventToBuckets(buckets, months, ev);
         });
       });
     }
@@ -1199,13 +1254,36 @@
   function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit, onlyActive) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
+
+    // Клиент + отток/прогноз -- на уровне ЦЕЛОГО клиента (clientChurnStatus/currentEnd),
+    // та же формула, что теперь строит buckets (см. collectClientEvents) -- НЕ по кассам.
+    // Грейса у клиента нет вообще (Дима, 2026-09-02) -- список всегда пуст.
+    if (unit === "client" && (type === "churn" || type === "forecast")) {
+      model.clients.forEach(function (c) {
+        if (c.phys || !c.currentEnd) return;
+        if (c.currentEnd.getFullYear() !== y || c.currentEnd.getMonth() !== m) return;
+        var isForecast = c.currentEnd > asOf;
+        if (type === "forecast" && !isForecast) return;
+        if (type === "churn" && (isForecast || clientChurnStatus(c, asOf) !== "churned")) return;
+        var endKassa = c.kassas.filter(function (k) { return k.overallEnd && k.overallEnd.getTime() === c.currentEnd.getTime(); })[0];
+        var last = endKassa ? endKassa.codes[endKassa.codes.length - 1] : null;
+        if (!last || parseTariffMonths(last.tariff) !== tariffMonths) return;
+        out.push({
+          inn: c.key, org: c.org, rnm: null, activeKassas: activeKassaCountOf(c, asOf),
+          tariff: last.tariff, end: c.currentEnd, partnerInn: c.partnerInn, partner: c.partner,
+        });
+      });
+      return out;
+    }
+    if (unit === "client" && type === "pending") return out; // грейса у клиента нет
+
+    // onlyActive гейтит только "новые"/"продлилось" (см. комментарий в computeRenewalCalendar
+    // выше -- отток/грейс/прогноз не фильтруются, у кассы/клиента в них "жива(а) сейчас"
+    // тавтологически false).
+    var survivalGated = onlyActive && (type === "new" || type === "renewedFirst" || type === "renewedRepeat");
     var seenClients = new Set();
     model.kassas.forEach(function (k) {
-      // onlyActive -- проверяем "жив ли" на уровне ТОГО юнита, что показываем: для касс --
-      // сама касса, для клиентов -- клиент-владелец (у клиента может быть ЖИВАЯ касса B,
-      // пока конкретно ЭТА касса A, породившая событие, уже в оттоке -- клиент всё равно
-      // действующий, отфильтровывать по k здесь для юнита "клиент" было бы неверно).
-      if (onlyActive && unit !== "client" && kassaLapsedAt(k, asOf)) return;
+      if (survivalGated && unit !== "client" && kassaLapsedAt(k, asOf)) return;
       var events = collectKassaEvents(k, asOf);
       for (var i = 0; i < events.length; i++) {
         var ev = events[i];
@@ -1214,7 +1292,7 @@
         var client = k.clientKey ? model.clients.get(k.clientKey) : null;
         if (unit === "client") {
           if (!client || seenClients.has(client.key)) break;
-          if (onlyActive && clientLapsedAt(client, asOf)) break;
+          if (survivalGated && clientLapsedAt(client, asOf)) break;
           seenClients.add(client.key);
           out.push({
             inn: client.key, org: client.org, rnm: null,
