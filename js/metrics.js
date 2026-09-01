@@ -1098,8 +1098,17 @@
         tariff: parseTariffMonths(codes[i].tariff), tariffLabel: codes[i].tariff, date: end,
       });
     }
+    // ПОСЛЕДНИЙ код -- дата берётся из k.overallEnd ("Общая дата окончания"), НЕ
+    // individualEnd(last). Это тот же самый источник, что kassaChurnStatus/kassaDeadline/
+    // computeChurnGradient используют ВЕЗДЕ в проекте для "когда заканчивается покрытие
+    // этой кассы прямо сейчас" -- individualEnd(last) читает "Дата окончания" КОНКРЕТНОГО
+    // кода, которая на 12 из 25800 касс реальной выгрузки (2026-09-01) заметно отличается
+    // от overallEnd (разъезжается на месяцы вперёд) -- Дима поймал по расхождению чисел
+    // между Календарём и "Прирост базы" (тот всегда считает по overallEnd). Для НЕ-последних
+    // кодов individualEnd(codes[i]) остаётся верным источником -- там это дата, когда
+    // конкретно ЭТОТ код закончился и потребовал продления, overallEnd тут ни при чём.
     var last = codes[codes.length - 1];
-    var lastEnd = individualEnd(last);
+    var lastEnd = k.overallEnd || individualEnd(last);
     if (lastEnd) {
       var lastTariff = parseTariffMonths(last.tariff);
       if (lastEnd > asOf) {
