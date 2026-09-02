@@ -2121,9 +2121,11 @@
         .map(function (e, i) { return { label: e[0], value: e[1], color: CC_TARIFF_COLORS[i % CC_TARIFF_COLORS.length] }; });
 
       var revenue = kassas.length * check * (1 - churn / 100);
+      var clientsToRenew = new Set(kassas.map(function (k) { return k.clientKey; })).size;
 
       var html = "";
       html += '<div class="cc-metric">' + statBlock(fmtNum(kassas.length), "Касс к продлению") + '</div>';
+      html += '<div class="cc-metric">' + statBlock(fmtNum(clientsToRenew), "Клиентов к продлению") + '</div>';
       if (tariffRows.length) {
         html += '<div class="cc-metric">' + barList(tariffRows, { caption: "разбивка по тарифам среди найденных касс" }) + '</div>';
       }

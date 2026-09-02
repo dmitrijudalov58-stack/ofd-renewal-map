@@ -6,24 +6,28 @@
 (function (root) {
   "use strict";
 
-  var LARISA_CENTERS = new Set([
-    'ООО "Астрал Партнёр" ЦП',
-    "ОП Калуга Астрал в г. Екатеринбург (Савукова Н.)",
-    "ОП ООО АСТРАЛ-СОФТ г. Екатеринбург",
-    'Представительство АО "Калуга Астрал" в г. Волгоград ЦП',
-    'Представительство АО "Калуга Астрал" в г. Воронеж',
-    'Представительство АО "Калуга Астрал" в г. Краснодар ЦП',
-    'Представительство АО "Калуга Астрал" в г. Омск ЦП',
-    'Представительство АО "Калуга Астрал" в г. Саратов ЦП',
-    'Представительство АО "Калуга Астрал" в г. Уфа ЦП',
-    'Представительство АО "Калуга Астрал" в г.Новосибирске ЦП',
-    'Представительство ООО "АСТРАЛ-СОФТ" в г. Санкт-Петербург ЦП',
+  // Лариса Пенигина -- ФИКСИРОВАННЫЙ список организаций поля "Партнёр" (Дима, 2026-09-02),
+  // заменил прежнюю привязку по "Центр продаж" (LARISA_CENTERS) целиком -- сверено с
+  // реальной выгрузкой, все 11 строк точно совпадают со значениями "Партнёр" (0 совпадений
+  // с "Центр продаж"), так что матчим теперь тот же параметр partner, что и Ольга Зибер.
+  var LARISA_PARTNERS = new Set([
+    'Представительство АО "Калуга Астрал" в г. Волгоград',
+    'Представительство АО "Калуга Астрал" в г. Воронеж, (Партнер)',
+    "ОП АСТРАЛ-СОФТ г. Екатеринбург",
+    'АО "Калуга Астрал" Партнер',
+    "Представительство АО Калуга Астрал в г. Краснодар",
+    'Представительство АО "Калуга Астрал" в г. Новосибирске',
+    'Представительство АО "Калуга Астрал" в г. Омск',
+    'Представительство АО "Калуга Астрал" в г. Омск (АстралОтчет)',
+    'Представительство АО "Калуга Астрал" в г. Саратов П',
+    'Представительство ООО "АСТРАЛ-СОФТ" в г. Санкт-Петербург',
+    'Представительство АО "Калуга Астрал" в г. Уфа',
   ]);
   var OLYA_PATTERN = /ЛК ОФД|ОПС ЭДО|ОППС ЭДО/;
 
-  function classifyChannel(partner, salesCenter) {
+  function classifyChannel(partner) {
     if (OLYA_PATTERN.test(partner || "")) return "Ольга Зибер";
-    if (LARISA_CENTERS.has(salesCenter || "")) return "Лариса Пенигина";
+    if (LARISA_PARTNERS.has(partner || "")) return "Лариса Пенигина";
     return "Партнёры";
   }
 
@@ -98,7 +102,7 @@
         org: last.org,
         phone: last.phone,
         email: last.email,
-        channel: classifyChannel(last.partner, last.salesCenter),
+        channel: classifyChannel(last.partner),
       });
     });
 
@@ -799,10 +803,10 @@
     });
     model.reserveRows.forEach(function (r) {
       var pn = r.partner || "—";
-      if (!partnerChannel.has(pn)) partnerChannel.set(pn, classifyChannel(r.partner, r.salesCenter));
+      if (!partnerChannel.has(pn)) partnerChannel.set(pn, classifyChannel(r.partner));
     });
     return computePartners(model, asOf, opts).map(function (p) {
-      return { name: p.name, channel: partnerChannel.get(p.name) || classifyChannel(p.name, null), clients: p.clients, kassas: p.kassas, reserve: p.reserve };
+      return { name: p.name, channel: partnerChannel.get(p.name) || classifyChannel(p.name), clients: p.clients, kassas: p.kassas, reserve: p.reserve };
     });
   }
 
@@ -810,7 +814,7 @@
     var out = { "Ольга Зибер": 0, "Лариса Пенигина": 0, "Партнёры": 0 };
     model.clients.forEach(function (c) {
       if (c.phys || clientLapsedAt(c, asOf)) return;
-      var ch = classifyChannel(c.kassas[c.kassas.length - 1].partner, c.kassas[c.kassas.length - 1].salesCenter);
+      var ch = classifyChannel(c.kassas[c.kassas.length - 1].partner);
       out[ch]++;
     });
     return out;
@@ -1039,7 +1043,7 @@
     model.clients.forEach(function (c) {
       if (!partnerSet.has(c.partner || "—")) return;
       c.kassas.forEach(function (k) {
-        if (inRange(k.overallEnd, periodStart, periodEnd)) out.push({ rnm: k.rnm, tariff: k.tariff, overallEnd: k.overallEnd });
+        if (inRange(k.overallEnd, periodStart, periodEnd)) out.push({ rnm: k.rnm, tariff: k.tariff, overallEnd: k.overallEnd, clientKey: c.key });
       });
     });
     return out;

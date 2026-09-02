@@ -272,34 +272,40 @@ async function main() {
 
   // до ввода % оттока -- блок оттока должен быть пуст (не "0 касс", а placeholder)
   let ccMetrics = olyaNode.querySelectorAll(".cc-metric");
-  console.log("cc: 4 блока метрик (кассы/тарифы/деньги/отток):", ccMetrics.length === 4 ? "OK" : "FAIL", ccMetrics.length);
-  if (ccMetrics.length !== 4) ok = false;
+  console.log("cc: 5 блоков метрик (кассы/клиенты/тарифы/деньги/отток):", ccMetrics.length === 5 ? "OK" : "FAIL", ccMetrics.length);
+  if (ccMetrics.length !== 5) ok = false;
   const kassasLabelFirst = ccMetrics.length && /Касс к продлению/.test(ccMetrics[0].textContent);
-  const hasTariffChart = ccMetrics.length > 1 && ccMetrics[1].querySelector(".chart-svg") != null;
-  const revenueThird = ccMetrics.length > 2 && /Прогноз выручки/.test(ccMetrics[2].textContent);
-  console.log("cc: порядок метрик кассы->тарифы->деньги:", kassasLabelFirst && hasTariffChart && revenueThird ? "OK" : "FAIL");
-  if (!(kassasLabelFirst && hasTariffChart && revenueThird)) ok = false;
+  const clientsLabelSecond = ccMetrics.length > 1 && /Клиентов к продлению/.test(ccMetrics[1].textContent);
+  const hasTariffChart = ccMetrics.length > 2 && ccMetrics[2].querySelector(".chart-svg") != null;
+  const revenueFourth = ccMetrics.length > 3 && /Прогноз выручки/.test(ccMetrics[3].textContent);
+  console.log("cc: порядок метрик кассы->клиенты->тарифы->деньги:", kassasLabelFirst && clientsLabelSecond && hasTariffChart && revenueFourth ? "OK" : "FAIL");
+  if (!(kassasLabelFirst && clientsLabelSecond && hasTariffChart && revenueFourth)) ok = false;
 
-  const churnEmptyBlock = ccMetrics[3];
+  const churnEmptyBlock = ccMetrics[4];
   const churnIsEmptyPlaceholder = /Укажи % оттока/.test(churnEmptyBlock.textContent) && !/\d+\s*касс/.test(churnEmptyBlock.textContent);
   console.log("cc: отток пуст, пока % не введён:", churnIsEmptyPlaceholder ? "OK" : "FAIL");
   if (!churnIsEmptyPlaceholder) ok = false;
 
-  // независимая сверка числа касс к продлению (после снятия movedName из Оли Зибер),
-  // period -- СВОЙ период борда (не ctx.periodStart/periodEnd)
+  // независимая сверка числа касс/клиентов к продлению (после снятия movedName из Оли
+  // Зибер), period -- СВОЙ период борда (не ctx.periodStart/periodEnd)
   const olyaRowsAuto = win.OFDMetrics.computePartnersByChannel(model, win.OFDState.ctx.asOf, { strict: win.OFDState.ctx.strict })
     .filter((r) => r.channel === "Ольга Зибер" && r.name !== movedName).map((r) => r.name);
   const ownFrom = new Date("2025-01-01T00:00:00"), ownTo = new Date("2025-12-31T23:59:59");
-  const expectedKassas = win.OFDMetrics.computeChannelForecastKassas(model, new Set(olyaRowsAuto), ownFrom, ownTo).length;
+  const expectedKassasArr = win.OFDMetrics.computeChannelForecastKassas(model, new Set(olyaRowsAuto), ownFrom, ownTo);
+  const expectedKassas = expectedKassasArr.length;
+  const expectedClients = new Set(expectedKassasArr.map((k) => k.clientKey)).size;
   const shownKassas = parseInt((ccMetrics[0].querySelector(".stat-value").textContent || "").replace(/\s/g, ""), 10);
+  const shownClients = parseInt((ccMetrics[1].querySelector(".stat-value").textContent || "").replace(/\s/g, ""), 10);
   console.log("cc: расчёт касс к продлению сходится с ручной сверкой:", shownKassas === expectedKassas ? "OK" : "FAIL", shownKassas, "vs", expectedKassas);
   if (shownKassas !== expectedKassas) ok = false;
+  console.log("cc: расчёт клиентов к продлению сходится с ручной сверкой:", shownClients === expectedClients ? "OK" : "FAIL", shownClients, "vs", expectedClients);
+  if (shownClients !== expectedClients) ok = false;
 
   // ввод % оттока -- касс_в_оттоке = round(касс_к_продлению * %), сумма = касс_в_оттоке * чек
   olyaNode.querySelector(".cc-churn").value = "10";
   olyaNode.querySelector(".cc-churn").dispatchEvent(new win.Event("input", { bubbles: true }));
   ccMetrics = olyaNode.querySelectorAll(".cc-metric");
-  const churnFilledBlock = ccMetrics[3];
+  const churnFilledBlock = ccMetrics[4];
   const expectedLostKassas = Math.round(expectedKassas * 0.10);
   const expectedLostMoney = expectedLostKassas * 1000;
   const shownLostKassas = parseInt((churnFilledBlock.querySelector(".stat-value").textContent || "").replace(/\D/g, ""), 10);
