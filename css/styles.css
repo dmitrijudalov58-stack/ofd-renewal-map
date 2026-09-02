@@ -366,8 +366,9 @@ table.wtable tbody tr:hover { background: var(--paper); }
    диапазон"). Переиспользует .chart-svg/.tick-label/.gridline из общего блока графиков выше. */
 .rc-block + .rc-block { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
 .rc-block-title { font-size: 12.5px; margin-bottom: 6px; }
-.hscroll-chart { overflow-x: auto; overflow-y: hidden; }
+.hscroll-chart { overflow-x: auto; overflow-y: hidden; flex: 1 1 auto; min-width: 0; }
 .hscroll-chart svg { display: block; }
+.rc-axis-svg { flex: none; display: block; }
 /* Sankey с зумом растёт и по высоте (Дима, 2026-09-01: "нужна возможность увеличить
    график") -- вертикальный скролл в рамке карточки вместо бесконечного роста самой карточки. */
 .hscroll-chart.rc-zoomable { overflow-y: auto; max-height: 560px; }

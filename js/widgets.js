@@ -2478,20 +2478,18 @@
   // Один блок борда 1 (Итого / 13 / 15 / 36): главная панель (новые + продлилось, стек;
   // будущее -- пунктирный контур без заливки, без деления, без прогноза оттока -- ТЗ §1.1)
   // + панель оттока/грейса под ней на своей шкале (ТЗ §1.2). onSegmentClick(monthDate, type).
-  function rcBuildCalendarBlock(buckets, tariffKeyOrNull, months, asOfIdx, viewport, showNew, showRenewed, allTariffs, onSegmentClick) {
-    var isTotal = tariffKeyOrNull == null;
-    var color = isTotal ? "var(--ink)" : rcColorForTariff(tariffKeyOrNull, allTariffs);
-    var series = isTotal ? buckets.total : buckets[tariffKeyOrNull];
-
+  // Шкалы/геометрия общие для замороженной оси (rcBuildCalendarAxis) и скроллящегося
+  // графика (rcBuildCalendarChart) -- считаем один раз, чтобы сетка совпадала пиксель в
+  // пиксель (2026-09-02: ось со значениями раньше была ЧАСТЬЮ того же SVG, что и бары, и
+  // скроллилась вместе с ними вправо -- "заморозить" значит вынести подписи в отдельный
+  // несдвигаемый SVG слева от .hscroll-chart, но числа на сетке обеих панелей обязаны
+  // остаться идентичными).
+  function rcCalcCalendarScale(series, viewport, asOfIdx, showNew, showRenewed) {
     var from = viewport.from, to = viewport.to;
     var visSeries = series.slice(from, to + 1);
-
-    var colW = 46, padL = 54, padR = 10;
-    var W = visSeries.length * colW + padL + padR;
     var mainH = 118, gapH = 10, churnH = 44, axisH = 20;
     var H = mainH + gapH + churnH + axisH;
     var churnTop = mainH + gapH;
-
     var maxMain = 1, maxChurn = 1;
     visSeries.forEach(function (s, i) {
       var idx = from + i, isFuture = idx > asOfIdx;
@@ -2499,27 +2497,55 @@
       if (v > maxMain) maxMain = v;
       if (!isFuture) { var ch = s.churn + s.pending; if (ch > maxChurn) maxChurn = ch; }
     });
-    var mainScale = mainH / (maxMain * 1.12);
-    var churnScale = churnH / (maxChurn * 1.25);
+    return {
+      visSeries: visSeries, from: from, mainH: mainH, gapH: gapH, churnH: churnH, axisH: axisH, H: H, churnTop: churnTop,
+      mainScale: mainH / (maxMain * 1.12), churnScale: churnH / (maxChurn * 1.25),
+    };
+  }
 
-    var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, class: "chart-svg" });
-    // Подписи цифр на сетке (Дима, 2026-09-01: "чтобы до наведения было понятно, как
-    // выстраивается картина") -- обе панели, свой ноль и своя шкала у каждой.
+  // Несдвигаемая панель слева -- ТОЛЬКО подписи цифр на сетке, без баров и без месяцев.
+  // Ставится ВНЕ .hscroll-chart (обычным соседом во flex-строке), поэтому не скроллится
+  // вместе с графиком (2026-09-02, Дима: "значения тоже перелистываются, надо заморозить").
+  function rcBuildCalendarAxis(sc) {
+    var axisW = 54;
+    var svg = rcSvgEl("svg", { viewBox: "0 0 " + axisW + " " + sc.H, width: axisW, height: sc.H, class: "chart-svg rc-axis-svg" });
     for (var g = 0; g <= 3; g++) {
-      var gy = mainH - (mainH / 3) * g;
-      svg.appendChild(rcSvgEl("line", { x1: padL, x2: W - padR, y1: gy, y2: gy, class: "gridline" }));
-      var mainVal = Math.round((mainH - gy) / mainScale);
-      var mainLbl = rcSvgEl("text", { x: padL - 6, y: gy + 3, class: "tick-label", "text-anchor": "end" });
+      var gy = sc.mainH - (sc.mainH / 3) * g;
+      var mainVal = Math.round((sc.mainH - gy) / sc.mainScale);
+      var mainLbl = rcSvgEl("text", { x: axisW - 6, y: gy + 3, class: "tick-label", "text-anchor": "end" });
       mainLbl.textContent = fmtNum(mainVal);
       svg.appendChild(mainLbl);
     }
     for (var gc = 0; gc <= 2; gc++) {
-      var gyc = churnTop + churnH - (churnH / 2) * gc;
-      svg.appendChild(rcSvgEl("line", { x1: padL, x2: W - padR, y1: gyc, y2: gyc, class: "gridline" }));
-      var churnVal = Math.round((churnTop + churnH - gyc) / churnScale);
-      var churnLbl = rcSvgEl("text", { x: padL - 6, y: gyc + 3, class: "tick-label", "text-anchor": "end" });
+      var gyc = sc.churnTop + sc.churnH - (sc.churnH / 2) * gc;
+      var churnVal = Math.round((sc.churnTop + sc.churnH - gyc) / sc.churnScale);
+      var churnLbl = rcSvgEl("text", { x: axisW - 6, y: gyc + 3, class: "tick-label", "text-anchor": "end" });
       churnLbl.textContent = fmtNum(churnVal);
       svg.appendChild(churnLbl);
+    }
+    return svg;
+  }
+
+  // Скроллящаяся часть -- бары + сетка (без текста, тот теперь в rcBuildCalendarAxis) +
+  // подписи месяцев снизу. padL сведён к минимуму (числа больше не печатаются здесь).
+  function rcBuildCalendarChart(sc, buckets, tariffKeyOrNull, months, asOfIdx, allTariffs, showNew, showRenewed, onSegmentClick) {
+    var isTotal = tariffKeyOrNull == null;
+    var color = isTotal ? "var(--ink)" : rcColorForTariff(tariffKeyOrNull, allTariffs);
+    var series = isTotal ? buckets.total : buckets[tariffKeyOrNull];
+    var visSeries = sc.visSeries, from = sc.from;
+    var mainH = sc.mainH, churnH = sc.churnH, churnTop = sc.churnTop, H = sc.H, mainScale = sc.mainScale, churnScale = sc.churnScale;
+
+    var colW = 46, padL = 6, padR = 10;
+    var W = visSeries.length * colW + padL + padR;
+
+    var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, class: "chart-svg" });
+    for (var g = 0; g <= 3; g++) {
+      var gy = mainH - (mainH / 3) * g;
+      svg.appendChild(rcSvgEl("line", { x1: padL, x2: W - padR, y1: gy, y2: gy, class: "gridline" }));
+    }
+    for (var gc = 0; gc <= 2; gc++) {
+      var gyc = churnTop + churnH - (churnH / 2) * gc;
+      svg.appendChild(rcSvgEl("line", { x1: padL, x2: W - padR, y1: gyc, y2: gyc, class: "gridline" }));
     }
 
     visSeries.forEach(function (s, i) {
@@ -2654,10 +2680,15 @@
       function buildBlock(label, tariffKeyOrNull) {
         var block = el('<div class="rc-block"></div>');
         block.appendChild(el('<div class="rc-block-title"><b>' + esc(label) + '</b></div>'));
-        var chartWrap = el('<div class="hscroll-chart"></div>');
         var showNew = legendRow.querySelector(".rc-show-new").checked;
         var showRenewed = legendRow.querySelector(".rc-show-renewed").checked;
-        chartWrap.appendChild(rcBuildCalendarBlock(cal.buckets, tariffKeyOrNull, months, asOfIdx, vp, showNew, showRenewed, tariffs, function (monthDate, type) {
+        var series = tariffKeyOrNull == null ? cal.buckets.total : cal.buckets[tariffKeyOrNull];
+        var sc = rcCalcCalendarScale(series, vp, asOfIdx, showNew, showRenewed);
+        // Ось слева -- ВНЕ .hscroll-chart, не скроллится вместе с графиком (заморожена).
+        var chartRow = el('<div style="display:flex;align-items:flex-start"></div>');
+        chartRow.appendChild(rcBuildCalendarAxis(sc));
+        var chartWrap = el('<div class="hscroll-chart"></div>');
+        chartWrap.appendChild(rcBuildCalendarChart(sc, cal.buckets, tariffKeyOrNull, months, asOfIdx, tariffs, showNew, showRenewed, function (monthDate, type) {
           if (tariffKeyOrNull == null) {
             drillHolder.innerHTML = '<div class="stat-label" style="margin-top:8px">На «Итого» клик не раскрывается (тарифы суммированы) — выбери конкретный тариф ниже.</div>';
             return;
@@ -2666,7 +2697,8 @@
           var columns = RC_UNIT === "client" ? RC_DRILL_COLUMNS_CLIENT : RC_DRILL_COLUMNS_KASSA;
           renderDrillList(drillHolder, list, columns, tariffLabelOrTotal(tariffKeyOrNull) + " · " + rcMonthLabel(monthDate) + " · " + RC_TYPE_LABEL[type]);
         }));
-        block.appendChild(chartWrap);
+        chartRow.appendChild(chartWrap);
+        block.appendChild(chartRow);
         return block;
       }
       function renderBlocks() {
@@ -2845,7 +2877,17 @@
     return svg;
   }
 
-  function rcBuildMonthlyFlow(bySourceForTariff, months, nodeOrder, tariffLabelFn, onSegmentClick) {
+  // onColumnClick(monthDate) -- клик ЛЮБОЙ точки столбца (не отдельного сегмента).
+  // Раньше клик был привязан к конкретному цветному прямоугольнику -- у мелких переходов
+  // (Дима, 2026-09-02: "36 месяцев, маленькие значения, невозможно навестись, не видны под
+  // основным цветом") высота сегмента могла быть меньше пикселя, физически некликабельна.
+  // Теперь весь столбец кликабелен единообразно (невидимый rect на всю высоту plotH, ниже
+  // сегментов по z-order -- сегменты рисуются поверх и по-прежнему сами ловят hover-tooltip,
+  // но клик по НИМ тоже ведёт на тот же onColumnClick, не на прямой drill сегмента) --
+  // вызывающая сторона показывает табличную разбивку по тарифам за месяц, из неё уже клик по
+  // строке открывает список клиентов/касс. Min-height 2px на сегменте -- та же техника, что в
+  // rcBuildSankey, чтобы мелкие переходы были хоть как-то видны на графике.
+  function rcBuildMonthlyFlow(bySourceForTariff, months, nodeOrder, tariffLabelFn, onColumnClick) {
     var colW = 46, padL = 30, padR = 10;
     var W = months.length * colW + padL + padR, H = 96, axisH = 18, plotH = H - axisH;
     var svg = rcSvgEl("svg", { viewBox: "0 0 " + W + " " + H, width: W, height: H, class: "chart-svg" });
@@ -2858,13 +2900,16 @@
     var yScale = plotH / (maxTotal * 1.1);
     months.forEach(function (m, i) {
       var cx = padL + i * colW, barW = 30, bx = cx + (colW - barW) / 2;
+      var hit = rcSvgEl("rect", { x: bx, y: 0, width: barW, height: plotH, style: "fill:transparent;cursor:pointer;pointer-events:all" });
+      hit.addEventListener("click", function () { onColumnClick(m); });
+      svg.appendChild(hit);
       var cursor = plotH, b = bySourceForTariff[i];
       nodeOrder.forEach(function (destT) {
         var v = b[destT]; if (!v) return;
-        var h = v * yScale;
+        var h = Math.max(2, v * yScale);
         var rect = rcSvgEl("rect", { x: bx, y: cursor - h, width: barW, height: h, style: "fill:" + rcColorForTariff(destT, nodeOrder) + ";cursor:pointer" });
         rcAttachTooltip(rect, function () { return tariffLabelFn(destT) + " · " + rcMonthLabel(m) + ": " + v; });
-        rect.addEventListener("click", function () { onSegmentClick(destT, m); });
+        rect.addEventListener("click", function () { onColumnClick(m); });
         svg.appendChild(rect);
         cursor -= h;
       });
@@ -2960,7 +3005,6 @@
         '<label>Тариф после <select class="tf-filter-to"><option value="">все</option>' +
         tariffs.map(function (t) { return '<option value="' + t + '">' + esc(tariffLabelFn(t)) + '</option>'; }).join("") +
         '</select></label>' +
-        '<label>Сумма переходов от <input type="number" class="tf-filter-sum-from" style="width:70px"> до <input type="number" class="tf-filter-sum-to" style="width:70px"></label>' +
         '</div>'
       );
       tableArea.appendChild(tableFilters);
@@ -2985,6 +3029,7 @@
       monthlyBlock.appendChild(monthlyLegend);
       var monthlyBlocksHolder = el("<div></div>");
       monthlyBlock.appendChild(monthlyBlocksHolder);
+      monthlyBlock.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по столбцу месяца — разбивка по тарифам ниже (включая мелкие переходы, которые на графике почти не видны) · клик по строке разбивки — список клиентов/касс.</div>'));
 
       var drillHolder = el('<div style="margin-top:10px"></div>');
       wrap.appendChild(unitRow);
@@ -2995,6 +3040,38 @@
       function showDrill(fromT, toT, monthDate, caption) {
         var list = ctx.M.tariffTransitionDrill(model, asOf, unit, fromT, toT, monthDate || null, RC_FLOW_ONLY_ACTIVE);
         renderDrillList(drillHolder, list, RC_TRANSITION_COLUMNS_KASSA, caption);
+      }
+
+      // Клик по столбцу месяца на "по месяцам" (2026-09-02, Дима) -- вместо клика по
+      // конкретному цветному сегменту (мелкие переходы физически некликабельны) сперва
+      // показываем ТЕКСТОВУЮ разбивку по всем тарифам-назначениям этого месяца, дальше клик
+      // по строке разбивки открывает полный список клиентов/касс (showDrill выше).
+      function showMonthlyBreakdown(srcT, monthDate) {
+        var idx = rcAsOfIndex(monthly.months, monthDate);
+        var b = monthly.bySource[srcT][idx] || {};
+        var breakdown = nodeOrder.map(function (destT) { return { destT: destT, v: b[destT] || 0 }; })
+          .filter(function (r) { return r.v > 0; })
+          .sort(function (a, b) { return b.v - a.v; });
+        drillHolder.innerHTML = "";
+        drillHolder.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>Из ' + esc(tariffLabelFn(srcT)) + ' · ' + rcMonthLabel(monthDate) + '</b></div>'));
+        if (!breakdown.length) {
+          drillHolder.appendChild(el('<div class="stat-label">Нет переходов в этом месяце.</div>'));
+          return;
+        }
+        var body = breakdown.map(function (r) { return [tariffLabelFn(r.destT), r.v]; });
+        var table = makeSortableTable([{ label: "Тариф после", num: true }, { label: "Сумма", num: true }], body);
+        drillHolder.appendChild(table);
+        drillHolder.appendChild(el('<div class="stat-label" style="margin-top:6px">клик по строке — список клиентов/касс этого перехода</div>'));
+        // parseInt из текста ячейки, не индекс массива -- makeSortableTable переставляет
+        // строки в DOM по клику на заголовок, индекс после ресорта уже не совпадёт с breakdown[i]
+        // (та же техника, что и в renderTable() выше).
+        table.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () {
+            var destT = parseInt(tr.children[0].textContent, 10);
+            showDrill(srcT, destT, monthDate, tariffLabelFn(srcT) + " → " + tariffLabelFn(destT) + " · " + rcMonthLabel(monthDate));
+          });
+        });
       }
 
       function renderSankey() {
@@ -3024,13 +3101,9 @@
         tableResultsHolder.innerHTML = "";
         var fFrom = tableFilters.querySelector(".tf-filter-from").value;
         var fTo = tableFilters.querySelector(".tf-filter-to").value;
-        var sumFrom = parseFloat(tableFilters.querySelector(".tf-filter-sum-from").value);
-        var sumTo = parseFloat(tableFilters.querySelector(".tf-filter-sum-to").value);
         var filtered = rows.filter(function (r) {
           if (fFrom && r.from !== parseInt(fFrom, 10)) return false;
           if (fTo && r.to !== parseInt(fTo, 10)) return false;
-          if (!isNaN(sumFrom) && r.count < sumFrom) return false;
-          if (!isNaN(sumTo) && r.count > sumTo) return false;
           return true;
         });
         if (!filtered.length) {
@@ -3076,8 +3149,8 @@
           block.appendChild(el('<div class="rc-block-title">Из ' + esc(tariffLabelFn(srcT)) + '</div>'));
           var chartWrap = el('<div class="hscroll-chart"></div>');
           var visBucket = monthly.bySource[srcT].slice(flowVp.from, flowVp.to + 1);
-          chartWrap.appendChild(rcBuildMonthlyFlow(visBucket, visMonths, nodeOrder, tariffLabelFn, function (destT, monthDate) {
-            showDrill(srcT, destT, monthDate, tariffLabelFn(srcT) + " → " + tariffLabelFn(destT) + " · " + rcMonthLabel(monthDate));
+          chartWrap.appendChild(rcBuildMonthlyFlow(visBucket, visMonths, nodeOrder, tariffLabelFn, function (monthDate) {
+            showMonthlyBreakdown(srcT, monthDate);
           }));
           block.appendChild(chartWrap);
           monthlyBlocksHolder.appendChild(block);
