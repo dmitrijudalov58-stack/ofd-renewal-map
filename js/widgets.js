@@ -1609,8 +1609,8 @@
 
       function renderPartnerList() {
         var term = editorState.searchInput.value.trim().toLowerCase();
-        var mineF = editorState.mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
-        var freeF = editorState.free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+        var mineF = ccSearchFilter(editorState.mine, term);
+        var freeF = ccSearchFilter(editorState.free, term);
         var html = "";
         if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
         if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
@@ -1994,6 +1994,36 @@
     return { byChannel: byChannel, free: free };
   }
 
+  // Ранжированный поиск партнёра (Дима, 2026-09-02: ищешь "Атол" -- он тонет среди ИП вида
+  // "...Анатольевич", потому что "атол" случайно совпадает как подстрока внутри отчества).
+  // Плоский substring-match без ранжирования отдаёт совпадения в исходном алфавитном порядке --
+  // декои "ИП ... Анатольевич" (буква "И") идут раньше настоящего "ООО "АТОЛ"" (буква "О"),
+  // реальный результат оказывается в конце списка. Ранжируем: точное совпадение > начинается с
+  // термина > термин как отдельное слово (после пробела/кавычки/скобки) > термин где-то внутри
+  // слова (наименее релевантно).
+  function ccSearchScore(name, term) {
+    var lower = name.toLowerCase();
+    var idx = lower.indexOf(term);
+    if (idx === -1) return -1;
+    if (lower === term) return 0;
+    if (idx === 0) return 1;
+    var boundary = /[\s"«(]/.test(lower.charAt(idx - 1));
+    return boundary ? 2 : 3;
+  }
+
+  // Фильтрует и сортирует список имён по релевантности термину (см. ccSearchScore выше) --
+  // сортировка стабильна (гарантия ES2019+), внутри одного ранга сохраняется исходный порядок.
+  function ccSearchFilter(list, term) {
+    if (!term) return list;
+    var scored = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = ccSearchScore(list[i], term);
+      if (s !== -1) scored.push({ n: list[i], s: s });
+    }
+    scored.sort(function (a, b) { return a.s - b.s; });
+    return scored.map(function (x) { return x.n; });
+  }
+
   function ccPartnerRowHTML(name, checked) {
     return '<label class="cc-partner-row"><input type="checkbox" data-partner="' + esc(name) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + '</label>';
   }
@@ -2053,8 +2083,8 @@
     // раньше был перепутан порядок, свободные оказывались внизу под длинным "В канале").
     function renderList() {
       var term = searchInput.value.trim().toLowerCase();
-      var mineF = mine.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
-      var freeF = free.filter(function (n) { return !term || n.toLowerCase().indexOf(term) !== -1; });
+      var mineF = ccSearchFilter(mine, term);
+      var freeF = ccSearchFilter(free, term);
       var html = "";
       if (freeF.length) html += '<div class="cc-group-label">Свободные (' + freeF.length + ')</div>' + freeF.map(function (n) { return ccPartnerRowHTML(n, false); }).join("");
       if (mineF.length) html += '<div class="cc-group-label">В канале (' + mineF.length + ')</div>' + mineF.map(function (n) { return ccPartnerRowHTML(n, true); }).join("");
