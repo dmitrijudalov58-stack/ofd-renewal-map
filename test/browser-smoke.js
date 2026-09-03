@@ -262,6 +262,70 @@ async function main() {
   console.log("cc: поиск фильтрует список:", beforeSearch > 0 && afterSearch === 0 ? "OK" : "FAIL", beforeSearch, "->", afterSearch);
   if (!(beforeSearch > 0 && afterSearch === 0)) ok = false;
 
+  // 9б) Панель "Массовое назначение по Центру продаж" (Дима+Оксана, 2026-09-02). Тестируем
+  // на olyaNode -- ищем реальную кассу с channel === "Ольга Зибер" (её точный список
+  // партнёров) И непустым salesCenter, берём этот ЦП как гарантированный тест-кейс
+  // (не полагаемся на алфавитный порядок allSalesCentersSorted -- первый по алфавиту ЦП
+  // может не иметь ни одного кандидата, эффективно уже сидящего в этом канале).
+  const allCenters = win.OFDMetrics.allSalesCentersSorted(model);
+  console.log("cp: есть значения Центра продаж:", allCenters.length > 0 ? "OK" : "FAIL", allCenters.length);
+  if (allCenters.length === 0) ok = false;
+
+  let seedCenter = null;
+  model.kassas.forEach((k) => { if (!seedCenter && k.channel === "Ольга Зибер" && k.salesCenter) seedCenter = k.salesCenter; });
+  console.log("cp: нашёлся ЦП с кандидатом уже в канале «Ольга Зибер»:", seedCenter ? "OK" : "FAIL", seedCenter);
+  if (!seedCenter) ok = false;
+
+  olyaNode.querySelector(".cc-cp-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const cpCenterCbs = olyaNode.querySelectorAll(".cc-cp-center");
+  console.log("cp: список ЦП в панели совпадает с данными:", cpCenterCbs.length === allCenters.length ? "OK" : "FAIL", cpCenterCbs.length, "vs", allCenters.length);
+  if (cpCenterCbs.length !== allCenters.length) ok = false;
+
+  if (seedCenter) {
+    const expectedCandidates = win.OFDMetrics.partnersBySalesCenters(model, new Set([seedCenter]));
+    const centerCb = Array.from(cpCenterCbs).find((cb) => cb.value === seedCenter);
+    centerCb.checked = true;
+    olyaNode.querySelector(".cc-cp-preview-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+
+    const previewRows = olyaNode.querySelectorAll(".cc-cp-partner");
+    console.log("cp: превью партнёров по ЦП сходится с расчётом:", previewRows.length === expectedCandidates.length ? "OK" : "FAIL", previewRows.length, "vs", expectedCandidates.length);
+    if (previewRows.length !== expectedCandidates.length) ok = false;
+
+    const checkedPreview = Array.from(previewRows).find((cb) => cb.checked);
+    console.log("cp: хотя бы один кандидат уже эффективно в канале (checkbox отмечен по умолчанию):", checkedPreview ? "OK" : "FAIL");
+    if (!checkedPreview) ok = false;
+
+    if (checkedPreview) {
+      const excludedName = checkedPreview.dataset.partner;
+      checkedPreview.checked = false;
+      olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+      const storedAfterCp = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+      console.log("cp: снятие галочки явно выталкивает партнёра в «Партнёры»:", storedAfterCp[excludedName] === "Партнёры" ? "OK" : "FAIL", storedAfterCp[excludedName]);
+      if (storedAfterCp[excludedName] !== "Партнёры") ok = false;
+
+      // live-sync -- партнёр должен появиться в обычном списке "Партнёры" на ДРУГОМ уже
+      // открытом борде СРАЗУ, без "⟳" (тот же ccBroadcastAssignmentChanged, что и у обычных
+      // чекбоксов). Сбрасываем поиск на partnersNode -- предыдущий тест оставил его с
+      // заведомо-пустым термином "zzz-...", иначе список отфильтрован в 0 строк.
+      partnersNode.querySelector(".cc-search").value = "";
+      partnersNode.querySelector(".cc-search").dispatchEvent(new win.Event("input", { bubbles: true }));
+      const nowInPartners = Array.from(partnersNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).find((cb) => cb.dataset.partner === excludedName && cb.checked);
+      console.log("cp: live-sync -- вытолкнутый партнёр сразу отмечен в «Партнёры» на другом борде:", nowInPartners ? "OK" : "FAIL");
+      if (!nowInPartners) ok = false;
+
+      // возвращаем состояние как было ДО этого блока (тем же путём -- через панель), иначе
+      // ниже по файлу "касс/клиентов к продлению" сверяются вручную и не знают про это
+      // исключение -- разъедутся с ручным расчётом, который знает только про movedName.
+      if (excludedName !== movedName) {
+        const rowAgain = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === excludedName);
+        if (rowAgain) {
+          rowAgain.checked = true;
+          olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+        }
+      }
+    }
+  }
+
   // свой период "с-по" на борде (Дима, 2026-08-19: "будущие продления", не общий фильтр шапки)
   olyaNode.querySelector(".cc-from").value = "2025-01-01";
   olyaNode.querySelector(".cc-from").dispatchEvent(new win.Event("change", { bubbles: true }));

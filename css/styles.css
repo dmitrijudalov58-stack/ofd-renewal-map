@@ -176,6 +176,8 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 .cc-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 8px 0 3px; }
 .cc-partner-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 2px; border-radius: 6px; }
 .cc-partner-row:hover { background: var(--paper); }
+.cc-cp-center-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 2px; border-radius: 6px; }
+.cc-cp-center-row:hover { background: var(--paper); }
 .cc-empty { font-size: 12px; color: var(--muted); padding: 6px 2px; }
 .cc-metric { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .cc-metric:first-of-type { margin-top: 14px; border-top: none; padding-top: 0; }

@@ -2036,6 +2036,97 @@
   // Регистрирует себя в ccActiveRefreshers[instanceId] -- единая точка live-sync между
   // ВСЕМИ бордами каналов на холсте (2026-08-20), ключ instanceId (не channelName) --
   // так у кастомных бордов с одинаковым/пустым именем нет коллизий в реестре.
+  // Массовое назначение канала по Центру продаж (Дима+Оксана, 2026-09-02). Кейс: канал
+  // Ларисы = (а) прямые продажи (Партнёр совпадает с её офисом, точный список
+  // LARISA_PARTNERS) + (б) "партнёры ОП" -- агенты, у которых ЦП совпадает с её офисом, но
+  // Партнёр другой (непрямые продажи). Тыкать вручную десятки чекбоксов в общем списке
+  // "Партнёры канала" неудобно -- отдельная панель: отметил один/несколько ЦП -> подтянулись
+  // ВСЕ партнёры с этим ЦП чекбоксами -> снял часть -> "Применить" массово пишет ccOverrides.
+  // Общая для любого канала (не только Ларисы), работает и на кастомных бордах.
+  //
+  // Семантика "Применить" (важно, чтобы не сломать live-sync с обычным списком выше):
+  // - отмечено -> ccOverrides[name] = channelName (явный override на этот канал);
+  // - снято, но партнёр СЕЙЧАС (до применения) эффективно уже в ЭТОМ канале (авто-правило
+  //   или прежний override) -> явно выталкиваем в catch-all "Партнёры", иначе авто-правило
+  //   тут же вернёт его обратно и снятая галочка ничего не изменит. Если сам channelName и
+  //   есть "Партнёры" -- это no-op, пропускаем (некуда выталкивать из catch-all).
+  // - снято и партнёр и так был не в этом канале -- не трогаем чужой override.
+  function ccBuildCenterFilterPanel(channelName, model, ctx) {
+    var allCenters = ctx.M.allSalesCentersSorted(model);
+    var panel = el('<div class="cc-settings" style="margin-top:8px"></div>');
+    var toggleBtn = el('<button type="button" class="cc-toggle cc-cp-toggle">▸ Массовое назначение по Центру продаж</button>');
+    var body = el('<div class="cc-body cc-cp-body hidden"></div>');
+    var centerSearch = el('<input type="text" class="cc-search cc-cp-search" placeholder="поиск ЦП…">');
+    var centersList = el('<div class="cc-list"></div>');
+    var previewBtn = el('<button type="button" class="refresh-chart-btn cc-cp-preview-btn" style="margin-top:6px">Показать партнёров</button>');
+    var previewHolder = el('<div style="margin-top:8px"></div>');
+    body.appendChild(centerSearch);
+    body.appendChild(centersList);
+    body.appendChild(previewBtn);
+    body.appendChild(previewHolder);
+    panel.appendChild(toggleBtn);
+    panel.appendChild(body);
+
+    function renderCenters() {
+      var term = centerSearch.value.trim().toLowerCase();
+      var checkedBefore = new Set(Array.from(centersList.querySelectorAll("input:checked")).map(function (cb) { return cb.value; }));
+      var filtered = ccSearchFilter(allCenters, term);
+      centersList.innerHTML = filtered.length
+        ? filtered.map(function (c) {
+            return '<label class="cc-cp-center-row"><input type="checkbox" class="cc-cp-center" value="' + esc(c) + '"' + (checkedBefore.has(c) ? " checked" : "") + '> ' + esc(c) + '</label>';
+          }).join("")
+        : '<div class="cc-empty">Ничего не найдено</div>';
+    }
+    renderCenters();
+    centerSearch.addEventListener("input", renderCenters);
+
+    function renderPreview() {
+      var selected = Array.from(centersList.querySelectorAll(".cc-cp-center:checked")).map(function (cb) { return cb.value; });
+      if (!selected.length) {
+        previewHolder.innerHTML = '<div class="stat-label">Отметь хотя бы один Центр продаж выше.</div>';
+        return;
+      }
+      var candidateNames = ctx.M.partnersBySalesCenters(model, new Set(selected));
+      var rows = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
+      var autoMap = new Map(rows.map(function (r) { return [r.name, r.channel]; }));
+
+      var html = '<div class="stat-label" style="margin-bottom:6px">Партнёров с выбранным ЦП: ' + fmtNum(candidateNames.length) + ' — отмеченные закрепятся за каналом «' + esc(channelName) + '» по кнопке ниже.</div>';
+      html += '<div class="cc-list">' + candidateNames.map(function (name) {
+        var eff = ccEffectiveChannel(name, autoMap);
+        var checked = eff === channelName;
+        var hint = checked ? "" : ' <span style="color:var(--muted)">— сейчас в «' + esc(eff) + '»</span>';
+        return '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-partner" data-partner="' + esc(name) + '" data-prev-eff="' + esc(eff) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + hint + '</label>';
+      }).join("") + '</div>';
+      html += '<button type="button" class="refresh-chart-btn cc-cp-apply-btn" style="margin-top:8px">Применить к каналу «' + esc(channelName) + '»</button>';
+      html += '<div class="cc-cp-status stat-label" style="margin-top:6px"></div>';
+      previewHolder.innerHTML = html;
+
+      previewHolder.querySelector(".cc-cp-apply-btn").addEventListener("click", function () {
+        var changed = 0;
+        previewHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) {
+          var name = cb.dataset.partner;
+          var prevEff = cb.dataset.prevEff;
+          if (cb.checked) {
+            if (ccOverrides[name] !== channelName) { ccOverrides[name] = channelName; changed++; }
+          } else if (prevEff === channelName && channelName !== "Партнёры") {
+            if (ccOverrides[name] !== "Партнёры") { ccOverrides[name] = "Партнёры"; changed++; }
+          }
+        });
+        if (changed) { ccSaveOverrides(ccOverrides); ccBroadcastAssignmentChanged(); }
+        previewHolder.querySelector(".cc-cp-status").textContent = changed ? ("Применено — изменено партнёров: " + changed + ".") : "Изменений нет.";
+        renderPreview();
+      });
+    }
+    previewBtn.addEventListener("click", renderPreview);
+
+    toggleBtn.addEventListener("click", function () {
+      body.classList.toggle("hidden");
+      toggleBtn.textContent = (body.classList.contains("hidden") ? "▸" : "▾") + " Массовое назначение по Центру продаж";
+    });
+
+    return panel;
+  }
+
   function ccBuildChannelBody(channelName, model, ctx, instanceId) {
     var asn = ccAssignment(model, ctx);
     var mine = asn.byChannel[channelName] || [];
@@ -2061,6 +2152,7 @@
     );
     var resultsBox = el('<div class="cc-results"></div>');
     wrap.appendChild(head);
+    wrap.appendChild(ccBuildCenterFilterPanel(channelName, model, ctx));
     wrap.appendChild(resultsBox);
 
     var toggleBtn = head.querySelector(".cc-toggle");

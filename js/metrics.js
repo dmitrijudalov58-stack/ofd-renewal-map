@@ -807,6 +807,37 @@
     return rows;
   }
 
+  // Все реальные значения "Центр продаж", встречающиеся в данных (кассы + резерв) --
+  // источник для UI-фильтра "по ЦП" на бордах каналов (Дима+Оксана, 2026-09-02): канал
+  // Ларисы состоит из прямых продаж (Партнёр совпадает с её офисом, точный список
+  // LARISA_PARTNERS) И "партнёров ОП" -- агентов, у которых ЦП совпадает с её офисом, но
+  // Партнёр другой (непрямые продажи). Чтобы отделить одних от других в UI, нужен прямой
+  // доступ к значениям salesCenter, не только partner.
+  function allSalesCentersSorted(model) {
+    var set = new Set();
+    model.kassas.forEach(function (k) { if (k.salesCenter) set.add(k.salesCenter); });
+    model.reserveRows.forEach(function (r) { if (r.salesCenter) set.add(r.salesCenter); });
+    var arr = Array.from(set);
+    arr.sort();
+    return arr;
+  }
+
+  // Все РАЗНЫЕ значения "Партнёр", у которых есть хотя бы одна касса или резервная строка с
+  // ЦП из centersSet -- кандидаты для массового назначения канала по ЦП. НЕ фильтруется по
+  // активности (в отличие от computePartners) -- цель списка -- классификация партнёра, не
+  // расчёт текущей выручки; давно неактивный партнёр всё равно должен попасть в правильный
+  // канал ДО того, как у него появится новое продление, иначе оно улетит в catch-all.
+  function partnersBySalesCenters(model, centersSet) {
+    var names = new Set();
+    model.kassas.forEach(function (k) {
+      if (k.salesCenter && centersSet.has(k.salesCenter)) names.add(k.partner || "—");
+    });
+    model.reserveRows.forEach(function (r) {
+      if (r.salesCenter && centersSet.has(r.salesCenter)) names.add(r.partner || "—");
+    });
+    return Array.from(names).sort();
+  }
+
   // партнёры с указанием канала — для фастфильтра и экспорта на виджете "Разбивка по каналам"
   function computePartnersByChannel(model, asOf, opts) {
     var partnerChannel = new Map();
@@ -1543,6 +1574,8 @@
     computeTariffTransitionsMonthly: computeTariffTransitionsMonthly,
     tariffTransitionDrill: tariffTransitionDrill,
     allTariffsSorted: allTariffsSorted,
+    allSalesCentersSorted: allSalesCentersSorted,
+    partnersBySalesCenters: partnersBySalesCenters,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,
