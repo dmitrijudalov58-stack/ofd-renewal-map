@@ -2025,7 +2025,18 @@
   function ccAssignment(model, ctx) {
     var rows = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
     var autoMap = new Map(rows.map(function (r) { return [r.name, r.channel]; }));
-    var names = rows.map(function (r) { return r.name; }).sort();
+    // computePartnersByChannel фильтрует по активности (0 активных клиентов + 0 резерва =
+    // партнёра там нет вообще) -- нормально для остальных бордов, но здесь ломает ручное
+    // назначение через панель "по ЦП": partnersBySalesCenters НЕ фильтрует по активности
+    // (сознательно, см. её комментарий), так что override на давно неактивного партнёра
+    // пишется корректно, но сам партнёр не появляется ни в "Партнёры канала", ни (значит) в
+    // расчёте выручки -- потому что список имён строился ТОЛЬКО из rows выше (Дима,
+    // 2026-09-06: "не отображается в списке 'В канале'"). Добавляем имена с явным override
+    // отдельно -- ccEffectiveChannel всё равно проверяет ccOverrides в первую очередь,
+    // autoMap для них просто будет пустым (не страшно, override и так сильнее авто-правила).
+    var nameSet = new Set(rows.map(function (r) { return r.name; }));
+    Object.keys(ccOverrides).forEach(function (name) { nameSet.add(name); });
+    var names = Array.from(nameSet).sort();
     var byChannel = {}; CC_CHANNELS.forEach(function (c) { byChannel[c] = []; });
     var free = [];
     names.forEach(function (name) {

@@ -797,6 +797,62 @@ async function main() {
     }
   }
 
+  // Регрессия (Дима, 2026-09-06, второй скриншот): "ОКС М" -- партнёр с 0 активных клиентов
+  // на текущем файле -- назначался через ЦП-панель, override писался, но партнёр НИКОГДА не
+  // появлялся в общем списке "Партнёры канала", потому что тот список строился ТОЛЬКО из
+  // computePartnersByChannel (фильтрует по активности), а не из ccOverrides. Ищем такого же
+  // реального "неактивного" партнёра динамически, не завязываемся на конкретное имя.
+  const activePartnerNames = new Set(win.OFDMetrics.computePartnersByChannel(model, win.OFDState.asOf, { strict: win.OFDState.strict }).map((p) => p.name));
+  const inactivePartner = allPartnersUS.find((n) => !activePartnerNames.has(n) && win.OFDMetrics.salesCentersForPartnerName(model, n).length > 0);
+  console.log("cc-assignment: нашёлся реальный «неактивный» партнёр для теста:", inactivePartner ? "OK" : "FAIL", inactivePartner);
+  if (!inactivePartner) ok = false;
+
+  if (inactivePartner) {
+    const toggleBtnMain = olyaNode.querySelector(".cc-toggle");
+    const countBefore = parseInt((toggleBtnMain.textContent.match(/\((\d+)\)/) || [])[1] || "0", 10);
+
+    // НЕ полагаемся на авто-триггер единого поиска (та фича уже отдельно проверена выше на
+    // "атол"/"Идеалайф") -- тут тестируем конкретно ccAssignment/видимость в списке, поэтому
+    // выбираем ЦП партнёра напрямую, минуя текстовый поиск, чтобы не зависеть от того,
+    // насколько уникален фрагмент случайно найденного имени.
+    cpSearchInput.value = "";
+    cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+    const inactiveCenter = win.OFDMetrics.salesCentersForPartnerName(model, inactivePartner)[0];
+    const inactiveCenterCb = Array.from(olyaNode.querySelectorAll(".cc-cp-center")).find((cb) => cb.value === inactiveCenter);
+    console.log("cc-assignment: у неактивного партнёра нашёлся его реальный ЦП в списке:", inactiveCenterCb ? "OK" : "FAIL", inactiveCenter);
+    if (!inactiveCenterCb) ok = false;
+    if (inactiveCenterCb) inactiveCenterCb.checked = true;
+    olyaNode.querySelector(".cc-cp-preview-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+
+    const inactiveRow = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === inactivePartner);
+    console.log("cc-assignment: неактивный партнёр присутствует в превью его ЦП:", inactiveRow ? "OK" : "FAIL", inactivePartner);
+    if (!inactiveRow) ok = false;
+    if (inactiveRow) inactiveRow.checked = true; // руками -- eff у него не channelName, авто-галочки тут не будет (не через единый поиск)
+
+    if (inactiveRow) {
+      olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+      const storedInactive = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+      console.log("cc-assignment: override для неактивного партнёра записан:", storedInactive[inactivePartner] === "Ольга Зибер" ? "OK" : "FAIL");
+      if (storedInactive[inactivePartner] !== "Ольга Зибер") ok = false;
+
+      const countAfterText = olyaNode.querySelector(".cc-toggle").textContent;
+      const countAfter = parseInt((countAfterText.match(/\((\d+)\)/) || [])[1] || "0", 10);
+      console.log("cc-assignment: неактивный партнёр появился в общем списке «Партнёры канала»:", countAfter === countBefore + 1 ? "OK" : "FAIL", countBefore, "->", countAfter);
+      if (countAfter !== countBefore + 1) ok = false;
+
+      const foundInFlatList = Array.from(olyaNode.querySelectorAll('.cc-partner-row input[type="checkbox"]')).some((cb) => cb.dataset.partner === inactivePartner);
+      console.log("cc-assignment: неактивный партнёр реально виден строкой в списке:", foundInFlatList ? "OK" : "FAIL");
+      if (!foundInFlatList) ok = false;
+
+      // Откат -- тем же UI-путём, что и для АТОЛ выше.
+      const inactiveRowAfterApply = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === inactivePartner);
+      if (inactiveRowAfterApply) {
+        inactiveRowAfterApply.checked = false;
+        olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+      }
+    }
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 
