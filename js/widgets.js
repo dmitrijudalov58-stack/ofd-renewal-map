@@ -2070,6 +2070,24 @@
     return scored.map(function (x) { return x.n; });
   }
 
+  // Строгий поиск -- БЕЗ совпадений "термин где-то внутри слова" (ccSearchScore===3).
+  // Обычный ccSearchFilter такие совпадения просто ранжирует ниже (нормально для списка на
+  // экране под курсором), но этого недостаточно там, где ложное совпадение реально уводит
+  // логику в сторону -- единый поиск ЦП/партнёр (Дима, 2026-09-06): "атол" по обычному
+  // ccSearchFilter матчит не только "ООО АТОЛ", но и полсотни "ИП ... Анатольевич"
+  // (подстрока "атол" внутри отчества), и КАЖДЫЙ такой ложный партнёр тянет за собой СВОЙ
+  // ЦП в общий список -- "почему-то все центры продаж, внутри нет похожих значений".
+  function ccSearchFilterStrict(list, term) {
+    if (!term) return list;
+    var scored = [];
+    for (var i = 0; i < list.length; i++) {
+      var s = ccSearchScore(list[i], term);
+      if (s !== -1 && s <= 2) scored.push({ n: list[i], s: s });
+    }
+    scored.sort(function (a, b) { return a.s - b.s; });
+    return scored.map(function (x) { return x.n; });
+  }
+
   function ccPartnerRowHTML(name, checked) {
     return '<label class="cc-partner-row"><input type="checkbox" data-partner="' + esc(name) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + '</label>';
   }
@@ -2148,7 +2166,7 @@
       }
 
       var directCenters = ccSearchFilter(allCenters, term);
-      var matchingPartners = ccSearchFilter(allPartnerNames, term);
+      var matchingPartners = ccSearchFilterStrict(allPartnerNames, term);
       var relevantSet = new Set(directCenters);
       matchingPartners.forEach(function (pn) {
         ctx.M.salesCentersForPartnerName(model, pn).forEach(function (c) { relevantSet.add(c); });
@@ -2226,7 +2244,7 @@
         var visible = onlyFreeCb.checked ? allCandidates.filter(function (r) { return isFree(r.eff); }) : allCandidates;
         if (pTerm) {
           var byName = new Map(visible.map(function (r) { return [r.name, r]; }));
-          visible = ccSearchFilter(visible.map(function (r) { return r.name; }), pTerm).map(function (name) { return byName.get(name); });
+          visible = ccSearchFilterStrict(visible.map(function (r) { return r.name; }), pTerm).map(function (name) { return byName.get(name); });
         }
         // Счётчик ДОЛЖЕН явно меняться при переключении фильтра (Дима, 2026-09-04: "нажимаю
         // на 'только свободных' -- ничего не меняется") -- раньше он писался один раз со
@@ -2241,7 +2259,15 @@
           " — отмеченные закрепятся за каналом «" + channelName + "» по кнопке ниже."; // textContent -- esc() тут не нужен, это не innerHTML
         rowsHolder.innerHTML = visible.length
           ? visible.map(function (r) {
-              var wasChecked = renderedOnce ? checkedBefore.has(r.name) : (r.eff === channelName);
+              // Дефолтная галочка (Дима, 2026-09-06: "нажимает применить, ничего не
+              // происходит") -- раньше чекалось ТОЛЬКО если партнёр уже в этом канале, но
+              // именно ТОГО партнёра, которого специально искали (совпал с presetPartnerTerm
+              // при авто-показе через единый поиск), почти всегда хотят добавить, а не
+              // просто посмотреть -- он был НЕ отмечен по умолчанию,колега жал "Применить"
+              // с пустым выбором и не видел эффекта. Строгое совпадение (score<=2), та же
+              // логика, что и у самого поиска -- не хватаем случайных "Анатольевичей".
+              var presetMatch = presetPartnerTerm ? ccSearchScore(r.name, presetPartnerTerm) : -1;
+              var wasChecked = renderedOnce ? checkedBefore.has(r.name) : (r.eff === channelName || (presetMatch !== -1 && presetMatch <= 2));
               var hint = r.eff === channelName ? "" : ' <span style="color:var(--muted)">— сейчас в «' + esc(r.eff) + '»</span>';
               return '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-partner" data-partner="' + esc(r.name) + '" data-prev-eff="' + esc(r.eff) + '"' + (wasChecked ? " checked" : "") + '> ' + esc(r.name) + hint + '</label>';
             }).join("")

@@ -756,6 +756,47 @@ async function main() {
   console.log("cp-search: пустой поиск возвращает полный список ЦП:", centerCbsReset.length === allCentersUS.length ? "OK" : "FAIL", centerCbsReset.length, "vs", allCentersUS.length);
   if (centerCbsReset.length !== allCentersUS.length) ok = false;
 
+  // Регрессия на реальный баг (Дима, 2026-09-06, со скриншота): поиск "атол" тянул за
+  // собой ~22 чужих ЦП, потому что подстрока "атол" совпадает с полусотней "ИП ...
+  // Анатольевич" (ложные срабатывания), и КАЖДЫЙ такой ложный партнёр тащил свой ЦП. Плюс
+  // сама кнопка "Применить" ничего не делала -- найденный партнёр не был отмечен галочкой
+  // по умолчанию. Оба фикса разом: строгий поиск (без "где-то внутри слова" совпадений) +
+  // авто-галочка у партнёра, совпавшего с термином поиска.
+  const atolPartner = allPartnersUS.find((n) => n.toUpperCase().includes("АТОЛ") && !n.toLowerCase().includes("анатол"));
+  console.log("cp-search(атол): нашёлся реальный партнёр АТОЛ в данных:", atolPartner ? "OK" : "FAIL", atolPartner);
+  if (!atolPartner) ok = false;
+
+  if (atolPartner) {
+    cpSearchInput.value = "атол";
+    cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+
+    const atolCenterCbs = olyaNode.querySelectorAll(".cc-cp-center");
+    console.log("cp-search(атол): список ЦП сузился до реально релевантных (не десятков decoy):", atolCenterCbs.length <= 2 ? "OK" : "FAIL", atolCenterCbs.length);
+    if (atolCenterCbs.length > 2) ok = false;
+
+    const atolRow = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === atolPartner);
+    console.log("cp-search(атол): найденный партнёр есть в результате и ОТМЕЧЕН галочкой по умолчанию:", atolRow && atolRow.checked ? "OK" : "FAIL");
+    if (!atolRow || !atolRow.checked) ok = false;
+
+    if (atolRow) {
+      olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+      const storedAfterAtol = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+      console.log("cp-search(атол): «Применить» реально закрепляет найденного партнёра за каналом:", storedAfterAtol[atolPartner] === "Ольга Зибер" ? "OK" : "FAIL", storedAfterAtol[atolPartner]);
+      if (storedAfterAtol[atolPartner] !== "Ольга Зибер") ok = false;
+
+      // Откат через тот же UI-путь -- localStorage напрямую трогать бессмысленно, ccOverrides
+      // кэширован в памяти виджета и не перечитывается на каждое обращение. Снимаем галочку
+      // у только что закреплённого партнёра и жмём "Применить" ещё раз -- выталкивает его
+      // обратно в catch-all "Партнёры", тот же эффективный канал, что был ДО теста (эту
+      // реальную компанию ни один более ранний тест в этом файле не трогал).
+      const atolRowAfterApply = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === atolPartner);
+      if (atolRowAfterApply) {
+        atolRowAfterApply.checked = false;
+        olyaNode.querySelector(".cc-cp-apply-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+      }
+    }
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 
