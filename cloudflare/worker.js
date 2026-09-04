@@ -198,23 +198,67 @@ async function handleAdmin(request, env, url) {
   return new Response("Not found", { status: 404 });
 }
 
-async function handleSite(request, env, url) {
+// Общая проверка логина/пароля обычного (не admin) пользователя -- вынесена из handleSite,
+// чтобы её же использовали /api/* роуты (2026-09-04, персональное серверное хранение
+// распределения партнёров по каналам). Возвращает {username, rec} или null.
+async function verifySiteUser(request, env) {
   const creds = parseBasicAuth(request);
-  if (!creds) return unauthorized("OFD Renewal Map");
+  if (!creds) return null;
   const raw = await env.OFD_USERS.get(creds.user);
-  if (!raw) return unauthorized("OFD Renewal Map");
+  if (!raw) return null;
   const rec = JSON.parse(raw);
   const ok = await verifyPassword(creds.pass, rec.saltB64, rec.hashB64);
-  if (!ok) return unauthorized("OFD Renewal Map");
+  if (!ok) return null;
+  return { username: creds.user, rec };
+}
+
+async function handleSite(request, env, url) {
+  const auth = await verifySiteUser(request, env);
+  if (!auth) return unauthorized("OFD Renewal Map");
   // Журнал посещений (Дима, 2026-08-26) -- только последний вход + счётчик, не полный лог.
   // Пишем ТОЛЬКО на заход на index.html, не на каждый js/css-ассет одного визита --
   // иначе один визит = 7-10 записей в KV, упёрлись бы в дневной лимит писей гораздо раньше.
   if (url.pathname === "/" || url.pathname === "/index.html") {
-    rec.lastLoginAt = Date.now();
-    rec.loginCount = (rec.loginCount || 0) + 1;
-    await env.OFD_USERS.put(creds.user, JSON.stringify(rec));
+    auth.rec.lastLoginAt = Date.now();
+    auth.rec.loginCount = (auth.rec.loginCount || 0) + 1;
+    await env.OFD_USERS.put(auth.username, JSON.stringify(auth.rec));
   }
   return env.ASSETS.fetch(request);
+}
+
+// Персональное серверное хранение распределения партнёров по каналам (Дима, 2026-09-04):
+// "почищу куки на сайте и информация слетит" -- localStorage у каждого браузера свой,
+// кнопка "Сохранить" на борде кладёт снимок в KV по логину, переживает чистку кук/новый
+// браузер/новый компьютер. Тот же ключ KV (OFD_USERS), отдельный префикс "overrides:" --
+// не создаём отдельный namespace ради одного JSON-блоба на пользователя.
+const OVERRIDES_MAX_BYTES = 500000; // защита от случайного/аномального раздувания записи KV
+
+async function handleApi(request, env, url) {
+  const auth = await verifySiteUser(request, env);
+  if (!auth) return unauthorized("OFD Renewal Map");
+
+  if (url.pathname === "/api/whoami" && request.method === "GET") {
+    return Response.json({ username: auth.username });
+  }
+
+  if (url.pathname === "/api/overrides" && request.method === "GET") {
+    const raw = await env.OFD_USERS.get("overrides:" + auth.username);
+    return Response.json({ overrides: raw ? JSON.parse(raw) : null });
+  }
+
+  if (url.pathname === "/api/overrides" && request.method === "POST") {
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return new Response("bad request", { status: 400 });
+    for (const key of Object.keys(body)) {
+      if (typeof body[key] !== "string") return new Response("bad request", { status: 400 });
+    }
+    const json = JSON.stringify(body);
+    if (json.length > OVERRIDES_MAX_BYTES) return new Response("payload too large", { status: 413 });
+    await env.OFD_USERS.put("overrides:" + auth.username, json);
+    return Response.json({ ok: true, savedAt: Date.now() });
+  }
+
+  return new Response("Not found", { status: 404 });
 }
 
 export default {
@@ -222,6 +266,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
       return handleAdmin(request, env, url);
+    }
+    if (url.pathname.startsWith("/api/")) {
+      return handleApi(request, env, url);
     }
     return handleSite(request, env, url);
   },

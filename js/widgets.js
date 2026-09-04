@@ -1956,6 +1956,52 @@
     try { localStorage.setItem(CC_OVERRIDE_KEY, JSON.stringify(map)); } catch (e) { /* приватный режим и т.п. -- не критично */ }
   }
   var ccOverrides = ccLoadOverrides(); // partnerName -> channelName | "" (явно свободен)
+
+  // Персональное серверное хранение (Дима, 2026-09-04): "почищу куки на сайте — информация
+  // слетит" -- localStorage у каждого браузера свой. Кнопка "Сохранить" на борде кладёт
+  // снимок ccOverrides в KV по логину (см. worker.js /api/overrides), переживает чистку
+  // кук/новый браузер. Явный ответ Димы: "не переусложнять" -- значит НЕ городим merge/diff
+  // между локальной и серверной копией, только два однозначных действия: (а) кнопка
+  // "Сохранить" -- локальное состояние ПОЛНОСТЬЮ перезаписывает серверное; (б) при старте,
+  // ТОЛЬКО если в ЭТОМ браузере ещё вообще нет сохранённого распределения (пустой/новый
+  // localStorage), подтягиваем серверную копию -- никогда не перетираем непустой локальный
+  // ccOverrides молча, только явная кнопка "Сохранить" может перезаписать чужую копию.
+  var CC_API_OVERRIDES_URL = "/api/overrides";
+
+  function ccServerSave(onDone) {
+    if (typeof fetch !== "function") { onDone && onDone(false, "недоступно в этом окружении"); return; }
+    fetch(CC_API_OVERRIDES_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(ccOverrides),
+    }).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }).then(function () {
+      if (onDone) onDone(true);
+    }).catch(function (e) {
+      if (onDone) onDone(false, e.message);
+    });
+  }
+
+  function ccBootstrapFromServer() {
+    if (typeof fetch !== "function") return;
+    if (Object.keys(ccOverrides).length > 0) return; // локальные данные уже есть -- не трогаем
+    fetch(CC_API_OVERRIDES_URL).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }).then(function (data) {
+      // Повторная проверка -- пока шёл сетевой запрос, пользователь мог САМ что-то отметить
+      // (тогда локальные данные уже не пустые, и мы их не перезатираем).
+      if (data && data.overrides && Object.keys(data.overrides).length > 0 && Object.keys(ccOverrides).length === 0) {
+        ccOverrides = data.overrides;
+        ccSaveOverrides(ccOverrides);
+        ccBroadcastAssignmentChanged();
+      }
+    }).catch(function () { /* нет сети/сервер недоступен -- работаем локально, не критично */ });
+  }
+  ccBootstrapFromServer();
+
   // Live-sync между бордами каналов на холсте -- их ровно 3 (фиксированный набор, не
   // произвольное N), поэтому реестр по имени канала, не по instanceId. Каждый render()
   // перезаписывает свою запись; после ЛЮБОГО изменения ccOverrides зовём refresh() у ВСЕХ
@@ -2092,7 +2138,7 @@
       var allCandidates = candidateNames.map(function (name) { return { name: name, eff: ccEffectiveChannel(name, autoMap) }; });
 
       previewHolder.innerHTML =
-        '<div class="stat-label" style="margin-bottom:6px">Партнёров с выбранным ЦП: ' + fmtNum(allCandidates.length) + ' — отмеченные закрепятся за каналом «' + esc(channelName) + '» по кнопке ниже.</div>' +
+        '<div class="stat-label cc-cp-count" style="margin-bottom:6px"></div>' +
         '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-only-free" checked> Показать только свободных (скрыть закреплённых за другими каналами)</label>' +
         '<div class="threshold-row" style="margin:4px 0 6px">' +
         '<button type="button" class="refresh-chart-btn cc-cp-select-all">Выделить всех</button>' +
@@ -2104,6 +2150,7 @@
 
       var rowsHolder = previewHolder.querySelector(".cc-cp-rows");
       var onlyFreeCb = previewHolder.querySelector(".cc-cp-only-free");
+      var countLabel = previewHolder.querySelector(".cc-cp-count");
       var renderedOnce = false;
 
       // "Свободный" (Дима, 2026-09-04) -- партнёр либо уже в ЭТОМ канале, либо в общем
@@ -2118,6 +2165,15 @@
         // отметил/снял пользователь до этого клика.
         var checkedBefore = new Set(Array.from(rowsHolder.querySelectorAll(".cc-cp-partner:checked")).map(function (cb) { return cb.dataset.partner; }));
         var visible = onlyFreeCb.checked ? allCandidates.filter(function (r) { return isFree(r.eff); }) : allCandidates;
+        // Счётчик ДОЛЖЕН явно меняться при переключении фильтра (Дима, 2026-09-04: "нажимаю
+        // на 'только свободных' -- ничего не меняется") -- раньше он писался один раз со
+        // статичным общим числом, сам список фильтровался, но при небольшой разнице (1-2
+        // строки в длинном списке) это было незаметно на глаз. Теперь считает видимые/скрытые
+        // явно при каждой перерисовке.
+        var hiddenCount = allCandidates.length - visible.length;
+        countLabel.textContent = "Партнёров с выбранным ЦП: " + fmtNum(allCandidates.length) +
+          (onlyFreeCb.checked ? " · показано свободных: " + fmtNum(visible.length) + (hiddenCount ? " · скрыто занятых другим каналом: " + fmtNum(hiddenCount) : "") : " · показаны все") +
+          " — отмеченные закрепятся за каналом «" + channelName + "» по кнопке ниже."; // textContent -- esc() тут не нужен, это не innerHTML
         rowsHolder.innerHTML = visible.length
           ? visible.map(function (r) {
               var wasChecked = renderedOnce ? checkedBefore.has(r.name) : (r.eff === channelName);
@@ -2171,7 +2227,11 @@
     var wrap = el('<div></div>');
     var head = el(
       '<div class="cc-settings">' +
+      '<div class="threshold-row" style="margin-bottom:8px">' +
       '<button type="button" class="cc-toggle">▸ Партнёры канала (' + mine.length + ')</button>' +
+      '<button type="button" class="refresh-chart-btn cc-server-save" title="Сохранить текущее распределение партнёров по каналам на сервере — переживёт чистку кук/новый браузер">Сохранить</button>' +
+      '<span class="cc-server-status stat-label"></span>' +
+      '</div>' +
       '<div class="threshold-row" style="margin-top:8px">' +
       '<label title="Смотрим на будущие продления -- касс, у которых дата окончания попадает в это окно">с <input type="date" class="cc-from"></label>' +
       '<label>по <input type="date" class="cc-to"></label>' +
@@ -2203,6 +2263,14 @@
     var toInput = head.querySelector(".cc-to");
     var checkInput = head.querySelector(".cc-check");
     var churnInput = head.querySelector(".cc-churn");
+    var serverStatus = head.querySelector(".cc-server-status");
+
+    head.querySelector(".cc-server-save").addEventListener("click", function () {
+      serverStatus.textContent = "Сохранение…";
+      ccServerSave(function (success, err) {
+        serverStatus.textContent = success ? ("Сохранено " + new Date().toLocaleTimeString("ru-RU")) : ("Ошибка сохранения: " + (err || "нет ответа от сервера"));
+      });
+    });
 
     function updateToggleLabel() {
       var isOpen = !bodyEl.classList.contains("hidden");
@@ -3363,6 +3431,93 @@
       });
 
       return wrap;
+    },
+  };
+
+  // ---------- B8 "Обмен с 1С" (Дима, 2026-09-04) -- видно только учётной записи u5yhjzlpy,
+  // раздел скрыт в index.html/app.js (класс hidden-1c, открывается по /api/whoami).
+  // "Загрузка файла" реализована полностью (разбор + просмотр структуры любого XLSX).
+  // "Прирост базы"/"Портрет клиента" -- ЗАГЛУШКИ: сопоставление по ИНН + заводскому номеру
+  // ККТ требует точных названий колонок реального файла "Обмен с 1С", которого не видел --
+  // не выдумываю поля вслепую, см. чат/HISTORY.md.
+  var OFD1C_STATE = { rows: null, sheetName: null, headers: null, fileName: null };
+
+  function ofd1cEnsureXLSX() {
+    if (root.XLSX) return Promise.resolve();
+    if (ofd1cEnsureXLSX._p) return ofd1cEnsureXLSX._p;
+    ofd1cEnsureXLSX._p = new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = "js/vendor/xlsx.full.min.js";
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error("Не удалось загрузить библиотеку разбора XLSX")); };
+      document.head.appendChild(s);
+    });
+    return ofd1cEnsureXLSX._p;
+  }
+
+  WIDGETS["b8-1c-upload"] = {
+    title: "Обмен с 1С — загрузка файла", type: "загрузка", scope: "as-of", span: true,
+    render: function () {
+      var wrap = el('<div></div>');
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи выгрузку «Обмен с 1С» — разберём структуру файла и покажем, что внутри. Сопоставление с основной базой ОФД по ИНН и заводскому номеру ККТ — в разработке, нужны точные названия колонок реального файла.</div>'));
+      var input = el('<input type="file" accept=".xlsx,.xls">');
+      var status = el('<div class="stat-label" style="margin-top:8px"></div>');
+      var preview = el('<div style="margin-top:10px"></div>');
+      wrap.appendChild(input);
+      wrap.appendChild(status);
+      wrap.appendChild(preview);
+
+      function renderPreview() {
+        status.textContent = OFD1C_STATE.fileName + " — лист «" + OFD1C_STATE.sheetName + "», строк: " + fmtNum(OFD1C_STATE.rows.length) + ", колонок: " + OFD1C_STATE.headers.length;
+        var headers = OFD1C_STATE.headers.map(function (h, i) { return { label: h == null || h === "" ? "(колонка " + (i + 1) + ")" : String(h) }; });
+        var bodyRows = OFD1C_STATE.rows.slice(1, 21).map(function (r) { return OFD1C_STATE.headers.map(function (_, i) { return r[i] == null ? "" : String(r[i]); }); });
+        preview.innerHTML = "";
+        preview.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Первые ' + bodyRows.length + ' строк (для сверки структуры файла):</div>'));
+        var scrollWrap = el('<div class="table-scroll"></div>');
+        scrollWrap.appendChild(makeSortableTable(headers, bodyRows));
+        preview.appendChild(scrollWrap);
+      }
+      if (OFD1C_STATE.rows) renderPreview();
+
+      input.addEventListener("change", function () {
+        var file = input.files[0];
+        if (!file) return;
+        status.textContent = "Загрузка библиотеки разбора…";
+        ofd1cEnsureXLSX().then(function () {
+          status.textContent = "Разбор файла…";
+          var reader = new FileReader();
+          reader.onload = function (e) {
+            try {
+              var wb = root.XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
+              var sheetName = wb.SheetNames[0];
+              var sheet = wb.Sheets[sheetName];
+              var rows = root.XLSX.utils.sheet_to_json(sheet, { header: 1 });
+              OFD1C_STATE = { rows: rows, sheetName: sheetName, headers: rows[0] || [], fileName: file.name };
+              renderPreview();
+            } catch (err) {
+              status.textContent = "Ошибка разбора: " + err.message;
+            }
+          };
+          reader.onerror = function () { status.textContent = "Не удалось прочитать файл."; };
+          reader.readAsArrayBuffer(file);
+        }).catch(function (err) { status.textContent = err.message; });
+      });
+
+      return wrap;
+    },
+  };
+
+  WIDGETS["b8-1c-growth"] = {
+    title: "Прирост базы (Обмен с 1С)", type: "график", scope: "период", span: true,
+    render: function () {
+      return el('<div class="placeholder-body">Требует загруженного файла «Обмен с 1С» (борд рядом) и согласованной логики сопоставления по ИНН + заводскому номеру ККТ. Пока не реализовано — нужны точные названия колонок реального файла, чтобы не гадать на финансовых цифрах. Загрузи файл через «Обмен с 1С — загрузка файла» и пришли структуру (или сам файл) — доделаю по месячной раскладке новых/оттока/накопительного эффекта, аналогично «Прирост базы».</div>');
+    },
+  };
+
+  WIDGETS["b8-1c-summary"] = {
+    title: "Обмен с 1С — портрет клиента", type: "таблица", scope: "as-of", span: true,
+    render: function () {
+      return el('<div class="placeholder-body">Требует загруженного файла «Обмен с 1С» и согласованной логики сопоставления по ИНН + заводскому номеру ККТ: дата первого прихода клиента, история его касс/продлений, купленные тарифы обмена с 1С, число касс на ОФД vs число касс с подключённым обменом. Пока не реализовано — см. борд «Обмен с 1С — загрузка файла».</div>');
     },
   };
 

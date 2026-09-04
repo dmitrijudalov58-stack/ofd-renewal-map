@@ -198,6 +198,7 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   box-shadow: var(--shadow);
 }
 .demo-banner.hidden { display: none; }
+.hidden-1c { display: none; }
 .freshness-banner { border-left-color: var(--warn); font-weight: 600; }
 /* Сетка виджетов (GridStack.js, миграция 2026-08-17 — заменила самописный free-pixel
    движок dnd.js, который "улетал в стороны" при коллизиях: findBestFreeSpot искал

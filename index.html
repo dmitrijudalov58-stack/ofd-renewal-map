@@ -108,6 +108,16 @@
       <div class="lib-item" data-widget="b7-renewal-calendar"><span class="grip">⋮⋮</span>Календарь продлений<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b7-tariff-flow"><span class="grip">⋮⋮</span>Переток тарифов<span class="lchip">as-of</span></div>
     </details>
+
+    <!-- Видимо ТОЛЬКО учётной записи u5yhjzlpy (Дима, 2026-09-04) -- скрыто по умолчанию,
+         открывается JS в app.js после /api/whoami. Клиентская проверка (закрыто "тоглом"),
+         не серверная -- см. предупреждение в чате при сдаче фичи. -->
+    <details class="board-group hidden-1c" id="board1cGroup">
+      <summary><span class="code">B8</span>Обмен с 1С</summary>
+      <div class="lib-item" data-widget="b8-1c-growth"><span class="grip">⋮⋮</span>Прирост базы (Обмен с 1С)<span class="lchip">период</span></div>
+      <div class="lib-item" data-widget="b8-1c-upload"><span class="grip">⋮⋮</span>Обмен с 1С — загрузка файла<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b8-1c-summary"><span class="grip">⋮⋮</span>Обмен с 1С — портрет клиента<span class="lchip">as-of</span></div>
+    </details>
    </div>
 
    <hr class="rail-divider">
@@ -119,6 +129,7 @@
   </aside>
 
   <div class="canvas-wrap">
+    <div class="demo-banner freshness-banner hidden" id="updateBanner"></div>
     <div class="demo-banner" id="demoBanner">Загрузи XLSX-выгрузку ОФД справа сверху — после разбора файла здесь появятся реальные цифры. Обработка идёт целиком в браузере, файл никуда не отправляется.</div>
     <div class="demo-banner freshness-banner hidden" id="freshnessBanner"></div>
     <div class="demo-banner freshness-banner hidden" id="dedupeBanner"></div>

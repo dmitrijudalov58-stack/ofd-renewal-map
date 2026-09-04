@@ -16,6 +16,7 @@
   var fileLoader = document.getElementById("fileLoader");
   var asofStamp = document.getElementById("asofStamp");
   var demoBanner = document.getElementById("demoBanner");
+  var updateBanner = document.getElementById("updateBanner");
   var freshnessBanner = document.getElementById("freshnessBanner");
   var dedupeBanner = document.getElementById("dedupeBanner");
   var layoutConvertedBanner = document.getElementById("layoutConvertedBanner");
@@ -321,4 +322,50 @@
     setStatus(window.OFDWidgets.fmtNum(window.OFDState.rows.length) + " строк · " + window.OFDWidgets.fmtNum(window.OFDState.model.clients.size) + " клиентов · " + window.OFDWidgets.fmtNum(window.OFDState.model.kassas.size) + " касс");
     window.OFDCanvas.rerenderAll();
   });
+
+  // Баннер "есть обновление" (Дима, 2026-09-04): "уходит время на загрузку файлов -- хочу
+  // уведомление, что прошёл деплой". Сверяет /version.json (кладёт deploy.sh при каждом
+  // деплое) с тем, что было при открытии страницы. ЯВНО не пытаемся сохранить загруженный
+  // файл при обновлении -- Дима согласился на этот риск ("не нужно переусложнять систему"),
+  // клик по кнопке -- обычный location.reload(), файл придётся загрузить заново.
+  var UPDATE_CHECK_INTERVAL_MS = 10 * 60 * 1000; // 10 минут
+  var initialBuildId = null;
+
+  function checkForUpdate() {
+    if (typeof fetch !== "function") return;
+    fetch("/version.json?_=" + Date.now(), { cache: "no-store" }).then(function (res) {
+      return res.ok ? res.json() : null;
+    }).then(function (data) {
+      if (!data || !data.build) return;
+      if (initialBuildId === null) { initialBuildId = data.build; return; }
+      if (data.build !== initialBuildId && updateBanner.classList.contains("hidden")) {
+        updateBanner.innerHTML = '↻ На сервере новая версия сайта. <button type="button" class="refresh-chart-btn" id="updateReloadBtn">Обновить страницу</button>';
+        updateBanner.classList.remove("hidden");
+        document.getElementById("updateReloadBtn").addEventListener("click", function () { location.reload(); });
+      }
+    }).catch(function () { /* нет сети/сервер недоступен -- не критично, узнаем при следующей проверке */ });
+  }
+  checkForUpdate();
+  setInterval(checkForUpdate, UPDATE_CHECK_INTERVAL_MS);
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") checkForUpdate();
+  });
+
+  // Раздел "B8 Обмен с 1С" (Дима, 2026-09-04) -- виден ТОЛЬКО учётной записи u5yhjzlpy, для
+  // всех остальных группа в библиотеке остаётся display:none (class="hidden-1c" в
+  // index.html). ВАЖНО: это проверка на клиенте (по логину из Basic Auth через
+  // /api/whoami) -- HTML группы физически приходит в браузер любому залогиненному
+  // пользователю, просто скрыт стилями/JS. Не крипто-защита, а "не показывать по
+  // умолчанию" -- ровно то, что Дима назвал "закрыт тоглами".
+  var RESTRICTED_1C_USERNAME = "u5yhjzlpy";
+  if (typeof fetch === "function") {
+    fetch("/api/whoami").then(function (res) {
+      return res.ok ? res.json() : null;
+    }).then(function (data) {
+      if (data && data.username === RESTRICTED_1C_USERNAME) {
+        var group = document.getElementById("board1cGroup");
+        if (group) group.classList.remove("hidden-1c");
+      }
+    }).catch(function () { /* не удалось узнать логин -- раздел остаётся скрыт, это safe-default */ });
+  }
 })();

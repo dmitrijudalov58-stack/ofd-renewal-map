@@ -16,5 +16,9 @@ cp -R "$REPO_ROOT/css" "$CF_DIR/public/"
 cp -R "$REPO_ROOT/js" "$CF_DIR/public/"
 cp -R "$REPO_ROOT/docs" "$CF_DIR/public/" 2>/dev/null || true
 
+# version.json -- баннер "есть обновление" (Дима, 2026-09-04) сверяет build с этим файлом,
+# перегенерируется на каждый деплой, чтобы клиент заметил разницу.
+echo "{\"build\":\"$(date +%s)\"}" > "$CF_DIR/public/version.json"
+
 cd "$CF_DIR"
 npx wrangler deploy
