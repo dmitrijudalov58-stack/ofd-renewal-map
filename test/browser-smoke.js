@@ -555,6 +555,67 @@ async function main() {
   renewClientsNode.querySelector(".f-status").value = "active";
   renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
 
+  // B8 "Обмен с 1С" -- на реальном файле сверки, если путь передан (личный файл в Downloads,
+  // не часть репозитория, поэтому опционален через отдельный env var, не валит весь сьют,
+  // если не задан). Тот же приём, что для основного файла (строка 66-67 выше) -- парсим
+  // ЧЕРЕЗ win.XLSX (одна и та же jsdom-реальность), не через Node-модуль xlsx отдельно,
+  // иначе те же cross-realm грабли, что задокументированы для основного файла (гоча №4).
+  const ofd1cPath = process.env.OFD_1C_TEST_FILE;
+  if (ofd1cPath) {
+    const buf1c = fs.readFileSync(ofd1cPath);
+    const wb1c = win.XLSX.read(buf1c, { type: "buffer", cellDates: true });
+    const parsed1c = win.OFDWidgets.ofd1cParseWorkbook(wb1c);
+
+    // независимый пересчёт ожидаемых чисел -- тот же алгоритм фильтрации (пропуск пустых
+    // строк и строк без валидного ИНН), но написан отдельно от ofd1cParseWorkbook, чтобы
+    // тест не был "переписыванием кода самого себя"
+    let expectedRecords = 0;
+    const expectedInns = new Set();
+    wb1c.SheetNames.forEach((name) => {
+      const arr = win.XLSX.utils.sheet_to_json(wb1c.Sheets[name], { header: 1, defval: null });
+      for (let i = 1; i < arr.length; i++) {
+        const r = arr[i];
+        if (!r || r.every((c) => c == null || c === "")) continue;
+        const inn = win.OFDParser.cleanInn(r[1]);
+        if (!inn) continue;
+        expectedRecords++;
+        expectedInns.add(inn);
+      }
+    });
+    console.log("ofd1c: заголовки совпали на всех листах:", !parsed1c.headerMismatch ? "OK" : "FAIL");
+    if (parsed1c.headerMismatch) ok = false;
+    console.log("ofd1c: число записей сходится с независимым пересчётом:", parsed1c.records.length === expectedRecords ? "OK" : "FAIL", parsed1c.records.length, "vs", expectedRecords);
+    if (parsed1c.records.length !== expectedRecords) ok = false;
+
+    win.OFDWidgets.ofd1cSetState({ records: parsed1c.records, fileName: path.basename(ofd1cPath), sheetsCount: wb1c.SheetNames.length, headerMismatch: parsed1c.headerMismatch });
+    const matched = win.OFDWidgets.ofd1cMatchClients(model);
+    console.log("ofd1c: уникальных ИНН сходится с независимым пересчётом:", matched.length === expectedInns.size ? "OK" : "FAIL", matched.length, "vs", expectedInns.size);
+    if (matched.length !== expectedInns.size) ok = false;
+    const matchedClients = matched.filter((m) => m.client).length;
+    const expectedMatchedClients = Array.from(expectedInns).filter((inn) => model.clients.get(inn)).length;
+    console.log("ofd1c: сопоставлено с клиентами ОФД по ИНН сходится с независимым пересчётом:", matchedClients === expectedMatchedClients ? "OK" : "FAIL", matchedClients, "vs", expectedMatchedClients, "(" + (matchedClients / matched.length * 100).toFixed(1) + "%)");
+    if (matchedClients !== expectedMatchedClients) ok = false;
+
+    // Оба борда УЖЕ на холсте (общий цикл п.1 добавил каждый id из WIDGETS, включая эти),
+    // но отрендерились ДО того, как появились данные -- ofd1cSetState выше не идёт через
+    // ofd1cBroadcast (тот срабатывает только из обработчика файла в самом b8-1c-upload),
+    // так что уже смонтированные карточки сами не обновятся. rerenderAll() -- тот же приём,
+    // что и после переключения "Режим" выше в этом файле -- форсирует свежий render() у ВСЕХ.
+    win.OFDCanvas.rerenderAll();
+    const growthNode = win.document.querySelector('[data-widget-id="b8-1c-growth"]');
+    const summaryNode = win.document.querySelector('[data-widget-id="b8-1c-summary"]');
+    const growthHasTable = growthNode && growthNode.querySelector("table") != null;
+    const summaryHasTable = summaryNode && summaryNode.querySelector("table") != null;
+    console.log("ofd1c: борд «Прирост базы» рендерит таблицу с загруженными данными:", growthHasTable ? "OK" : "FAIL");
+    if (!growthHasTable) ok = false;
+    console.log("ofd1c: борд «Портрет клиента» рендерит таблицу с загруженными данными:", summaryHasTable ? "OK" : "FAIL");
+    if (!summaryHasTable) ok = false;
+
+    win.OFDWidgets.ofd1cSetState({ records: null, fileName: null, sheetsCount: null, headerMismatch: false }); // не протекает в другие тесты этого файла
+  } else {
+    console.log("ofd1c: OFD_1C_TEST_FILE не задан -- пропускаю проверку на реальном файле «Обмен с 1С» (не критично, не входит в репозиторий)");
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 

@@ -113,7 +113,7 @@
     return { rows: rows, headerIssues: headerIssues };
   }
 
-  var api = { parseWorkbook: parseWorkbook, normalizeRow: normalizeRow, checkHeader: checkHeader, EXPECTED_HEADERS: EXPECTED_HEADERS };
+  var api = { parseWorkbook: parseWorkbook, normalizeRow: normalizeRow, checkHeader: checkHeader, EXPECTED_HEADERS: EXPECTED_HEADERS, cleanInn: cleanInn };
 
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDParser = api;

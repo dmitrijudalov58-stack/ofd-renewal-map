@@ -3436,11 +3436,23 @@
 
   // ---------- B8 "Обмен с 1С" (Дима, 2026-09-04) -- видно только учётной записи u5yhjzlpy,
   // раздел скрыт в index.html/app.js (класс hidden-1c, открывается по /api/whoami).
-  // "Загрузка файла" реализована полностью (разбор + просмотр структуры любого XLSX).
-  // "Прирост базы"/"Портрет клиента" -- ЗАГЛУШКИ: сопоставление по ИНН + заводскому номеру
-  // ККТ требует точных названий колонок реального файла "Обмен с 1С", которого не видел --
-  // не выдумываю поля вслепую, см. чат/HISTORY.md.
-  var OFD1C_STATE = { rows: null, sheetName: null, headers: null, fileName: null };
+  //
+  // Реальный формат файла (Дима прислал "Сверка_А_Систем_январь_сентябрь_2026.xlsx",
+  // 2026-09-05) -- один лист на месяц (имя листа "YYYY-MM"), ОДНА И ТА ЖЕ строка заголовков
+  // на каждом: Ключ доступа / ИНН покупателя / Заводской номер ККТ / Начало действия тарифа /
+  // Окончание действия тарифа / Количество месяцев / Итоговая сумма / Сумма роялти. Даты --
+  // ТЕКСТОВЫЕ строки "YYYY-MM-DD HH:MM:SS" (не Excel date-serial), cellDates их не трогает,
+  // парсим вручную (ofd1cParseDate).
+  //
+  // КЛЮЧЕВОЕ ОГРАНИЧЕНИЕ (проверено на реальных данных обоих файлов, не предположение):
+  // "Заводской номер ККТ" в этом файле -- НЕ то же самое, что "РНМ ККТ" в основной выгрузке
+  // ОФД. Заводской номер -- номер от завода-изготовителя, РНМ -- регистрационный номер от
+  // ФНС при постановке на учёт, это ДВЕ РАЗНЫЕ системы нумерации, в основной выгрузке ОФД
+  // заводского номера нет ВООБЩЕ ни в одной колонке. Сопоставить кассу-в-кассу нельзя.
+  // Матчим ТОЛЬКО по ИНН клиента (общее поле в обеих системах) -- см. ofd1cMatchClients.
+  var OFD1C_STATE = { records: null, fileName: null, sheetsCount: null, headerMismatch: false };
+  var OFD1C_REFRESHERS = {}; // instanceId -> function() -- живой пересчёт остальных B8-бордов после загрузки файла (тот же приём, что ccActiveRefreshers у B5)
+  function ofd1cBroadcast() { Object.keys(OFD1C_REFRESHERS).forEach(function (k) { OFD1C_REFRESHERS[k](); }); }
 
   function ofd1cEnsureXLSX() {
     if (root.XLSX) return Promise.resolve();
@@ -3455,11 +3467,65 @@
     return ofd1cEnsureXLSX._p;
   }
 
+  var OFD1C_EXPECTED_HEADER = ["Ключ доступа", "ИНН покупателя", "Заводской номер ККТ", "Начало действия тарифа", "Окончание действия тарифа", "Количество месяцев", "Итоговая сумма", "Сумма роялти"];
+
+  function ofd1cParseDate(v) {
+    if (v == null || v === "") return null;
+    if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+    var d = new Date(String(v).trim().replace(" ", "T"));
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // Колонки читаем ПО ПОЗИЦИИ (тот же принцип, что в parser.js для основной выгрузки) --
+  // надёжнее к мелким опечаткам в заголовке, чем сопоставление по названию.
+  function ofd1cParseWorkbook(wb) {
+    var records = [];
+    var headerMismatch = false;
+    wb.SheetNames.forEach(function (sheetName) {
+      var sheet = wb.Sheets[sheetName];
+      var arr = root.XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+      if (!arr.length) return;
+      var header = (arr[0] || []).map(function (h) { return h == null ? "" : String(h).trim(); });
+      if (!OFD1C_EXPECTED_HEADER.every(function (h, i) { return header[i] === h; })) headerMismatch = true;
+      for (var i = 1; i < arr.length; i++) {
+        var r = arr[i];
+        if (!r || r.every(function (c) { return c == null || c === ""; })) continue;
+        var inn = root.OFDParser.cleanInn(r[1]);
+        if (!inn) continue;
+        records.push({
+          accessKey: r[0] != null ? String(r[0]) : null,
+          inn: inn,
+          kktSerial: r[2] != null ? String(r[2]).trim() : null,
+          tariffStart: ofd1cParseDate(r[3]),
+          tariffEnd: ofd1cParseDate(r[4]),
+          months: typeof r[5] === "number" ? r[5] : null,
+          totalSum: typeof r[6] === "number" ? r[6] : null,
+          royaltySum: typeof r[7] === "number" ? r[7] : null,
+          sheetName: sheetName,
+        });
+      }
+    });
+    return { records: records, headerMismatch: headerMismatch };
+  }
+
+  // Группирует записи "Обмен с 1С" по ИНН и подтягивает клиента основной базы (или null,
+  // если ИНН не нашёлся -- давно ушедший/несуществующий клиент, опечатка, или основной файл
+  // ОФД просто ещё не загружен).
+  function ofd1cMatchClients(model) {
+    var byInn = new Map();
+    OFD1C_STATE.records.forEach(function (rec) {
+      var bucket = byInn.get(rec.inn);
+      if (!bucket) { bucket = { inn: rec.inn, client: model.clients.get(rec.inn) || null, records: [] }; byInn.set(rec.inn, bucket); }
+      bucket.records.push(rec);
+    });
+    return Array.from(byInn.values());
+  }
+
   WIDGETS["b8-1c-upload"] = {
     title: "Обмен с 1С — загрузка файла", type: "загрузка", scope: "as-of", span: true,
-    render: function () {
+    render: function (model) {
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи выгрузку «Обмен с 1С» — разберём структуру файла и покажем, что внутри. Сопоставление с основной базой ОФД по ИНН и заводскому номеру ККТ — в разработке, нужны точные названия колонок реального файла.</div>'));
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи файл сверки «Обмен с 1С» (один лист на месяц; колонки: Ключ доступа / ИНН покупателя / Заводской номер ККТ / Начало действия тарифа / Окончание действия тарифа / Количество месяцев / Итоговая сумма / Сумма роялти). Сопоставление с основной базой ОФД — ТОЛЬКО по ИНН: заводского номера ККТ в выгрузке ОФД нет вообще, там своя нумерация (РНМ ККТ, от ФНС) — кассу-в-кассу сопоставить нельзя.</div>'));
       var input = el('<input type="file" accept=".xlsx,.xls">');
       var status = el('<div class="stat-label" style="margin-top:8px"></div>');
       var preview = el('<div style="margin-top:10px"></div>');
@@ -3468,16 +3534,30 @@
       wrap.appendChild(preview);
 
       function renderPreview() {
-        status.textContent = OFD1C_STATE.fileName + " — лист «" + OFD1C_STATE.sheetName + "», строк: " + fmtNum(OFD1C_STATE.rows.length) + ", колонок: " + OFD1C_STATE.headers.length;
-        var headers = OFD1C_STATE.headers.map(function (h, i) { return { label: h == null || h === "" ? "(колонка " + (i + 1) + ")" : String(h) }; });
-        var bodyRows = OFD1C_STATE.rows.slice(1, 21).map(function (r) { return OFD1C_STATE.headers.map(function (_, i) { return r[i] == null ? "" : String(r[i]); }); });
+        var recs = OFD1C_STATE.records;
+        var matched = ofd1cMatchClients(model);
+        var matchedCount = matched.filter(function (m) { return m.client; }).length;
+        var lines = [];
+        lines.push(OFD1C_STATE.fileName + " — листов: " + OFD1C_STATE.sheetsCount + ", записей: " + fmtNum(recs.length) + ", уникальных ИНН: " + fmtNum(matched.length));
+        lines.push("Сопоставлено с клиентами ОФД по ИНН: " + fmtNum(matchedCount) + " из " + fmtNum(matched.length) + " (" + (matched.length ? (matchedCount / matched.length * 100).toFixed(1) : "0") + "%)");
+        if (OFD1C_STATE.headerMismatch) lines.push("⚠ на части листов заголовки отличаются от ожидаемых — данные всё равно прочитаны по позиции колонок, проверь глазами ниже.");
+        status.innerHTML = lines.map(function (l) { return esc(l); }).join("<br>");
+
+        var headers = [
+          { label: "ИНН" }, { label: "Заводской номер ККТ" }, { label: "Начало тарифа" },
+          { label: "Окончание тарифа" }, { label: "Мес.", num: true }, { label: "Сумма", num: true }, { label: "Найден в ОФД" },
+        ];
+        var bodyRows = recs.slice(0, 30).map(function (r) {
+          var client = model.clients.get(r.inn);
+          return [r.inn, r.kktSerial || "—", fmtDate(r.tariffStart), fmtDate(r.tariffEnd), r.months || "—", fmtNum(r.totalSum || 0), client ? (client.org || "да") : "—"];
+        });
         preview.innerHTML = "";
-        preview.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Первые ' + bodyRows.length + ' строк (для сверки структуры файла):</div>'));
+        preview.appendChild(el('<div class="stat-label" style="margin:8px 0 4px">Первые ' + bodyRows.length + ' из ' + fmtNum(recs.length) + ' записей:</div>'));
         var scrollWrap = el('<div class="table-scroll"></div>');
         scrollWrap.appendChild(makeSortableTable(headers, bodyRows));
         preview.appendChild(scrollWrap);
       }
-      if (OFD1C_STATE.rows) renderPreview();
+      if (OFD1C_STATE.records) renderPreview();
 
       input.addEventListener("change", function () {
         var file = input.files[0];
@@ -3489,11 +3569,10 @@
           reader.onload = function (e) {
             try {
               var wb = root.XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
-              var sheetName = wb.SheetNames[0];
-              var sheet = wb.Sheets[sheetName];
-              var rows = root.XLSX.utils.sheet_to_json(sheet, { header: 1 });
-              OFD1C_STATE = { rows: rows, sheetName: sheetName, headers: rows[0] || [], fileName: file.name };
+              var parsed = ofd1cParseWorkbook(wb);
+              OFD1C_STATE = { records: parsed.records, fileName: file.name, sheetsCount: wb.SheetNames.length, headerMismatch: parsed.headerMismatch };
               renderPreview();
+              ofd1cBroadcast();
             } catch (err) {
               status.textContent = "Ошибка разбора: " + err.message;
             }
@@ -3509,19 +3588,100 @@
 
   WIDGETS["b8-1c-growth"] = {
     title: "Прирост базы (Обмен с 1С)", type: "график", scope: "период", span: true,
-    render: function () {
-      return el('<div class="placeholder-body">Требует загруженного файла «Обмен с 1С» (борд рядом) и согласованной логики сопоставления по ИНН + заводскому номеру ККТ. Пока не реализовано — нужны точные названия колонок реального файла, чтобы не гадать на финансовых цифрах. Загрузи файл через «Обмен с 1С — загрузка файла» и пришли структуру (или сам файл) — доделаю по месячной раскладке новых/оттока/накопительного эффекта, аналогично «Прирост базы».</div>');
+    render: function (model, ctx, instanceId) {
+      var wrap = el('<div></div>');
+      function renderBody() {
+        wrap.innerHTML = "";
+        if (!OFD1C_STATE.records) {
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится помесячный прирост клиентов, подключивших обмен с 1С.</div>'));
+          return;
+        }
+        var matched = ofd1cMatchClients(model).filter(function (m) { return m.client; });
+        // "Новый" 1С-клиент -- месяц САМОГО РАННЕГО начала тарифа среди всех его записей.
+        var byMonth = new Map();
+        matched.forEach(function (m) {
+          var starts = m.records.map(function (r) { return r.tariffStart; }).filter(Boolean);
+          if (!starts.length) return;
+          var first = new Date(Math.min.apply(null, starts.map(function (d) { return d.getTime(); })));
+          var key = first.getFullYear() + "-" + String(first.getMonth() + 1).padStart(2, "0");
+          byMonth.set(key, (byMonth.get(key) || 0) + 1);
+        });
+        var keys = Array.from(byMonth.keys()).sort();
+        var monthDates = keys.map(function (k) { var p = k.split("-"); return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, 1); });
+        var values = keys.map(function (k) { return byMonth.get(k); });
+        var cum = [], acc = 0;
+        values.forEach(function (v) { acc += v; cum.push(acc); });
+
+        wrap.appendChild(el('<div>' + statBlock(fmtNum(matched.length), "клиентов ОФД с подключённым обменом 1С (сопоставлено по ИНН)") + '</div>'));
+        var chart = lineChart(monthDates, [{ label: "Накопительно новых", values: cum, color: "var(--s1)" }], { area: true });
+        wrap.appendChild(el('<div style="margin-top:10px">' + chart + '</div>'));
+
+        var headers = [{ label: "Месяц" }, { label: "Новых клиентов 1С", num: true }, { label: "Накопительно", num: true }];
+        var bodyRows = monthDates.map(function (m, i) { return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), values[i], cum[i]]; });
+        wrap.appendChild(el('<div style="margin-top:14px"></div>'));
+        wrap.appendChild(makeSortableTable(headers, bodyRows));
+        wrap.appendChild(el('<div class="stat-label" style="margin-top:8px">Отток/возврат по обмену с 1С пока не считаю — формула "спасён/потерян" для этого продукта не согласована с Димой (может отличаться от основного ОФД). Пока только новые клиенты по месяцам + накопительный итог.</div>'));
+      }
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody;
+      return wrap;
     },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
   };
 
   WIDGETS["b8-1c-summary"] = {
     title: "Обмен с 1С — портрет клиента", type: "таблица", scope: "as-of", span: true,
-    render: function () {
-      return el('<div class="placeholder-body">Требует загруженного файла «Обмен с 1С» и согласованной логики сопоставления по ИНН + заводскому номеру ККТ: дата первого прихода клиента, история его касс/продлений, купленные тарифы обмена с 1С, число касс на ОФД vs число касс с подключённым обменом. Пока не реализовано — см. борд «Обмен с 1С — загрузка файла».</div>');
+    render: function (model, ctx, instanceId) {
+      var wrap = el('<div></div>');
+      function renderBody() {
+        wrap.innerHTML = "";
+        if (!OFD1C_STATE.records) {
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится портрет каждого клиента с обменом 1С.</div>'));
+          return;
+        }
+        var matched = ofd1cMatchClients(model);
+        var matchedOk = matched.filter(function (m) { return m.client; });
+        var unmatchedCount = matched.length - matchedOk.length;
+        wrap.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Клиентов с обменом 1С: ' + fmtNum(matched.length) + ' · сопоставлено с ОФД по ИНН: ' + fmtNum(matchedOk.length) +
+          (unmatchedCount ? ' · не найдено в ОФД: ' + fmtNum(unmatchedCount) + ' (нет такого ИНН среди загруженных клиентов, либо основной файл ОФД ещё не загружен)' : '') + '</div>'));
+
+        var headers = [
+          { label: "ИНН" }, { label: "Клиент" }, { label: "Партнёр" },
+          { label: "Первый приход в ОФД" }, { label: "Касс на ОФД", num: true },
+          { label: "Заводских номеров 1С", num: true }, { label: "Первая покупка 1С" }, { label: "Действует до" },
+          { label: "Сумма 1С всего", num: true },
+        ];
+        var bodyRows = matchedOk.map(function (m) {
+          var c = m.client;
+          var serials = new Set(m.records.map(function (r) { return r.kktSerial; }).filter(Boolean));
+          var starts = m.records.map(function (r) { return r.tariffStart; }).filter(Boolean);
+          var ends = m.records.map(function (r) { return r.tariffEnd; }).filter(Boolean);
+          var firstStart = starts.length ? new Date(Math.min.apply(null, starts.map(function (d) { return d.getTime(); }))) : null;
+          var lastEnd = ends.length ? new Date(Math.max.apply(null, ends.map(function (d) { return d.getTime(); }))) : null;
+          var sum = m.records.reduce(function (s, r) { return s + (r.totalSum || 0); }, 0);
+          return [m.inn, c.org || "—", c.partner || "—", fmtDate(c.appearance), c.kassas.length, serials.size, fmtDate(firstStart), fmtDate(lastEnd), fmtNum(sum)];
+        });
+        var scrollWrap = el('<div class="table-scroll"></div>');
+        scrollWrap.appendChild(makeSortableTable(headers, bodyRows));
+        wrap.appendChild(scrollWrap);
+        wrap.appendChild(el('<div class="stat-label" style="margin-top:8px">«Заводских номеров 1С» — число РАЗНЫХ заводских номеров ККТ у клиента в файле 1С, НЕ привязано к конкретной кассе ОФД (общего идентификатора между системами нет — см. борд загрузки).</div>'));
+      }
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody;
+      return wrap;
     },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
   };
 
-  var api = { WIDGETS: WIDGETS, widgetShell: widgetShell, fmtNum: fmtNum, fmtDate: fmtDate };
+  var api = {
+    WIDGETS: WIDGETS, widgetShell: widgetShell, fmtNum: fmtNum, fmtDate: fmtDate,
+    // Только для теста (test/browser-smoke.js) -- прогнать реальный файл "Обмен с 1С" через
+    // тот же парсер/матчинг, что использует b8-1c-upload, без похода через <input type=file>.
+    ofd1cParseWorkbook: ofd1cParseWorkbook,
+    ofd1cMatchClients: ofd1cMatchClients,
+    ofd1cSetState: function (s) { OFD1C_STATE = s; },
+    ofd1cGetState: function () { return OFD1C_STATE; },
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDWidgets = api;
 })(typeof window !== "undefined" ? window : globalThis);
