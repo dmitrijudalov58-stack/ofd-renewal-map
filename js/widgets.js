@@ -2089,21 +2089,57 @@
       var candidateNames = ctx.M.partnersBySalesCenters(model, new Set(selected));
       var rows = ctx.M.computePartnersByChannel(model, ctx.asOf, { strict: ctx.strict });
       var autoMap = new Map(rows.map(function (r) { return [r.name, r.channel]; }));
+      var allCandidates = candidateNames.map(function (name) { return { name: name, eff: ccEffectiveChannel(name, autoMap) }; });
 
-      var html = '<div class="stat-label" style="margin-bottom:6px">Партнёров с выбранным ЦП: ' + fmtNum(candidateNames.length) + ' — отмеченные закрепятся за каналом «' + esc(channelName) + '» по кнопке ниже.</div>';
-      html += '<div class="cc-list">' + candidateNames.map(function (name) {
-        var eff = ccEffectiveChannel(name, autoMap);
-        var checked = eff === channelName;
-        var hint = checked ? "" : ' <span style="color:var(--muted)">— сейчас в «' + esc(eff) + '»</span>';
-        return '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-partner" data-partner="' + esc(name) + '" data-prev-eff="' + esc(eff) + '"' + (checked ? " checked" : "") + '> ' + esc(name) + hint + '</label>';
-      }).join("") + '</div>';
-      html += '<button type="button" class="refresh-chart-btn cc-cp-apply-btn" style="margin-top:8px">Применить к каналу «' + esc(channelName) + '»</button>';
-      html += '<div class="cc-cp-status stat-label" style="margin-top:6px"></div>';
-      previewHolder.innerHTML = html;
+      previewHolder.innerHTML =
+        '<div class="stat-label" style="margin-bottom:6px">Партнёров с выбранным ЦП: ' + fmtNum(allCandidates.length) + ' — отмеченные закрепятся за каналом «' + esc(channelName) + '» по кнопке ниже.</div>' +
+        '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-only-free" checked> Показать только свободных (скрыть закреплённых за другими каналами)</label>' +
+        '<div class="threshold-row" style="margin:4px 0 6px">' +
+        '<button type="button" class="refresh-chart-btn cc-cp-select-all">Выделить всех</button>' +
+        '<button type="button" class="refresh-chart-btn cc-cp-select-none">Убрать всех</button>' +
+        '</div>' +
+        '<div class="cc-list cc-cp-rows"></div>' +
+        '<button type="button" class="refresh-chart-btn cc-cp-apply-btn" style="margin-top:8px">Применить к каналу «' + esc(channelName) + '»</button>' +
+        '<div class="cc-cp-status stat-label" style="margin-top:6px"></div>';
+
+      var rowsHolder = previewHolder.querySelector(".cc-cp-rows");
+      var onlyFreeCb = previewHolder.querySelector(".cc-cp-only-free");
+      var renderedOnce = false;
+
+      // "Свободный" (Дима, 2026-09-04) -- партнёр либо уже в ЭТОМ канале, либо в общем
+      // catch-all "Партнёры" (никем целенаправленно не занят). Партнёр, закреплённый за
+      // ДРУГИМ конкретным каналом (авто-списком или override) -- НЕ свободен, скрыт по
+      // умолчанию, чтобы не перетягивать его бездумно массовым применением ЦП.
+      function isFree(eff) { return eff === channelName || eff === "Партнёры"; }
+
+      function renderRows() {
+        // Сохраняем текущие галочки НЕЗАВИСИМО от их источника (дефолт по eff или ручной
+        // клик) -- иначе переключение "только свободных" сбрасывало бы то, что уже
+        // отметил/снял пользователь до этого клика.
+        var checkedBefore = new Set(Array.from(rowsHolder.querySelectorAll(".cc-cp-partner:checked")).map(function (cb) { return cb.dataset.partner; }));
+        var visible = onlyFreeCb.checked ? allCandidates.filter(function (r) { return isFree(r.eff); }) : allCandidates;
+        rowsHolder.innerHTML = visible.length
+          ? visible.map(function (r) {
+              var wasChecked = renderedOnce ? checkedBefore.has(r.name) : (r.eff === channelName);
+              var hint = r.eff === channelName ? "" : ' <span style="color:var(--muted)">— сейчас в «' + esc(r.eff) + '»</span>';
+              return '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-partner" data-partner="' + esc(r.name) + '" data-prev-eff="' + esc(r.eff) + '"' + (wasChecked ? " checked" : "") + '> ' + esc(r.name) + hint + '</label>';
+            }).join("")
+          : '<div class="cc-empty">' + (onlyFreeCb.checked ? "Все партнёры этого ЦП уже закреплены за другими каналами — сними «только свободных», чтобы их увидеть." : "Ничего не найдено.") + '</div>';
+        renderedOnce = true;
+      }
+      renderRows();
+      onlyFreeCb.addEventListener("change", renderRows);
+
+      previewHolder.querySelector(".cc-cp-select-all").addEventListener("click", function () {
+        rowsHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) { cb.checked = true; });
+      });
+      previewHolder.querySelector(".cc-cp-select-none").addEventListener("click", function () {
+        rowsHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) { cb.checked = false; });
+      });
 
       previewHolder.querySelector(".cc-cp-apply-btn").addEventListener("click", function () {
         var changed = 0;
-        previewHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) {
+        rowsHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) {
           var name = cb.dataset.partner;
           var prevEff = cb.dataset.prevEff;
           if (cb.checked) {
@@ -2146,6 +2182,10 @@
       '</div>' +
       '<div class="cc-body hidden">' +
       '<input type="text" class="cc-search" placeholder="поиск партнёра…">' +
+      '<div class="threshold-row" style="margin:6px 0 0">' +
+      '<button type="button" class="refresh-chart-btn cc-select-all">Выделить всех</button>' +
+      '<button type="button" class="refresh-chart-btn cc-select-none">Убрать всех</button>' +
+      '</div>' +
       '<div class="cc-list"></div>' +
       '</div>' +
       '</div>'
@@ -2213,6 +2253,23 @@
       if (!bodyEl.classList.contains("hidden")) renderList();
     });
     searchInput.addEventListener("input", renderList);
+
+    // Выделить/убрать всех (Дима, 2026-09-04: "для ускорения процесса") -- действует ТОЛЬКО
+    // на видимый (уже отфильтрованный поиском) список, как select-all в Zendesk/Jira, не на
+    // весь список партнёров канала целиком. Батчим: один ccSaveOverrides+broadcast на все
+    // изменения разом, не по одному на чекбокс -- иначе на сотнях партнёров это N лишних
+    // пересчётов/перерисовок ВСЕХ открытых бордов каналов подряд.
+    function bulkSetVisible(checked) {
+      var changed = 0;
+      listEl.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+        var name = cb.dataset.partner;
+        var target = checked ? channelName : "";
+        if (ccOverrides[name] !== target) { ccOverrides[name] = target; changed++; }
+      });
+      if (changed) { ccSaveOverrides(ccOverrides); ccBroadcastAssignmentChanged(); }
+    }
+    head.querySelector(".cc-select-all").addEventListener("click", function () { bulkSetVisible(true); });
+    head.querySelector(".cc-select-none").addEventListener("click", function () { bulkSetVisible(false); });
 
     function renderResults() {
       var check = parseFloat(checkInput.value) || 0;

@@ -262,6 +262,23 @@ async function main() {
   console.log("cc: поиск фильтрует список:", beforeSearch > 0 && afterSearch === 0 ? "OK" : "FAIL", beforeSearch, "->", afterSearch);
   if (!(beforeSearch > 0 && afterSearch === 0)) ok = false;
 
+  // «Выделить всех»/«Убрать всех» в обычном списке (Дима, 2026-09-04) -- сужаем поиском
+  // ровно до movedName (сейчас свободен), чтобы затронуть ОДНОГО партнёра и потом вернуть
+  // состояние обратно -- иначе ниже по файлу "касс/клиентов к продлению" разъедутся.
+  olyaNode.querySelector(".cc-search").value = movedName;
+  olyaNode.querySelector(".cc-search").dispatchEvent(new win.Event("input", { bubbles: true }));
+  olyaNode.querySelector(".cc-select-all").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const storedAfterSelectAll = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+  console.log("cc: «Выделить всех» закрепляет видимых (отфильтрованных) партнёров за каналом:", storedAfterSelectAll[movedName] === "Ольга Зибер" ? "OK" : "FAIL", storedAfterSelectAll[movedName]);
+  if (storedAfterSelectAll[movedName] !== "Ольга Зибер") ok = false;
+
+  olyaNode.querySelector(".cc-select-none").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const storedAfterSelectNone = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+  console.log("cc: «Убрать всех» освобождает видимых (отфильтрованных) партнёров:", storedAfterSelectNone[movedName] === "" ? "OK" : "FAIL", storedAfterSelectNone[movedName]);
+  if (storedAfterSelectNone[movedName] !== "") ok = false;
+  olyaNode.querySelector(".cc-search").value = "";
+  olyaNode.querySelector(".cc-search").dispatchEvent(new win.Event("input", { bubbles: true }));
+
   // 9б) Панель "Массовое назначение по Центру продаж" (Дима+Оксана, 2026-09-02). Тестируем
   // на olyaNode -- ищем реальную кассу с channel === "Ольга Зибер" (её точный список
   // партнёров) И непустым salesCenter, берём этот ЦП как гарантированный тест-кейс
@@ -287,10 +304,49 @@ async function main() {
     centerCb.checked = true;
     olyaNode.querySelector(".cc-cp-preview-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
 
-    const previewRows = olyaNode.querySelectorAll(".cc-cp-partner");
-    console.log("cp: превью партнёров по ЦП сходится с расчётом:", previewRows.length === expectedCandidates.length ? "OK" : "FAIL", previewRows.length, "vs", expectedCandidates.length);
-    if (previewRows.length !== expectedCandidates.length) ok = false;
+    // "Показать только свободных" отмечен по умолчанию (Дима, 2026-09-04) -- снимаем, чтобы
+    // сверить ПОЛНЫЙ список кандидатов с независимым расчётом (как было в предыдущей версии).
+    const onlyFreeCb = olyaNode.querySelector(".cc-cp-only-free");
+    onlyFreeCb.checked = false;
+    onlyFreeCb.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const allRows = olyaNode.querySelectorAll(".cc-cp-partner");
+    console.log("cp: превью партнёров по ЦП (без фильтра) сходится с расчётом:", allRows.length === expectedCandidates.length ? "OK" : "FAIL", allRows.length, "vs", expectedCandidates.length);
+    if (allRows.length !== expectedCandidates.length) ok = false;
 
+    // "Выделить всех" / "Убрать всех" (Дима, 2026-09-04) -- действуют на текущий видимый список.
+    olyaNode.querySelector(".cc-cp-select-all").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const allCheckedAfterSelectAll = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).every((cb) => cb.checked);
+    console.log("cp: «Выделить всех» отмечает все видимые чекбоксы:", allCheckedAfterSelectAll ? "OK" : "FAIL");
+    if (!allCheckedAfterSelectAll) ok = false;
+
+    olyaNode.querySelector(".cc-cp-select-none").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const noneCheckedAfterSelectNone = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).every((cb) => !cb.checked);
+    console.log("cp: «Убрать всех» снимает все видимые чекбоксы:", noneCheckedAfterSelectNone ? "OK" : "FAIL");
+    if (!noneCheckedAfterSelectNone) ok = false;
+
+    // Свежий клик "Показать партнёров" -- сбрасывает превью к дефолтным галочкам (иначе после
+    // «Убрать всех» выше ничего не отмечено, и тест "хотя бы один по умолчанию отмечен" ниже
+    // провалился бы из-за ДЕЙСТВИЙ САМОГО ТЕСТА, а не бага продукта).
+    olyaNode.querySelector(".cc-cp-preview-btn").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const onlyFreeCb2 = olyaNode.querySelector(".cc-cp-only-free");
+    // Возвращаем "только свободных" -- независимо сверяем, что видимый список сузился до
+    // (eff === channelName || eff === "Партнёры"), т.е. скрыты партнёры, занятые ДРУГИМ каналом.
+    onlyFreeCb2.checked = true;
+    onlyFreeCb2.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const rowsFull = win.OFDMetrics.computePartnersByChannel(model, win.OFDState.ctx.asOf, { strict: win.OFDState.ctx.strict });
+    const autoMapFull = new Map(rowsFull.map((r) => [r.name, r.channel]));
+    const storedNow = JSON.parse(win.localStorage.getItem("ofd-channel-overrides-v1") || "{}");
+    function expectedEff(name) {
+      if (Object.prototype.hasOwnProperty.call(storedNow, name)) return storedNow[name];
+      const auto = autoMapFull.get(name);
+      return ["Ольга Зибер", "Лариса Пенигина", "Партнёры"].indexOf(auto) !== -1 ? auto : "Партнёры";
+    }
+    const expectedFreeCount = expectedCandidates.filter((n) => expectedEff(n) === "Ольга Зибер" || expectedEff(n) === "Партнёры").length;
+    const shownFreeCount = olyaNode.querySelectorAll(".cc-cp-partner").length;
+    console.log("cp: «только свободных» скрывает занятых другим каналом:", shownFreeCount === expectedFreeCount ? "OK" : "FAIL", shownFreeCount, "vs", expectedFreeCount);
+    if (shownFreeCount !== expectedFreeCount) ok = false;
+
+    const previewRows = olyaNode.querySelectorAll(".cc-cp-partner");
     const checkedPreview = Array.from(previewRows).find((cb) => cb.checked);
     console.log("cp: хотя бы один кандидат уже эффективно в канале (checkbox отмечен по умолчанию):", checkedPreview ? "OK" : "FAIL");
     if (!checkedPreview) ok = false;
