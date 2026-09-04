@@ -611,6 +611,59 @@ async function main() {
     console.log("ofd1c: борд «Портрет клиента» рендерит таблицу с загруженными данными:", summaryHasTable ? "OK" : "FAIL");
     if (!summaryHasTable) ok = false;
 
+    // "Прирост базы (Обмен с 1С)" (Дима, 2026-09-05: "логика должна быть той же, что и по
+    // кодам ОФД") -- внутренняя согласованность: сумма новых по вкладке "Новые" ЗА КАЖДЫЙ
+    // месяц должна совпасть с series.newByMonth того же месяца (тот же принцип, что и у
+    // основного "Прирост базы" -- график и drill-down не должны расходиться в цифрах).
+    const periodStart = new win.Date("2025-01-01");
+    const periodEnd = new win.Date("2026-09-30");
+    const asOfOfd1c = win.OFDState.asOf;
+    const gradSeries = win.OFDWidgets.ofd1cComputeChurnGradient(model, periodStart, periodEnd, asOfOfd1c);
+    let newSumMismatch = false, churnSumMismatch = false;
+    gradSeries.months.forEach((m, i) => {
+      const newDrill = win.OFDWidgets.ofd1cClientsNewInMonth(model, m).length;
+      if (newDrill !== gradSeries.newByMonth[i]) newSumMismatch = true;
+      const churnDrill = win.OFDWidgets.ofd1cClientsChurnedInMonth(model, m, asOfOfd1c).length;
+      if (churnDrill !== gradSeries.churnByMonth[i]) churnSumMismatch = true;
+    });
+    console.log("ofd1c: «Новые» по месяцам в графике сходятся с drill-down по месяцам:", !newSumMismatch ? "OK" : "FAIL");
+    if (newSumMismatch) ok = false;
+    console.log("ofd1c: «Отток» по месяцам в графике сходятся с drill-down по месяцам:", !churnSumMismatch ? "OK" : "FAIL");
+    if (churnSumMismatch) ok = false;
+    const totalNewOfd1c = gradSeries.newByMonth.reduce((s, v) => s + v, 0);
+    const matchedWithAppearance = win.OFDWidgets.ofd1cMatchedEntries(model).filter((e) => e.appearance && e.appearance >= periodStart && e.appearance <= periodEnd).length;
+    console.log("ofd1c: сумма «Новых» за период сходится с независимым пересчётом:", totalNewOfd1c === matchedWithAppearance ? "OK" : "FAIL", totalNewOfd1c, "vs", matchedWithAppearance);
+    if (totalNewOfd1c !== matchedWithAppearance) ok = false;
+
+    // Клик по строке "Портрет клиента" -- раскрытие показывает ОБЕ таблицы (кассы ОФД +
+    // записи обмена 1С) без построчного соответствия друг другу (Дима, 2026-09-05).
+    win.OFDCanvas.rerenderAll();
+    const summaryNode2 = win.document.querySelector('[data-widget-id="b8-1c-summary"]');
+    const firstDataRow = summaryNode2.querySelector("tbody tr");
+    if (firstDataRow) firstDataRow.dispatchEvent(new win.Event("click", { bubbles: true }));
+    const drillTables = summaryNode2.querySelectorAll("table");
+    console.log("ofd1c: клик по строке портрета раскрывает 2 таблицы (кассы ОФД + обмен 1С):", drillTables.length >= 3 ? "OK" : "FAIL", drillTables.length); // 1 (основная) + 2 (drill)
+    if (drillTables.length < 3) ok = false;
+
+    // Дедуп составным ключом ИНН+заводской номер+начало тарифа при нескольких файлах
+    // (Дима, 2026-09-05: "должна быть возможность загрузить сразу несколько файлов") --
+    // тот же workbook "загружен дважды" не должен задвоить записи. "Ключ доступа" для
+    // дедупа НЕ годится -- проверено на реальных данных, это ключ КЛИЕНТА у поставщика, а
+    // не строки: 391 из 835 ключей встречаются больше 1 раза на РАЗНЫХ записях одного ИНН
+    // (разные кассы/периоды), дедуп по нему схлопнул бы 2124 реальные строки до 835.
+    const seenKeysTest = new Set();
+    let dedupedTotal = 0;
+    [parsed1c.records, parsed1c.records].forEach((recs) => {
+      recs.forEach((r) => {
+        const dedupKey = r.inn + "|" + r.kktSerial + "|" + (r.tariffStart ? r.tariffStart.getTime() : "");
+        if (seenKeysTest.has(dedupKey)) return;
+        seenKeysTest.add(dedupKey);
+        dedupedTotal++;
+      });
+    });
+    console.log("ofd1c: дедуп составным ключом не задваивает записи при повторной загрузке того же файла:", dedupedTotal === parsed1c.records.length ? "OK" : "FAIL", dedupedTotal, "vs", parsed1c.records.length);
+    if (dedupedTotal !== parsed1c.records.length) ok = false;
+
     win.OFDWidgets.ofd1cSetState({ records: null, fileName: null, sheetsCount: null, headerMismatch: false }); // не протекает в другие тесты этого файла
   } else {
     console.log("ofd1c: OFD_1C_TEST_FILE не задан -- пропускаю проверку на реальном файле «Обмен с 1С» (не критично, не входит в репозиторий)");

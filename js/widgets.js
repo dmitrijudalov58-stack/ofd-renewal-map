@@ -3521,12 +3521,24 @@
     return Array.from(byInn.values());
   }
 
+  function ofd1cReadFileAsWorkbook(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        try { resolve(root.XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true })); }
+        catch (err) { reject(err); }
+      };
+      reader.onerror = function () { reject(new Error("Не удалось прочитать файл «" + file.name + "»")); };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
   WIDGETS["b8-1c-upload"] = {
     title: "Обмен с 1С — загрузка файла", type: "загрузка", scope: "as-of", span: true,
     render: function (model) {
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи файл сверки «Обмен с 1С» (один лист на месяц; колонки: Ключ доступа / ИНН покупателя / Заводской номер ККТ / Начало действия тарифа / Окончание действия тарифа / Количество месяцев / Итоговая сумма / Сумма роялти). Сопоставление с основной базой ОФД — ТОЛЬКО по ИНН: заводского номера ККТ в выгрузке ОФД нет вообще, там своя нумерация (РНМ ККТ, от ФНС) — кассу-в-кассу сопоставить нельзя.</div>'));
-      var input = el('<input type="file" accept=".xlsx,.xls">');
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи файл(ы) сверки «Обмен с 1С» (можно сразу несколько — например, за разные периоды; один лист на месяц, колонки: Ключ доступа / ИНН покупателя / Заводской номер ККТ / Начало действия тарифа / Окончание действия тарифа / Количество месяцев / Итоговая сумма / Сумма роялти). Сопоставление с основной базой ОФД — ТОЛЬКО по ИНН: заводского номера ККТ в выгрузке ОФД нет вообще, там своя нумерация (РНМ ККТ, от ФНС) — кассу-в-кассу сопоставить нельзя.</div>'));
+      var input = el('<input type="file" accept=".xlsx,.xls" multiple>');
       var status = el('<div class="stat-label" style="margin-top:8px"></div>');
       var preview = el('<div style="margin-top:10px"></div>');
       wrap.appendChild(input);
@@ -3560,31 +3572,196 @@
       if (OFD1C_STATE.records) renderPreview();
 
       input.addEventListener("change", function () {
-        var file = input.files[0];
-        if (!file) return;
+        var files = Array.from(input.files || []);
+        if (!files.length) return;
         status.textContent = "Загрузка библиотеки разбора…";
         ofd1cEnsureXLSX().then(function () {
-          status.textContent = "Разбор файла…";
-          var reader = new FileReader();
-          reader.onload = function (e) {
-            try {
-              var wb = root.XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
-              var parsed = ofd1cParseWorkbook(wb);
-              OFD1C_STATE = { records: parsed.records, fileName: file.name, sheetsCount: wb.SheetNames.length, headerMismatch: parsed.headerMismatch };
-              renderPreview();
-              ofd1cBroadcast();
-            } catch (err) {
-              status.textContent = "Ошибка разбора: " + err.message;
-            }
-          };
-          reader.onerror = function () { status.textContent = "Не удалось прочитать файл."; };
-          reader.readAsArrayBuffer(file);
-        }).catch(function (err) { status.textContent = err.message; });
+          status.textContent = "Разбор " + files.length + " файл(ов)…";
+          return Promise.all(files.map(ofd1cReadFileAsWorkbook));
+        }).then(function (workbooks) {
+          // Несколько файлов (Дима, 2026-09-05) -- дедуп составным ключом ИНН+заводской
+          // номер+начало тарифа, на случай если периоды загруженных файлов пересекаются.
+          // "Ключ доступа" для этого НЕ годится (проверено на реальных данных, 2026-09-05):
+          // это ключ КЛИЕНТА у поставщика, повторяется на РАЗНЫХ записях одного ИНН (391 из
+          // 835 ключей встречаются больше 1 раза — разные кассы/периоды одного клиента);
+          // дедуп по нему схлопнул бы реальные разные покупки в одну и молча потерял бы
+          // данные (поймано тестом: 2124 строки схлопнулись бы до 835). Составной ключ
+          // уникален на всех 2124 реальных строках без единой коллизии.
+          var allRecords = [], headerMismatch = false, sheetsCount = 0;
+          var seenKeys = new Set();
+          workbooks.forEach(function (wb) {
+            var parsed = ofd1cParseWorkbook(wb);
+            if (parsed.headerMismatch) headerMismatch = true;
+            sheetsCount += wb.SheetNames.length;
+            parsed.records.forEach(function (r) {
+              var dedupKey = r.inn + "|" + r.kktSerial + "|" + (r.tariffStart ? r.tariffStart.getTime() : "");
+              if (seenKeys.has(dedupKey)) return;
+              seenKeys.add(dedupKey);
+              allRecords.push(r);
+            });
+          });
+          OFD1C_STATE = { records: allRecords, fileName: files.map(function (f) { return f.name; }).join(", "), sheetsCount: sheetsCount, headerMismatch: headerMismatch };
+          renderPreview();
+          ofd1cBroadcast();
+        }).catch(function (err) {
+          status.textContent = "Ошибка разбора: " + err.message;
+        });
       });
 
       return wrap;
     },
   };
+
+  // ---------- "Прирост базы (Обмен с 1С)" -- та же формула оттока/возврата, что в
+  // основном ОФД (Дима, 2026-09-05: "логика должна быть той же, что и по кодам ОФД"), но
+  // строится не по кодам ОФД, а по тарифным интервалам обмена с 1С (tariffStart..tariffEnd
+  // каждой записи). Сознательно ПАРАЛЛЕЛЬНАЯ копия churnStatusFromEnd/findReturn из
+  // metrics.js, не импорт -- те функции завязаны на kassa.intervals/client.kassas, здесь
+  // домен другой (интервалы 1С-тарифов клиента целиком, не касс по отдельности); проще
+  // отдельная копия с теми же порогами (30/31 день, 90 дней/3 года), чем городить общий
+  // интерфейс поверх двух разных моделей данных.
+  var OFD1C_CHURN_GRACE_DAYS = 30;
+  var OFD1C_REANIM_WINDOW_START_DAYS = 31;
+  var OFD1C_RETURN_TAG_MAX_DAYS = 1095;
+
+  // matched (из ofd1cMatchClients, только с client != null) -> добавляет appearance
+  // (самое раннее начало тарифа), currentEnd (самое позднее окончание) и intervals
+  // (tariffStart/tariffEnd каждой записи, без невалидных).
+  function ofd1cClientRecord(m) {
+    var intervals = m.records.map(function (r) { return { start: r.tariffStart, end: r.tariffEnd }; }).filter(function (iv) { return iv.start; });
+    var starts = intervals.map(function (iv) { return iv.start; });
+    var ends = intervals.filter(function (iv) { return iv.end; }).map(function (iv) { return iv.end; });
+    return {
+      inn: m.inn, client: m.client, records: m.records, intervals: intervals,
+      appearance: starts.length ? new Date(Math.min.apply(null, starts.map(function (d) { return d.getTime(); }))) : null,
+      currentEnd: ends.length ? new Date(Math.max.apply(null, ends.map(function (d) { return d.getTime(); }))) : null,
+    };
+  }
+  function ofd1cMatchedEntries(model) {
+    return ofd1cMatchClients(model).filter(function (m) { return m.client; }).map(ofd1cClientRecord);
+  }
+  function ofd1cLapsedAt(entry, atDate) {
+    if (!entry.appearance || atDate < entry.appearance) return false;
+    for (var i = 0; i < entry.intervals.length; i++) {
+      var iv = entry.intervals[i];
+      if (iv.start <= atDate && (!iv.end || atDate <= iv.end)) return false;
+    }
+    return true;
+  }
+  function ofd1cChurnStatus(entry, asOf) {
+    if (!entry.currentEnd) return null;
+    var graceDeadline = new Date(entry.currentEnd.getTime() + OFD1C_CHURN_GRACE_DAYS * 86400000);
+    var resolveAt = new Date(entry.currentEnd.getTime() + OFD1C_REANIM_WINDOW_START_DAYS * 86400000);
+    if (asOf < resolveAt) return "pending";
+    return ofd1cLapsedAt(entry, graceDeadline) ? "churned" : "safe";
+  }
+  function ofd1cFindReturn(intervals) {
+    if (intervals.length < 2) return null;
+    var sorted = intervals.slice().sort(function (a, b) { return a.start - b.start; });
+    var last = sorted[sorted.length - 1];
+    var priorMaxEnd = null;
+    for (var i = 0; i < sorted.length - 1; i++) {
+      var e = sorted[i].end;
+      if (e && (priorMaxEnd === null || e > priorMaxEnd)) priorMaxEnd = e;
+    }
+    if (!priorMaxEnd || last.start <= priorMaxEnd) return null;
+    var days = Math.round((last.start - priorMaxEnd) / 86400000);
+    if (days > OFD1C_RETURN_TAG_MAX_DAYS) return null;
+    return { returnDate: last.start, gapEnd: priorMaxEnd, days: days, tag: days <= 90 ? "вернувшийся" : "возвращённый" };
+  }
+  function ofd1cBuildMonthRange(periodStart, periodEnd) {
+    var months = [];
+    var cursor = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1);
+    var end = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), 1);
+    while (cursor <= end) { months.push(new Date(cursor)); cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1); }
+    return months;
+  }
+  function ofd1cMonthIndexOf(months, date) {
+    for (var i = 0; i < months.length; i++) { if (date.getFullYear() === months[i].getFullYear() && date.getMonth() === months[i].getMonth()) return i; }
+    return -1;
+  }
+  function ofd1cInRange(date, start, end) { return date && date >= start && date <= end; }
+
+  function ofd1cComputeChurnGradient(model, periodStart, periodEnd, asOf) {
+    var months = ofd1cBuildMonthRange(periodStart, periodEnd);
+    var newByMonth = months.map(function () { return 0; });
+    var churnByMonth = months.map(function () { return 0; });
+    var graceByMonth = months.map(function () { return 0; });
+    var forecastByMonth = months.map(function () { return 0; });
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      if (ofd1cInRange(e.appearance, periodStart, periodEnd)) {
+        var ni = ofd1cMonthIndexOf(months, e.appearance);
+        if (ni >= 0) newByMonth[ni]++;
+      }
+      if (!e.currentEnd || !ofd1cInRange(e.currentEnd, periodStart, periodEnd)) return;
+      var mi = ofd1cMonthIndexOf(months, e.currentEnd);
+      if (mi < 0) return;
+      var daysSinceEnd = (asOf - e.currentEnd) / 86400000;
+      if (daysSinceEnd < 0) { forecastByMonth[mi]++; }
+      else if (daysSinceEnd <= OFD1C_CHURN_GRACE_DAYS) { if (ofd1cLapsedAt(e, asOf)) graceByMonth[mi]++; }
+      else { if (ofd1cChurnStatus(e, asOf) === "churned") churnByMonth[mi]++; }
+    });
+    return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth, graceByMonth: graceByMonth, forecastByMonth: forecastByMonth };
+  }
+  function ofd1cComputeReturnedByMonth(model, periodStart, periodEnd) {
+    var months = ofd1cBuildMonthRange(periodStart, periodEnd);
+    var countByMonth = months.map(function () { return 0; });
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var ri = ofd1cFindReturn(e.intervals);
+      if (!ri || ri.tag !== "возвращённый" || !ofd1cInRange(ri.returnDate, periodStart, periodEnd)) return;
+      var i = ofd1cMonthIndexOf(months, ri.returnDate);
+      if (i >= 0) countByMonth[i]++;
+    });
+    return { months: months, countByMonth: countByMonth };
+  }
+  function ofd1cActiveCountsAtMonthEnds(model, months, ctx) {
+    var entries = ofd1cMatchedEntries(model);
+    return months.map(function (m) {
+      var monthEnd = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      var end = monthEnd < ctx.asOf ? monthEnd : ctx.asOf;
+      var count = 0;
+      entries.forEach(function (e) { if (!ofd1cLapsedAt(e, end)) count++; });
+      return count;
+    });
+  }
+  // Раскрытия для вкладок -- ТЕ ЖЕ поля/ключи, что и DEFAULT_DRILL_COLUMNS/CLIENT_CHURN_COLUMNS
+  // основного "Прирост базы" (Дима: "все поля должны быть такими же") -- переиспользуем те
+  // же column-определения ниже в самом виджете.
+  function ofd1cClientsNewInMonth(model, monthDate) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      if (!e.appearance || e.appearance.getFullYear() !== y || e.appearance.getMonth() !== m) return;
+      var c = e.client;
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: e.appearance, leftAt: null });
+    });
+    return out;
+  }
+  function ofd1cClientsChurnedInMonth(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var end = e.currentEnd;
+      if (!end || end.getFullYear() !== y || end.getMonth() !== m) return;
+      var daysSinceEnd = (asOf - end) / 86400000;
+      if (daysSinceEnd <= OFD1C_CHURN_GRACE_DAYS) return;
+      if (ofd1cChurnStatus(e, asOf) !== "churned") return;
+      var c = e.client;
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: end, activeKassas: c.kassas.length });
+    });
+    return out;
+  }
+  function ofd1cClientsReturnedInMonth(model, monthDate) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var ri = ofd1cFindReturn(e.intervals);
+      if (!ri || ri.tag !== "возвращённый" || ri.returnDate.getFullYear() !== y || ri.returnDate.getMonth() !== m) return;
+      var c = e.client;
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: ri.returnDate, leftAt: ri.gapEnd });
+    });
+    return out;
+  }
 
   WIDGETS["b8-1c-growth"] = {
     title: "Прирост базы (Обмен с 1С)", type: "график", scope: "период", span: true,
@@ -3593,34 +3770,64 @@
       function renderBody() {
         wrap.innerHTML = "";
         if (!OFD1C_STATE.records) {
-          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится помесячный прирост клиентов, подключивших обмен с 1С.</div>'));
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится помесячный прирост клиентов, подключивших обмен с 1С: накопительный эффект, новые/отток/возвращённые, по той же логике, что «Прирост базы» на кодах ОФД.</div>'));
           return;
         }
-        var matched = ofd1cMatchClients(model).filter(function (m) { return m.client; });
-        // "Новый" 1С-клиент -- месяц САМОГО РАННЕГО начала тарифа среди всех его записей.
-        var byMonth = new Map();
-        matched.forEach(function (m) {
-          var starts = m.records.map(function (r) { return r.tariffStart; }).filter(Boolean);
-          if (!starts.length) return;
-          var first = new Date(Math.min.apply(null, starts.map(function (d) { return d.getTime(); })));
-          var key = first.getFullYear() + "-" + String(first.getMonth() + 1).padStart(2, "0");
-          byMonth.set(key, (byMonth.get(key) || 0) + 1);
-        });
-        var keys = Array.from(byMonth.keys()).sort();
-        var monthDates = keys.map(function (k) { var p = k.split("-"); return new Date(parseInt(p[0], 10), parseInt(p[1], 10) - 1, 1); });
-        var values = keys.map(function (k) { return byMonth.get(k); });
-        var cum = [], acc = 0;
-        values.forEach(function (v) { acc += v; cum.push(acc); });
+        var series = ofd1cComputeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+        var activeByMonth = ofd1cActiveCountsAtMonthEnds(model, series.months, ctx);
+        var returnedSeries = null, returnedActiveByMonth = null;
 
-        wrap.appendChild(el('<div>' + statBlock(fmtNum(matched.length), "клиентов ОФД с подключённым обменом 1С (сопоставлено по ИНН)") + '</div>'));
-        var chart = lineChart(monthDates, [{ label: "Накопительно новых", values: cum, color: "var(--s1)" }], { area: true });
-        wrap.appendChild(el('<div style="margin-top:10px">' + chart + '</div>'));
+        var ngId = "ofd1cngview-" + Math.random().toString(36).slice(2, 7);
+        var tabs = el(
+          '<div class="threshold-row" style="margin-bottom:10px">' +
+          '<label><input type="radio" name="' + ngId + '" value="cum" checked> Накопительно</label>' +
+          '<label><input type="radio" name="' + ngId + '" value="new"> Новые клиенты</label>' +
+          '<label><input type="radio" name="' + ngId + '" value="churn"> Отток клиентов</label>' +
+          '<label><input type="radio" name="' + ngId + '" value="returned"> Возвращённые клиенты</label>' +
+          '</div>'
+        );
+        var viewHolder = el('<div></div>');
+        wrap.appendChild(tabs);
+        wrap.appendChild(viewHolder);
 
-        var headers = [{ label: "Месяц" }, { label: "Новых клиентов 1С", num: true }, { label: "Накопительно", num: true }];
-        var bodyRows = monthDates.map(function (m, i) { return [MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), values[i], cum[i]]; });
-        wrap.appendChild(el('<div style="margin-top:14px"></div>'));
-        wrap.appendChild(makeSortableTable(headers, bodyRows));
-        wrap.appendChild(el('<div class="stat-label" style="margin-top:8px">Отток/возврат по обмену с 1С пока не считаю — формула "спасён/потерян" для этого продукта не согласована с Димой (может отличаться от основного ОФД). Пока только новые клиенты по месяцам + накопительный итог.</div>'));
+        function renderCumView() {
+          var cum = [], net = [], acc = 0;
+          for (var i = 0; i < series.months.length; i++) {
+            var n = series.newByMonth[i] - series.churnByMonth[i];
+            net.push(n); acc += n; cum.push(acc);
+          }
+          var tooltips = series.months.map(function (m, i) {
+            var sign = net[i] > 0 ? "+" : "";
+            return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
+          });
+          var chart = lineChart(series.months, [{ label: "Накопительно", values: cum, color: "var(--s1)", tooltips: tooltips }], { area: true });
+          var v = el("<div></div>");
+          v.appendChild(el('<div>' + chart + '</div>'));
+          var tableHolder = el('<div style="margin-top:14px"></div>');
+          tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов с обменом 1С"));
+          v.appendChild(tableHolder);
+          return v;
+        }
+
+        function renderView() {
+          var v = tabs.querySelector('input:checked').value;
+          viewHolder.innerHTML = "";
+          if (v === "cum") {
+            viewHolder.appendChild(renderCumView());
+          } else if (v === "new") {
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ofd1cClientsNewInMonth(model, m); }, { activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — новые клиенты" }));
+          } else if (v === "churn") {
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ofd1cClientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — отток клиентов" }));
+          } else if (v === "returned") {
+            if (!returnedSeries) {
+              returnedSeries = ofd1cComputeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
+              returnedActiveByMonth = ofd1cActiveCountsAtMonthEnds(model, returnedSeries.months, ctx);
+            }
+            viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ofd1cClientsReturnedInMonth(model, m); }, { activeTotalByMonth: returnedActiveByMonth, exportTitle: "Прирост базы (Обмен с 1С) — возвращённые клиенты" }));
+          }
+        }
+        tabs.addEventListener("change", renderView);
+        renderView();
       }
       renderBody();
       OFD1C_REFRESHERS[instanceId] = renderBody;
@@ -3633,8 +3840,10 @@
     title: "Обмен с 1С — портрет клиента", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
       var wrap = el('<div></div>');
+      var drillHolder = el('<div style="margin-top:14px"></div>');
       function renderBody() {
         wrap.innerHTML = "";
+        drillHolder.innerHTML = "";
         if (!OFD1C_STATE.records) {
           wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится портрет каждого клиента с обменом 1С.</div>'));
           return;
@@ -3649,7 +3858,6 @@
           { label: "ИНН" }, { label: "Клиент" }, { label: "Партнёр" },
           { label: "Первый приход в ОФД" }, { label: "Касс на ОФД", num: true },
           { label: "Заводских номеров 1С", num: true }, { label: "Первая покупка 1С" }, { label: "Действует до" },
-          { label: "Сумма 1С всего", num: true },
         ];
         var bodyRows = matchedOk.map(function (m) {
           var c = m.client;
@@ -3658,14 +3866,51 @@
           var ends = m.records.map(function (r) { return r.tariffEnd; }).filter(Boolean);
           var firstStart = starts.length ? new Date(Math.min.apply(null, starts.map(function (d) { return d.getTime(); }))) : null;
           var lastEnd = ends.length ? new Date(Math.max.apply(null, ends.map(function (d) { return d.getTime(); }))) : null;
-          var sum = m.records.reduce(function (s, r) { return s + (r.totalSum || 0); }, 0);
-          return [m.inn, c.org || "—", c.partner || "—", fmtDate(c.appearance), c.kassas.length, serials.size, fmtDate(firstStart), fmtDate(lastEnd), fmtNum(sum)];
+          return [m.inn, c.org || "—", c.partner || "—", fmtDate(c.appearance), c.kassas.length, serials.size, fmtDate(firstStart), fmtDate(lastEnd)];
         });
         var scrollWrap = el('<div class="table-scroll"></div>');
-        scrollWrap.appendChild(makeSortableTable(headers, bodyRows));
+        var tableWrap = makeSortableTable(headers, bodyRows);
+        scrollWrap.appendChild(tableWrap);
         wrap.appendChild(scrollWrap);
-        wrap.appendChild(el('<div class="stat-label" style="margin-top:8px">«Заводских номеров 1С» — число РАЗНЫХ заводских номеров ККТ у клиента в файле 1С, НЕ привязано к конкретной кассе ОФД (общего идентификатора между системами нет — см. борд загрузки).</div>'));
+        wrap.appendChild(el('<div class="stat-label" style="margin-top:8px">Клик по строке — полная карточка клиента (кассы ОФД + записи обмена 1С) ниже. «Заводских номеров 1С» — не привязано к конкретной кассе ОФД, общего идентификатора между системами нет.</div>'));
+        wrap.appendChild(drillHolder);
+
+        tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () {
+            var inn = tr.children[0].textContent;
+            var m = matchedOk.find(function (x) { return x.inn === inn; });
+            if (m) renderDrill(m);
+          });
+        });
       }
+
+      function renderDrill(m) {
+        var c = m.client;
+        drillHolder.innerHTML = "";
+        drillHolder.appendChild(el('<div style="font-size:13px;border-top:2px solid var(--ink);padding-top:10px;margin-top:4px"><b>' + esc(c.org || m.inn) + '</b> · ИНН ' + esc(m.inn) + (c.partner ? ' · партнёр ' + esc(c.partner) : '') + '</div>'));
+
+        var kassaHeaders = [{ label: "РНМ" }, { label: "Тариф ОФД" }, { label: "Окончание кода ОФД" }, { label: "Статус" }];
+        var kassaRows = c.kassas.map(function (k) {
+          var alive = ctx.M.isKassaAlive(k, ctx.asOf, ctx.strict);
+          var deadline = ctx.M.kassaDeadline(k, ctx.asOf, ctx.strict);
+          return [k.rnm, k.tariff || "—", fmtDate(deadline), alive ? "действует" : "истёк"];
+        });
+        drillHolder.appendChild(el('<div class="stat-label" style="margin:8px 0 4px">Кассы на ОФД (' + fmtNum(c.kassas.length) + '):</div>'));
+        var kassaScroll = el('<div class="table-scroll"></div>');
+        kassaScroll.appendChild(makeSortableTable(kassaHeaders, kassaRows));
+        drillHolder.appendChild(kassaScroll);
+
+        var ofd1cHeaders = [{ label: "Заводской номер ККТ" }, { label: "Начало обмена 1С" }, { label: "Окончание обмена 1С" }, { label: "Мес.", num: true }];
+        var ofd1cRows = m.records.map(function (r) { return [r.kktSerial || "—", fmtDate(r.tariffStart), fmtDate(r.tariffEnd), r.months || "—"]; });
+        drillHolder.appendChild(el('<div class="stat-label" style="margin:12px 0 4px">Обмен с 1С (' + fmtNum(m.records.length) + ' записей):</div>'));
+        var ofd1cScroll = el('<div class="table-scroll"></div>');
+        ofd1cScroll.appendChild(makeSortableTable(ofd1cHeaders, ofd1cRows));
+        drillHolder.appendChild(ofd1cScroll);
+
+        drillHolder.appendChild(el('<div class="stat-label" style="margin-top:8px">⚠ Прямого соответствия «эта касса ↔ этот заводской номер» нет — в файле обмена с 1С нет РНМ, а в выгрузке ОФД нет заводского номера, общего идентификатора между системами не существует. Обе таблицы — про одного и того же клиента, но НЕ построчно связаны друг с другом.</div>'));
+      }
+
       renderBody();
       OFD1C_REFRESHERS[instanceId] = renderBody;
       return wrap;
@@ -3681,6 +3926,12 @@
     ofd1cMatchClients: ofd1cMatchClients,
     ofd1cSetState: function (s) { OFD1C_STATE = s; },
     ofd1cGetState: function () { return OFD1C_STATE; },
+    ofd1cMatchedEntries: ofd1cMatchedEntries,
+    ofd1cComputeChurnGradient: ofd1cComputeChurnGradient,
+    ofd1cComputeReturnedByMonth: ofd1cComputeReturnedByMonth,
+    ofd1cClientsNewInMonth: ofd1cClientsNewInMonth,
+    ofd1cClientsChurnedInMonth: ofd1cClientsChurnedInMonth,
+    ofd1cClientsReturnedInMonth: ofd1cClientsReturnedInMonth,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDWidgets = api;
