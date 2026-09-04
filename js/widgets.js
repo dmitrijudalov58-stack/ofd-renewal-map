@@ -2099,10 +2099,11 @@
   // - снято и партнёр и так был не в этом канале -- не трогаем чужой override.
   function ccBuildCenterFilterPanel(channelName, model, ctx) {
     var allCenters = ctx.M.allSalesCentersSorted(model);
+    var allPartnerNames = ctx.M.allPartnerNamesSorted(model);
     var panel = el('<div class="cc-settings" style="margin-top:8px"></div>');
     var toggleBtn = el('<button type="button" class="cc-toggle cc-cp-toggle">▸ Массовое назначение по Центру продаж</button>');
     var body = el('<div class="cc-body cc-cp-body hidden"></div>');
-    var centerSearch = el('<input type="text" class="cc-search cc-cp-search" placeholder="поиск ЦП…">');
+    var centerSearch = el('<input type="text" class="cc-search cc-cp-search" placeholder="поиск ЦП или партнёра…">');
     var centersList = el('<div class="cc-list"></div>');
     var previewBtn = el('<button type="button" class="refresh-chart-btn cc-cp-preview-btn" style="margin-top:6px">Показать партнёров</button>');
     var previewHolder = el('<div style="margin-top:8px"></div>');
@@ -2113,20 +2114,70 @@
     panel.appendChild(toggleBtn);
     panel.appendChild(body);
 
+    function renderCentersList(list, checkedBefore) {
+      centersList.innerHTML = list.length
+        ? list.map(function (c) {
+            return '<label class="cc-cp-center-row"><input type="checkbox" class="cc-cp-center" value="' + esc(c) + '"' + (checkedBefore.has(c) ? " checked" : "") + '> ' + esc(c) + '</label>';
+          }).join("")
+        : '<div class="cc-empty">Ничего не найдено — ни среди Центров продаж, ни среди партнёров.</div>';
+    }
+
+    // Единый поиск (Дима, 2026-09-06): вводишь название ЦП ИЛИ имя партнёра в одно поле.
+    // Сначала прямые совпадения по названию ЦП, ЗАТЕМ добавляем ЦП тех партнёров, чьё имя
+    // тоже совпало с термином (обратная связь через salesCentersForPartnerName) -- список
+    // ЦП ниже сужается до объединения обоих источников. Если после этого остался РОВНО один
+    // релевантный ЦП -- дальше можно решить однозначно, поэтому автоматически отмечаем его
+    // и сразу показываем партнёров (без лишнего клика). Если ЦП несколько -- решить
+    // однозначно нельзя, оставляем выбор человеку (отмечает нужный сам, жмёт "Показать").
+    function resetPreviewPlaceholder() {
+      previewHolder.innerHTML = '<div class="stat-label">Отметь хотя бы один Центр продаж выше.</div>';
+    }
+
     function renderCenters() {
       var term = centerSearch.value.trim().toLowerCase();
       var checkedBefore = new Set(Array.from(centersList.querySelectorAll("input:checked")).map(function (cb) { return cb.value; }));
-      var filtered = ccSearchFilter(allCenters, term);
-      centersList.innerHTML = filtered.length
-        ? filtered.map(function (c) {
-            return '<label class="cc-cp-center-row"><input type="checkbox" class="cc-cp-center" value="' + esc(c) + '"' + (checkedBefore.has(c) ? " checked" : "") + '> ' + esc(c) + '</label>';
-          }).join("")
-        : '<div class="cc-empty">Ничего не найдено</div>';
+
+      if (!term) {
+        renderCentersList(allCenters, checkedBefore);
+        // Сбрасываем превью -- список ЦП только что целиком пересобран, любое старое превью
+        // относится к чекбоксам, которых уже нет в DOM (иначе "зависшее" превью от
+        // предыдущего поиска остаётся видно, будто всё ещё актуально -- поймано тестом,
+        // 2026-09-06).
+        resetPreviewPlaceholder();
+        return;
+      }
+
+      var directCenters = ccSearchFilter(allCenters, term);
+      var matchingPartners = ccSearchFilter(allPartnerNames, term);
+      var relevantSet = new Set(directCenters);
+      matchingPartners.forEach(function (pn) {
+        ctx.M.salesCentersForPartnerName(model, pn).forEach(function (c) { relevantSet.add(c); });
+      });
+      var relevant = Array.from(relevantSet);
+      renderCentersList(relevant, checkedBefore);
+
+      if (relevant.length === 1) {
+        var onlyCb = centersList.querySelector(".cc-cp-center");
+        if (onlyCb) {
+          onlyCb.checked = true;
+          // Префилл поиска партнёра внутри превью -- ТОЛЬКО если совпадение реально пришло
+          // через имя партнёра (иначе термин -- название ЦП, фильтровать им список имён
+          // партнёров бессмысленно, покажет "ничего не найдено" по ошибке).
+          renderPreview(matchingPartners.length > 0 ? term : null);
+        } else {
+          resetPreviewPlaceholder();
+        }
+      } else {
+        // Несколько ЦП (или ноль) -- решить однозначно нельзя, выбор за человеком. Старое
+        // превью (если было от предыдущего однозначного поиска) тоже сбрасываем -- тот
+        // набор чекбоксов уже не существует в текущем списке.
+        resetPreviewPlaceholder();
+      }
     }
     renderCenters();
     centerSearch.addEventListener("input", renderCenters);
 
-    function renderPreview() {
+    function renderPreview(presetPartnerTerm) {
       var selected = Array.from(centersList.querySelectorAll(".cc-cp-center:checked")).map(function (cb) { return cb.value; });
       if (!selected.length) {
         previewHolder.innerHTML = '<div class="stat-label">Отметь хотя бы один Центр продаж выше.</div>';
@@ -2139,7 +2190,8 @@
 
       previewHolder.innerHTML =
         '<div class="stat-label cc-cp-count" style="margin-bottom:6px"></div>' +
-        '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-only-free" checked> Показать только свободных (скрыть закреплённых за другими каналами)</label>' +
+        '<input type="text" class="cc-search cc-cp-partner-search" placeholder="поиск партнёра в списке…" style="margin-bottom:6px">' +
+        '<label class="cc-partner-row"><input type="checkbox" class="cc-cp-only-free"' + (presetPartnerTerm ? "" : " checked") + '> Показать только свободных (скрыть закреплённых за другими каналами)</label>' +
         '<div class="threshold-row" style="margin:4px 0 6px">' +
         '<button type="button" class="refresh-chart-btn cc-cp-select-all">Выделить всех</button>' +
         '<button type="button" class="refresh-chart-btn cc-cp-select-none">Убрать всех</button>' +
@@ -2150,8 +2202,14 @@
 
       var rowsHolder = previewHolder.querySelector(".cc-cp-rows");
       var onlyFreeCb = previewHolder.querySelector(".cc-cp-only-free");
+      var partnerSearch = previewHolder.querySelector(".cc-cp-partner-search");
       var countLabel = previewHolder.querySelector(".cc-cp-count");
       var renderedOnce = false;
+      // "только свободных" по умолчанию ВЫКЛЮЧЕНА, когда сюда пришли через поиск
+      // конкретного партнёра (Дима: "информация, за кем он сейчас закреплён") -- иначе
+      // найденный, но уже занятый другим каналом партнёр был бы молча скрыт тем же
+      // фильтром, который должен был помочь его найти.
+      if (presetPartnerTerm) partnerSearch.value = presetPartnerTerm;
 
       // "Свободный" (Дима, 2026-09-04) -- партнёр либо уже в ЭТОМ канале, либо в общем
       // catch-all "Партнёры" (никем целенаправленно не занят). Партнёр, закреплённый за
@@ -2161,10 +2219,15 @@
 
       function renderRows() {
         // Сохраняем текущие галочки НЕЗАВИСИМО от их источника (дефолт по eff или ручной
-        // клик) -- иначе переключение "только свободных" сбрасывало бы то, что уже
-        // отметил/снял пользователь до этого клика.
+        // клик) -- иначе переключение фильтров сбрасывало бы то, что уже отметил/снял
+        // пользователь до этого клика.
         var checkedBefore = new Set(Array.from(rowsHolder.querySelectorAll(".cc-cp-partner:checked")).map(function (cb) { return cb.dataset.partner; }));
+        var pTerm = partnerSearch.value.trim().toLowerCase();
         var visible = onlyFreeCb.checked ? allCandidates.filter(function (r) { return isFree(r.eff); }) : allCandidates;
+        if (pTerm) {
+          var byName = new Map(visible.map(function (r) { return [r.name, r]; }));
+          visible = ccSearchFilter(visible.map(function (r) { return r.name; }), pTerm).map(function (name) { return byName.get(name); });
+        }
         // Счётчик ДОЛЖЕН явно меняться при переключении фильтра (Дима, 2026-09-04: "нажимаю
         // на 'только свободных' -- ничего не меняется") -- раньше он писался один раз со
         // статичным общим числом, сам список фильтровался, но при небольшой разнице (1-2
@@ -2172,7 +2235,9 @@
         // явно при каждой перерисовке.
         var hiddenCount = allCandidates.length - visible.length;
         countLabel.textContent = "Партнёров с выбранным ЦП: " + fmtNum(allCandidates.length) +
-          (onlyFreeCb.checked ? " · показано свободных: " + fmtNum(visible.length) + (hiddenCount ? " · скрыто занятых другим каналом: " + fmtNum(hiddenCount) : "") : " · показаны все") +
+          (onlyFreeCb.checked ? " · показано свободных: " + fmtNum(visible.length) : " · показаны все, кроме отфильтрованных поиском") +
+          (pTerm ? " · сужено поиском «" + pTerm + "»" : "") +
+          (hiddenCount ? " · скрыто фильтрами: " + fmtNum(hiddenCount) : "") +
           " — отмеченные закрепятся за каналом «" + channelName + "» по кнопке ниже."; // textContent -- esc() тут не нужен, это не innerHTML
         rowsHolder.innerHTML = visible.length
           ? visible.map(function (r) {
@@ -2185,6 +2250,7 @@
       }
       renderRows();
       onlyFreeCb.addEventListener("change", renderRows);
+      partnerSearch.addEventListener("input", renderRows);
 
       previewHolder.querySelector(".cc-cp-select-all").addEventListener("click", function () {
         rowsHolder.querySelectorAll(".cc-cp-partner").forEach(function (cb) { cb.checked = true; });
@@ -2209,7 +2275,7 @@
         renderPreview();
       });
     }
-    previewBtn.addEventListener("click", renderPreview);
+    previewBtn.addEventListener("click", function () { renderPreview(); });
 
     toggleBtn.addEventListener("click", function () {
       body.classList.toggle("hidden");

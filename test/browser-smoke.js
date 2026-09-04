@@ -669,6 +669,93 @@ async function main() {
     console.log("ofd1c: OFD_1C_TEST_FILE не задан -- пропускаю проверку на реальном файле «Обмен с 1С» (не критично, не входит в репозиторий)");
   }
 
+  // Единый поиск ЦП/партнёр в панели "Массовое назначение по Центру продаж" (Дима,
+  // 2026-09-06). olyaNode использован раньше в файле, панель там уже открыта (.cc-cp-toggle
+  // кликнут выше) -- сбрасываем поиск на пустой перед новыми проверками, чтобы не тянуть
+  // состояние из более ранних "cp:" тестов.
+  const cpSearchInput = olyaNode.querySelector(".cc-cp-search");
+  cpSearchInput.value = "";
+  cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+
+  // Ищем РЕАЛЬНОГО партнёра с ровно одним ЦП, чей фрагмент имени не даёт неоднозначности
+  // (иначе relevant.length !== 1 и тест не про однозначный случай) -- та же логика, что и
+  // в самой панели (renderCenters), считаем независимо на реальных данных.
+  const allCentersUS = win.OFDMetrics.allSalesCentersSorted(model);
+  const allPartnersUS = win.OFDMetrics.allPartnerNamesSorted(model);
+  let onePartner = null, onePartnerCenter = null, onePartnerTerm = null;
+  for (const pn of allPartnersUS) {
+    const centers = win.OFDMetrics.salesCentersForPartnerName(model, pn);
+    if (centers.length !== 1) continue;
+    const term = pn.toLowerCase().slice(0, Math.min(pn.length, 15)).trim();
+    if (term.length < 5) continue;
+    const matchingPartners = allPartnersUS.filter((n) => n.toLowerCase().includes(term));
+    const relevantCenters = new Set(allCentersUS.filter((c) => c.toLowerCase().includes(term)));
+    matchingPartners.forEach((n) => win.OFDMetrics.salesCentersForPartnerName(model, n).forEach((c) => relevantCenters.add(c)));
+    if (relevantCenters.size === 1) { onePartner = pn; onePartnerCenter = centers[0]; onePartnerTerm = term; break; }
+  }
+  console.log("cp-search: нашёлся однозначный партнёр-кандидат для теста:", onePartner ? "OK" : "FAIL", onePartner);
+  if (!onePartner) ok = false;
+
+  if (onePartner) {
+    cpSearchInput.value = onePartnerTerm;
+    cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+
+    const centerCbsAfter = olyaNode.querySelectorAll(".cc-cp-center");
+    const onlyOneCenter = centerCbsAfter.length === 1 && centerCbsAfter[0].value === onePartnerCenter && centerCbsAfter[0].checked;
+    console.log("cp-search: сузило список ЦП до одного (того, где реально сидит партнёр) и отметило его:", onlyOneCenter ? "OK" : "FAIL", centerCbsAfter.length, Array.from(centerCbsAfter).map((cb) => cb.value));
+    if (!onlyOneCenter) ok = false;
+
+    const autoPartnerSearch = olyaNode.querySelector(".cc-cp-partner-search");
+    console.log("cp-search: автопоказ партнёров сработал без ручного клика по кнопке:", autoPartnerSearch ? "OK" : "FAIL");
+    if (!autoPartnerSearch) ok = false;
+
+    if (autoPartnerSearch) {
+      console.log("cp-search: поле поиска партнёра внутри превью предзаполнено тем же термином:", autoPartnerSearch.value === onePartnerTerm ? "OK" : "FAIL", autoPartnerSearch.value);
+      if (autoPartnerSearch.value !== onePartnerTerm) ok = false;
+
+      const onlyFreeAfterAuto = olyaNode.querySelector(".cc-cp-only-free");
+      console.log("cp-search: «только свободных» автоматически снята (не прячет занятого партнёра):", !onlyFreeAfterAuto.checked ? "OK" : "FAIL");
+      if (onlyFreeAfterAuto.checked) ok = false;
+
+      const foundRow = Array.from(olyaNode.querySelectorAll(".cc-cp-partner")).find((cb) => cb.dataset.partner === onePartner);
+      console.log("cp-search: искомый партнёр реально виден в результате:", foundRow ? "OK" : "FAIL", onePartner);
+      if (!foundRow) ok = false;
+    }
+  }
+
+  // Неоднозначный случай -- термин, совпадающий сразу с несколькими РАЗНЫМИ ЦП напрямую:
+  // список сужается, но НИЧЕГО не отмечается и партнёры не показываются сами -- выбор за
+  // человеком (Дима: "если несколько центров продаж -- кнопка показать партнеров
+  // автоматически не прожимается").
+  let ambiguousTerm = null;
+  outer: for (let i = 0; i < allCentersUS.length; i++) {
+    for (let len = 4; len <= 6; len++) {
+      const frag = allCentersUS[i].toLowerCase().slice(0, len);
+      const hits = allCentersUS.filter((c) => c.toLowerCase().includes(frag));
+      if (hits.length > 1) { ambiguousTerm = frag; break outer; }
+    }
+  }
+  console.log("cp-search: нашёлся неоднозначный термин-кандидат (совпадает с >1 ЦП напрямую):", ambiguousTerm ? "OK" : "FAIL", ambiguousTerm);
+  if (!ambiguousTerm) ok = false;
+
+  if (ambiguousTerm) {
+    cpSearchInput.value = ambiguousTerm;
+    cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+    const centerCbsAmbig = olyaNode.querySelectorAll(".cc-cp-center");
+    const noneChecked = Array.from(centerCbsAmbig).every((cb) => !cb.checked);
+    console.log("cp-search: несколько ЦП -- список сужен, но ничего не отмечено само:", centerCbsAmbig.length > 1 && noneChecked ? "OK" : "FAIL", centerCbsAmbig.length);
+    if (!(centerCbsAmbig.length > 1 && noneChecked)) ok = false;
+    console.log("cp-search: несколько ЦП -- партнёры сами не показались (кнопку не нажали):", !olyaNode.querySelector(".cc-cp-rows") ? "OK" : "FAIL");
+    if (olyaNode.querySelector(".cc-cp-rows")) ok = false;
+  }
+
+  // Пустой поиск -- полный список ЦП возвращается как есть.
+  cpSearchInput.value = "";
+  cpSearchInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+  const centerCbsReset = olyaNode.querySelectorAll(".cc-cp-center");
+  console.log("cp-search: пустой поиск возвращает полный список ЦП:", centerCbsReset.length === allCentersUS.length ? "OK" : "FAIL", centerCbsReset.length, "vs", allCentersUS.length);
+  if (centerCbsReset.length !== allCentersUS.length) ok = false;
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 

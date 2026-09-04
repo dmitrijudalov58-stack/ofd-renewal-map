@@ -838,6 +838,29 @@
     return Array.from(names).sort();
   }
 
+  // Все реальные значения "Партнёр" (Дима, 2026-09-06: единый поиск ЦП/партнёр в панели
+  // "Расчётов" -- нужен полный список имён партнёров, чтобы искать по ним, не только среди
+  // уже кому-то назначенных). НЕ фильтруется по активности -- тот же принцип, что у
+  // partnersBySalesCenters выше.
+  function allPartnerNamesSorted(model) {
+    var set = new Set();
+    model.kassas.forEach(function (k) { if (k.partner) set.add(k.partner); });
+    model.reserveRows.forEach(function (r) { if (r.partner) set.add(r.partner); });
+    var arr = Array.from(set);
+    arr.sort();
+    return arr;
+  }
+
+  // Обратная операция к partnersBySalesCenters -- все ЦП, к которым РЕАЛЬНО относится
+  // конкретный партнёр (по его кассам/резерву). Нужна, чтобы при поиске партнёра в панели
+  // "по ЦП" сузить список показанных Центров продаж до тех, где он реально встречается.
+  function salesCentersForPartnerName(model, partnerName) {
+    var set = new Set();
+    model.kassas.forEach(function (k) { if (k.partner === partnerName && k.salesCenter) set.add(k.salesCenter); });
+    model.reserveRows.forEach(function (r) { if (r.partner === partnerName && r.salesCenter) set.add(r.salesCenter); });
+    return Array.from(set);
+  }
+
   // партнёры с указанием канала — для фастфильтра и экспорта на виджете "Разбивка по каналам"
   function computePartnersByChannel(model, asOf, opts) {
     var partnerChannel = new Map();
@@ -1576,6 +1599,8 @@
     allTariffsSorted: allTariffsSorted,
     allSalesCentersSorted: allSalesCentersSorted,
     partnersBySalesCenters: partnersBySalesCenters,
+    allPartnerNamesSorted: allPartnerNamesSorted,
+    salesCentersForPartnerName: salesCentersForPartnerName,
     classifyChannel: classifyChannel,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,
