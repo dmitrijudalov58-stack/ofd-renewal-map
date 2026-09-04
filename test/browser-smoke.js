@@ -494,6 +494,140 @@ async function main() {
   console.log("custom: удаление борда освобождает партнёра:", overridesAfterRemove[customPartnerName] === "" ? "OK" : "FAIL");
   if (overridesAfterRemove[customPartnerName] !== "") ok = false;
 
+  // restoredNode (строка выше, "восстановленный борд") -- ОТДЕЛЬНЫЙ инстанс с тем же именем,
+  // customNode.remove-btn его не трогает -- без явного удаления остаётся висеть на холсте до
+  // конца файла и ломает следующий блок (cc-server-sync ожидает холст БЕЗ ни одного
+  // custom-борда, чтобы проверить, что бутстрап создаёт его сам).
+  restoredNode.querySelector(".remove-btn").click();
+
+  // 10.5) Кросс-девайс sync custom-каналов (Дима, 2026-09-04): кнопка "Сохранить" на
+  // custom-борде теперь шлёт вместе с overrides ещё и имена custom-каналов, а на "новом
+  // устройстве" (тут -- холст без единого custom-борда) ccBootstrapCustomChannelsFromServer
+  // пересоздаёт САМ БОРД (виджет с правильным именем). В jsdom нет реального fetch/сервера --
+  // мокаем /api/overrides простым in-memory KV, тем же контрактом, что и worker.js.
+  //
+  // Важная граница теста: состав партнёров (ccOverrides) синхронизирует ОТДЕЛЬНЫЙ, уже
+  // существующий механизм ccBootstrapFromServer -- он выполняется РОВНО ОДИН РАЗ при
+  // инициализации модуля и ТОЛЬКО если ccOverrides в этом браузере пуст (на настоящем свежем
+  // устройстве -- да; в этом тесте, в той же сессии, ccOverrides уже полон записей от всех
+  // предыдущих блоков -- значит он не сработает повторно). Плюс click по "✕" виджета А ниже
+  // явно ОСВОБОЖДАЕТ его партнёров (существующее поведение onRemove, проверено отдельно в
+  // "custom: удаление борда освобождает партнёра") -- на настоящем свежем устройстве этого
+  // не происходит вовсе (там ccOverrides просто СТАРТУЕТ пустым и заполняется через
+  // ccBootstrapFromServer, а не "освобождается" после ранее не существовавшего борда).
+  // Поэтому ниже проверяем именно то, что меняет ЭТА задача -- пересоздание САМОГО борда с
+  // верным именем, а не состав партнёров (та синхронизация не менялась и тут не тестируется).
+  const fakeKvStore = {};
+  win.fetch = function (url, opts) {
+    if (url !== "/api/overrides") return Promise.reject(new Error("unexpected url " + url));
+    if (!opts || !opts.method || opts.method === "GET") {
+      const raw = fakeKvStore.data;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(raw ? JSON.parse(raw) : { overrides: null, customChannels: [] }) });
+    }
+    if (opts.method === "POST") {
+      const body = JSON.parse(opts.body);
+      fakeKvStore.data = JSON.stringify({ v: 2, overrides: body.overrides, customChannels: body.customChannels || [] });
+      fakeKvStore.lastBody = body;
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, savedAt: Date.now() }) });
+    }
+    return Promise.reject(new Error("unexpected method"));
+  };
+
+  win.OFDCanvas.addWidget("b5-revenue-custom");
+  const syncNodesBefore = win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]');
+  const syncNode = syncNodesBefore[syncNodesBefore.length - 1];
+  const SYNC_NAME = "Серверный канал " + Math.random().toString(36).slice(2, 6);
+  const syncNameInput = syncNode.querySelector(".cc-name-input");
+  syncNameInput.value = SYNC_NAME;
+  syncNameInput.dispatchEvent(new win.Event("change", { bubbles: true }));
+  syncNode.querySelector(".cc-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const syncFirstCb = syncNode.querySelector('.cc-partner-row input[type="checkbox"]');
+  const syncPartnerName = syncFirstCb.dataset.partner;
+  syncFirstCb.checked = true;
+  syncFirstCb.dispatchEvent(new win.Event("change", { bubbles: true }));
+
+  syncNode.querySelector(".cc-server-save").dispatchEvent(new win.Event("click", { bubbles: true }));
+  // ccServerSave асинхронный (fetch().then) -- ждём несколько микротасков, пока mock резолвится.
+  await new Promise((r) => setTimeout(r, 0)); // ждём реальный macrotask -- гарантированно дожидается ВСЕХ микротасков цепочки fetch().then().then(), в отличие от фиксированного числа await Promise.resolve()
+
+  const sentCustomChannels = (fakeKvStore.lastBody && fakeKvStore.lastBody.customChannels) || [];
+  console.log("cc-server-sync: «Сохранить» шлёт имя custom-канала на сервер:", sentCustomChannels.includes(SYNC_NAME) ? "OK" : "FAIL", sentCustomChannels);
+  if (!sentCustomChannels.includes(SYNC_NAME)) ok = false;
+
+  const sentOverrides = (fakeKvStore.lastBody && fakeKvStore.lastBody.overrides) || {};
+  console.log("cc-server-sync: «Сохранить» шлёт назначение партнёра вместе с overrides:", sentOverrides[syncPartnerName] === SYNC_NAME ? "OK" : "FAIL");
+  if (sentOverrides[syncPartnerName] !== SYNC_NAME) ok = false;
+
+  // "Новое устройство" -- убираем борд с холста (эмулирует пустой canvas на другом браузере).
+  // Проверяем через ccCustomChannelNames (module-state, очищается синхронно в onRemove), не
+  // через DOM -- GridStack (animate:true) может держать удалённый узел в DOM ещё некоторое
+  // время после клика, а именно на DOM полагается только сама бизнес-логика hasLocalCustom.
+  // Узлы ДО удаления/бутстрапа -- нужны ниже, чтобы отличить НАСТОЯЩИЙ новый борд от
+  // "зомби"-узла syncNode: GridStack (animate:true) может держать DOM-узел удалённого
+  // виджета в дереве ещё некоторое время, а его .cc-name-input.value НЕ обновляется при
+  // удалении (статичен с момента рендера) -- поиск по совпадению ИМЕНИ находил зомби вместо
+  // нового борда, и клик по его toggle перерисовывал список по уже очищенному override
+  // (партнёр показывался неотмеченным) -- ложный FAIL. Ищем по разнице множеств узлов, не по имени.
+  const nodesBeforeRemoveAndBootstrap = new Set(win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]'));
+  syncNode.querySelector(".remove-btn").click();
+  const localCustomBeforeBootstrap = win.OFDWidgets.ccCustomChannelNames();
+  console.log("cc-server-sync: перед бутстрапом локально нет ни одного custom-канала:", localCustomBeforeBootstrap.length === 0 ? "OK" : "FAIL", localCustomBeforeBootstrap);
+  if (localCustomBeforeBootstrap.length !== 0) ok = false;
+
+  win.OFDWidgets.ccBootstrapCustomChannelsFromServer();
+  await new Promise((r) => setTimeout(r, 0)); // ждём реальный macrotask -- гарантированно дожидается ВСЕХ микротасков цепочки fetch().then().then(), в отличие от фиксированного числа await Promise.resolve()
+
+  const localCustomAfterBootstrap = win.OFDWidgets.ccCustomChannelNames();
+  console.log("cc-server-sync: бутстрап пересоздаёт custom-канал с сохранённым именем:", localCustomAfterBootstrap.includes(SYNC_NAME) ? "OK" : "FAIL", localCustomAfterBootstrap);
+  if (!localCustomAfterBootstrap.includes(SYNC_NAME)) ok = false;
+
+  const bootstrappedNode = Array.from(win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]')).find((n) => !nodesBeforeRemoveAndBootstrap.has(n));
+  console.log("cc-server-sync: пересозданный борд -- настоящий новый DOM-узел (не «зомби» удалённого GridStack-анимацией):", !!bootstrappedNode ? "OK" : "FAIL");
+  if (!bootstrappedNode) ok = false;
+  const bootstrappedNameOk = bootstrappedNode && bootstrappedNode.querySelector(".cc-name-input") && bootstrappedNode.querySelector(".cc-name-input").value === SYNC_NAME;
+  console.log("cc-server-sync: пересозданный борд сразу показывает аккордеон партнёров (не плейсхолдер «введи имя»):", bootstrappedNode && bootstrappedNode.querySelector(".cc-toggle") ? "OK" : "FAIL");
+  if (!bootstrappedNode || !bootstrappedNode.querySelector(".cc-toggle")) ok = false;
+  if (!bootstrappedNameOk) ok = false; // не отдельный лог -- страхует ту же проверку, что уже покрыта localCustomAfterBootstrap выше
+
+  // повторный бутстрап при уже существующем борде не должен плодить дубли (по составу имён,
+  // не по DOM-count -- см. комментарий выше про анимацию удаления)
+  win.OFDWidgets.ccBootstrapCustomChannelsFromServer();
+  await new Promise((r) => setTimeout(r, 0)); // ждём реальный macrotask -- гарантированно дожидается ВСЕХ микротасков цепочки fetch().then().then(), в отличие от фиксированного числа await Promise.resolve()
+  const localCustomAfterSecondBootstrap = win.OFDWidgets.ccCustomChannelNames();
+  const secondBootstrapOk = localCustomAfterSecondBootstrap.length === 1 && localCustomAfterSecondBootstrap[0] === SYNC_NAME;
+  console.log("cc-server-sync: повторный бутстрап не дублирует custom-канал:", secondBootstrapOk ? "OK" : "FAIL", localCustomAfterSecondBootstrap);
+  if (!secondBootstrapOk) ok = false;
+
+  // откат -- тестовые борды и override не должны мешать тестам ниже. Кликаем remove на КАЖДОМ
+  // узле с этим именем (не только на последнем) -- на случай "зомби"-узла от предыдущего клика,
+  // который анимация ещё не убрала физически из DOM.
+  win.document.querySelectorAll('[data-widget-id="b5-revenue-custom"]').forEach((n) => {
+    const nameInput = n.querySelector(".cc-name-input");
+    if (nameInput && nameInput.value === SYNC_NAME) {
+      const btn = n.querySelector(".remove-btn");
+      if (btn) btn.click();
+    }
+  });
+  delete win.fetch;
+
+  // 10.6) Select-all/none для списка ЦП в едином поиске (Дима, 2026-09-04): "чтобы массово
+  // закрепить всех ЦП и партнеров в отдельный канал". Работают на текущем (отфильтрованном)
+  // списке .cc-cp-center, как уже существующие select-all/none для партнёров. Панель уже
+  // открыта (.cc-cp-toggle клик на 296-й строке этого теста) -- повторный клик закрыл бы её.
+  const cpCenterCheckboxes = Array.from(olyaNode.querySelectorAll(".cc-cp-center"));
+  console.log("cc-cp-center: чекбоксы ЦП есть на панели:", cpCenterCheckboxes.length > 0 ? "OK" : "FAIL", cpCenterCheckboxes.length);
+  if (!cpCenterCheckboxes.length) ok = false;
+
+  olyaNode.querySelector(".cc-cp-center-select-all").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const allCentersChecked = Array.from(olyaNode.querySelectorAll(".cc-cp-center")).every((cb) => cb.checked);
+  console.log("cc-cp-center: «Выделить всех» отмечает все видимые ЦП:", allCentersChecked ? "OK" : "FAIL");
+  if (!allCentersChecked) ok = false;
+
+  olyaNode.querySelector(".cc-cp-center-select-none").dispatchEvent(new win.Event("click", { bubbles: true }));
+  const noCentersChecked = Array.from(olyaNode.querySelectorAll(".cc-cp-center")).every((cb) => !cb.checked);
+  console.log("cc-cp-center: «Убрать всех» снимает все видимые ЦП:", noCentersChecked ? "OK" : "FAIL");
+  if (!noCentersChecked) ok = false;
+
   // 11) "Топ оттока по партнёрам" (b3-churn-top, 2026-08-20): новая колонка "0-30 дней
   // (грейс)" + клик по партнёру -> drill-down таблица касс этого партнёра, оканчивающихся
   // в текущем месяце (РНМ/ИНН/Наименование/Тариф/Дата окончания).

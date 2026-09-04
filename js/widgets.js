@@ -1970,10 +1970,15 @@
 
   function ccServerSave(onDone) {
     if (typeof fetch !== "function") { onDone && onDone(false, "недоступно в этом окружении"); return; }
+    // Вместе с overrides шлём имена custom-каналов (ccCustomNames определена ниже по файлу --
+    // безопасно, обращение происходит только в момент вызова этой функции, не при её
+    // объявлении) -- нужны бутстрапу на новом устройстве, чтобы пересоздать сами борды,
+    // не только состав партнёров (Дима, 2026-09-04: "борд сохраняется и будет доступен всегда").
+    var customChannels = Array.from(new Set(Array.from(ccCustomNames.values()).filter(function (n) { return n; })));
     fetch(CC_API_OVERRIDES_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(ccOverrides),
+      body: JSON.stringify({ overrides: ccOverrides, customChannels: customChannels }),
     }).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
@@ -2001,6 +2006,35 @@
     }).catch(function () { /* нет сети/сервер недоступен -- работаем локально, не критично */ });
   }
   ccBootstrapFromServer();
+
+  // Пересоздаёт custom-борды на холсте по именам, сохранённым на сервере (Дима, 2026-09-04:
+  // "борд сохраняется у пользователя и будет доступен всегда") -- в отличие от
+  // ccBootstrapFromServer (партнёры, вызывается сразу при загрузке модуля), эту функцию
+  // нужно звать ПОСЛЕ восстановления локальной раскладки (app.js, после
+  // OFDCanvas.loadSavedLayout()) -- только тогда достоверно известно, есть ли уже на холсте
+  // ЭТОГО браузера свои custom-борды (ccCustomNames заполняется через applyPersistState
+  // именно во время loadSavedLayout). Если есть хоть один непустой -- ничего не делаем, не
+  // дублируем; иначе создаём по одному борду на каждое сохранённое имя, партнёры подтянутся
+  // сами (они уже в ccOverrides из ccBootstrapFromServer/локального localStorage).
+  function ccBootstrapCustomChannelsFromServer() {
+    if (typeof fetch !== "function") return;
+    if (!root.OFDCanvas || typeof root.OFDCanvas.addWidget !== "function") return;
+    var hasLocalCustom = Array.from(ccCustomNames.values()).some(function (n) { return n; });
+    if (hasLocalCustom) return;
+    fetch(CC_API_OVERRIDES_URL).then(function (res) {
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    }).then(function (data) {
+      var names = (data && Array.isArray(data.customChannels)) ? data.customChannels : [];
+      var uniqueNames = Array.from(new Set(names.filter(function (n) { return n && typeof n === "string"; })));
+      if (!uniqueNames.length) return;
+      // Повторная проверка -- пока шёл сетевой запрос, пользователь мог САМ создать custom-борд.
+      if (Array.from(ccCustomNames.values()).some(function (n) { return n; })) return;
+      uniqueNames.forEach(function (name) {
+        root.OFDCanvas.addWidget("b5-revenue-custom", null, null, null, null, name);
+      });
+    }).catch(function () { /* нет сети/сервер недоступен -- борд просто не появится, не критично */ });
+  }
 
   // Live-sync между бордами каналов на холсте -- их ровно 3 (фиксированный набор, не
   // произвольное N), поэтому реестр по имени канала, не по instanceId. Каждый render()
@@ -2133,10 +2167,21 @@
     var toggleBtn = el('<button type="button" class="cc-toggle cc-cp-toggle">▸ Массовое назначение по Центру продаж</button>');
     var body = el('<div class="cc-body cc-cp-body hidden"></div>');
     var centerSearch = el('<input type="text" class="cc-search cc-cp-search" placeholder="поиск ЦП или партнёра…">');
+    // Массовое выделение НАЙДЕННЫХ ЦП (Дима, 2026-09-04: "чтобы массово закрепить всех ЦП и
+    // партнеров в отдельный канал -- потом скорее всего уберем"). Работает на текущем
+    // (уже отфильтрованном поиском) списке centersList, как и cc-select-all/cc-cp-select-all
+    // выше для партнёров -- тот же паттерн.
+    var centerBulkRow = el(
+      '<div class="threshold-row" style="margin:4px 0 6px">' +
+      '<button type="button" class="refresh-chart-btn cc-cp-center-select-all">Выделить всех</button>' +
+      '<button type="button" class="refresh-chart-btn cc-cp-center-select-none">Убрать всех</button>' +
+      '</div>'
+    );
     var centersList = el('<div class="cc-list"></div>');
     var previewBtn = el('<button type="button" class="refresh-chart-btn cc-cp-preview-btn" style="margin-top:6px">Показать партнёров</button>');
     var previewHolder = el('<div style="margin-top:8px"></div>');
     body.appendChild(centerSearch);
+    body.appendChild(centerBulkRow);
     body.appendChild(centersList);
     body.appendChild(previewBtn);
     body.appendChild(previewHolder);
@@ -2205,6 +2250,12 @@
     }
     renderCenters();
     centerSearch.addEventListener("input", renderCenters);
+    centerBulkRow.querySelector(".cc-cp-center-select-all").addEventListener("click", function () {
+      centersList.querySelectorAll(".cc-cp-center").forEach(function (cb) { cb.checked = true; });
+    });
+    centerBulkRow.querySelector(".cc-cp-center-select-none").addEventListener("click", function () {
+      centersList.querySelectorAll(".cc-cp-center").forEach(function (cb) { cb.checked = false; });
+    });
 
     function renderPreview(presetPartnerTerm) {
       var selected = Array.from(centersList.querySelectorAll(".cc-cp-center:checked")).map(function (cb) { return cb.value; });
@@ -4035,6 +4086,13 @@
     ofd1cClientsNewInMonth: ofd1cClientsNewInMonth,
     ofd1cClientsChurnedInMonth: ofd1cClientsChurnedInMonth,
     ofd1cClientsReturnedInMonth: ofd1cClientsReturnedInMonth,
+    ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
+    // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
+    // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без
+    // хождения через DOM: GridStack (animate:true) не убирает узел удалённого виджета из DOM
+    // синхронно с кликом на "✕" -- querySelectorAll сразу после клика может ещё видеть
+    // "зомби"-узел, хотя module-level состояние уже корректно очищено.
+    ccCustomChannelNames: function () { return Array.from(ccCustomNames.values()).filter(function (n) { return n; }); },
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.OFDWidgets = api;

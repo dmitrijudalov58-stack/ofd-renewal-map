@@ -263,6 +263,10 @@
             window.OFDCanvas.addWidget(id);
           });
         }
+        // Кросс-девайс восстановление custom-каналов (Дима, 2026-09-04) -- строго ПОСЛЕ
+        // loadSavedLayout: только тут уже известно, есть ли на холсте ЭТОГО браузера свои
+        // custom-борды (иначе рискуем продублировать их с сервером).
+        window.OFDWidgets.ccBootstrapCustomChannelsFromServer();
         if (layoutResult.converted) {
           layoutConvertedBanner.classList.remove("hidden");
           layoutConvertedBanner.textContent = "↻ Раскладка перенесена на новую сетку (миграция на GridStack) — проверь расположение виджетов, при необходимости подвинь/доресайзь и сохрани заново.";

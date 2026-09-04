@@ -243,16 +243,31 @@ async function handleApi(request, env, url) {
 
   if (url.pathname === "/api/overrides" && request.method === "GET") {
     const raw = await env.OFD_USERS.get("overrides:" + auth.username);
-    return Response.json({ overrides: raw ? JSON.parse(raw) : null });
+    if (!raw) return Response.json({ overrides: null, customChannels: [] });
+    const parsed = JSON.parse(raw);
+    // v2 (Дима, 2026-09-04): помимо overrides храним ещё имена custom-каналов (см. POST
+    // ниже) -- старые записи (до этого поля) остаются плоским объектом partner->channel
+    // без обёртки {v:2,...}, читаем их как раньше, просто без customChannels.
+    if (parsed && typeof parsed === "object" && parsed.v === 2) {
+      return Response.json({ overrides: parsed.overrides || {}, customChannels: Array.isArray(parsed.customChannels) ? parsed.customChannels : [] });
+    }
+    return Response.json({ overrides: parsed, customChannels: [] });
   }
 
   if (url.pathname === "/api/overrides" && request.method === "POST") {
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== "object" || Array.isArray(body)) return new Response("bad request", { status: 400 });
-    for (const key of Object.keys(body)) {
-      if (typeof body[key] !== "string") return new Response("bad request", { status: 400 });
+    const overrides = body.overrides;
+    const customChannels = body.customChannels;
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return new Response("bad request", { status: 400 });
+    for (const key of Object.keys(overrides)) {
+      if (typeof overrides[key] !== "string") return new Response("bad request", { status: 400 });
     }
-    const json = JSON.stringify(body);
+    if (customChannels !== undefined) {
+      if (!Array.isArray(customChannels) || customChannels.some((c) => typeof c !== "string")) return new Response("bad request", { status: 400 });
+    }
+    const payload = { v: 2, overrides: overrides, customChannels: customChannels || [] };
+    const json = JSON.stringify(payload);
     if (json.length > OVERRIDES_MAX_BYTES) return new Response("payload too large", { status: 413 });
     await env.OFD_USERS.put("overrides:" + auth.username, json);
     return Response.json({ ok: true, savedAt: Date.now() });
