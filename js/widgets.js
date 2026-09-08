@@ -398,7 +398,12 @@
   // компромисс, что и в остальных таблицах с датами). На экране показываем первые `limit`
   // строк отфильтрованного списка (полный список export'ом не покрыт -- это раскрытие
   // внутри виджета, не отдельная таблица), фильтры сужают выборку до нужных строк.
-  function renderDrillTable(container, list, columns, filterFields, entityLabel, monthLabel, limit) {
+  // onRowClick(innString) -- опционально (2026-09-07, борд "Прирост базы Обмен с 1С"):
+  // клик по строке передаёт значение ПЕРВОЙ колонки как есть (везде это ИНН -- ключ,
+  // сортировка makeSortableTable переставляет DOM, поэтому берём textContent ячейки, не
+  // индекс исходного массива, тот же приём, что и в остальных кликабельных таблицах файла).
+  // Не ломает других вызывающих -- параметр не передаётся нигде, кроме нового кода.
+  function renderDrillTable(container, list, columns, filterFields, entityLabel, monthLabel, limit, onRowClick) {
     var controls = filterFields.length ? el(
       '<div class="threshold-row" style="margin-top:8px">' +
       filterFields.map(function (f, i) {
@@ -440,8 +445,15 @@
         });
       });
       var scrollWrap = el('<div class="expand-scroll"></div>');
-      scrollWrap.appendChild(makeSortableTable(headers, rows));
+      var tableWrap = makeSortableTable(headers, rows);
+      scrollWrap.appendChild(tableWrap);
       tableHolder.appendChild(scrollWrap);
+      if (onRowClick) {
+        tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () { onRowClick(tr.children[0].textContent); });
+        });
+      }
     }
 
     if (controls) controls.querySelectorAll(".drill-f").forEach(function (inp) { inp.addEventListener("input", apply); });
@@ -488,6 +500,11 @@
 
     var tableHolder = el('<div style="margin-top:10px"></div>');
     var expandArea = el('<div style="margin-top:10px"></div>');
+    // cardHolder -- ТОЛЬКО когда задан opts.onRowClick (2026-09-07, "Прирост базы Обмен с
+    // 1С"): отдельная область ПОД раскрытой месячной таблицей для карточки конкретного
+    // клиента по клику на ИНН, не смешивается с самой таблицей (иначе следующий клик по
+    // другому месяцу стирал бы уже открытую карточку вместе с таблицей одним innerHTML="").
+    var cardHolder = opts.onRowClick ? el('<div style="margin-top:10px"></div>') : null;
     var rowsData = months.map(function (m, i) { return { label: MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(), month: m, count: counts[i] }; });
 
     function renderTable() {
@@ -502,7 +519,8 @@
             var r = rowsData.find(function (x) { return x.label === label; });
             if (!r) return;
             var list = drilldownFn(r.month);
-            renderDrillTable(expandArea, list, columns, filterFields, entityLabel, label, limit);
+            if (cardHolder) cardHolder.innerHTML = "";
+            renderDrillTable(expandArea, list, columns, filterFields, entityLabel, label, limit, opts.onRowClick ? function (inn) { opts.onRowClick(inn, cardHolder); } : undefined);
           });
         });
       }
@@ -512,6 +530,7 @@
 
     wrap.appendChild(tableHolder);
     wrap.appendChild(expandArea);
+    if (cardHolder) wrap.appendChild(cardHolder);
     if (drilldownFn) {
       wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по строке — список ' + entityLabel + ' за этот месяц</div>'));
       // "Скачать" -- полный список ЗА ВЕСЬ ПЕРИОД одним файлом (Дима, 2026-08-18), не
@@ -3879,15 +3898,23 @@
     });
   }
   // Раскрытия для вкладок -- ТЕ ЖЕ поля/ключи, что и DEFAULT_DRILL_COLUMNS/CLIENT_CHURN_COLUMNS
-  // основного "Прирост базы" (Дима: "все поля должны быть такими же") -- переиспользуем те
-  // же column-определения ниже в самом виджете.
+  // основного "Прирост базы" (Дима: "все поля должны быть такими же"), плюс отдельная
+  // колонка "последний тариф 1С" (Дима, 2026-09-07) -- срок в месяцах САМОЙ ПОЗДНЕЙ по дате
+  // начала записи обмена с 1С у этого клиента. Колонки — ниже, OFD1C_DRILL_COLUMNS/
+  // OFD1C_CHURN_COLUMNS, отдельные от общих (те используются и главным бордом ОФД).
+  function ofd1cLastTariffLabel(entry) {
+    var starts = entry.records.filter(function (r) { return r.tariffStart; });
+    if (!starts.length) return null;
+    var last = starts.reduce(function (a, b) { return b.tariffStart > a.tariffStart ? b : a; });
+    return last.months != null ? last.months + " мес" : null;
+  }
   function ofd1cClientsNewInMonth(model, monthDate) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
     ofd1cMatchedEntries(model).forEach(function (e) {
       if (!e.appearance || e.appearance.getFullYear() !== y || e.appearance.getMonth() !== m) return;
       var c = e.client;
-      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: e.appearance, leftAt: null });
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: e.appearance, leftAt: null, lastTariff: ofd1cLastTariffLabel(e) });
     });
     return out;
   }
@@ -3901,7 +3928,7 @@
       if (daysSinceEnd <= OFD1C_CHURN_GRACE_DAYS) return;
       if (ofd1cChurnStatus(e, asOf) !== "churned") return;
       var c = e.client;
-      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: end, activeKassas: c.kassas.length });
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: end, activeKassas: c.kassas.length, lastTariff: ofd1cLastTariffLabel(e) });
     });
     return out;
   }
@@ -3912,9 +3939,50 @@
       var ri = ofd1cFindReturn(e.intervals);
       if (!ri || ri.tag !== "возвращённый" || ri.returnDate.getFullYear() !== y || ri.returnDate.getMonth() !== m) return;
       var c = e.client;
-      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: ri.returnDate, leftAt: ri.gapEnd });
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: ri.returnDate, leftAt: ri.gapEnd, lastTariff: ofd1cLastTariffLabel(e) });
     });
     return out;
+  }
+  var OFD1C_DRILL_COLUMNS = DEFAULT_DRILL_COLUMNS.concat([{ label: "Последний тариф 1С", key: "lastTariff" }]);
+  var OFD1C_CHURN_COLUMNS = CLIENT_CHURN_COLUMNS.concat([{ label: "Последний тариф 1С", key: "lastTariff" }]);
+
+  // Клик по ИНН в раскрытой таблице вкладок Новые/Отток/Возвращённые (Дима, 2026-09-07) --
+  // переиспользуем ту же карточку клиента, что уже есть в "Портрет клиента" (см.
+  // ofd1cRenderClientCard ниже и её вызов из WIDGETS["b8-1c-summary"]).
+  function ofd1cShowClientCard(model, ctx, inn, container) {
+    var bucket = ofd1cMatchClients(model).filter(function (x) { return x.inn === inn; })[0];
+    if (!bucket || !bucket.client) { container.innerHTML = ""; return; }
+    ofd1cRenderClientCard(container, bucket, ctx);
+  }
+
+  // Карточка клиента: таблица касс ОФД (РНМ) + таблица записей обмена с 1С (заводской
+  // номер) -- вынесена из "Портрет клиента" (2026-09-07), переиспользуется также по клику
+  // на ИНН в "Прирост базы (Обмен с 1С)" (см. ofd1cShowClientCard выше). m = элемент
+  // ofd1cMatchClients() с m.client != null (ИНН сопоставлен с основной базой ОФД).
+  function ofd1cRenderClientCard(container, m, ctx) {
+    var c = m.client;
+    container.innerHTML = "";
+    container.appendChild(el('<div style="font-size:13px;border-top:2px solid var(--ink);padding-top:10px;margin-top:4px"><b>' + esc(c.org || m.inn) + '</b> · ИНН ' + esc(m.inn) + (c.partner ? ' · партнёр ' + esc(c.partner) : '') + '</div>'));
+
+    var kassaHeaders = [{ label: "РНМ" }, { label: "Тариф ОФД" }, { label: "Окончание кода ОФД" }, { label: "Статус" }];
+    var kassaRows = c.kassas.map(function (k) {
+      var alive = ctx.M.isKassaAlive(k, ctx.asOf, ctx.strict);
+      var deadline = ctx.M.kassaDeadline(k, ctx.asOf, ctx.strict);
+      return [k.rnm, k.tariff || "—", fmtDate(deadline), alive ? "действует" : "истёк"];
+    });
+    container.appendChild(el('<div class="stat-label" style="margin:8px 0 4px">Кассы на ОФД (' + fmtNum(c.kassas.length) + '):</div>'));
+    var kassaScroll = el('<div class="table-scroll"></div>');
+    kassaScroll.appendChild(makeSortableTable(kassaHeaders, kassaRows));
+    container.appendChild(kassaScroll);
+
+    var ofd1cHeaders = [{ label: "Заводской номер ККТ" }, { label: "Начало обмена 1С" }, { label: "Окончание обмена 1С" }, { label: "Мес.", num: true }];
+    var ofd1cRows = m.records.map(function (r) { return [r.kktSerial || "—", fmtDate(r.tariffStart), fmtDate(r.tariffEnd), r.months || "—"]; });
+    container.appendChild(el('<div class="stat-label" style="margin:12px 0 4px">Обмен с 1С (' + fmtNum(m.records.length) + ' записей):</div>'));
+    var ofd1cScroll = el('<div class="table-scroll"></div>');
+    ofd1cScroll.appendChild(makeSortableTable(ofd1cHeaders, ofd1cRows));
+    container.appendChild(ofd1cScroll);
+
+    container.appendChild(el('<div class="stat-label" style="margin-top:8px">⚠ Прямого соответствия «эта касса ↔ этот заводской номер» нет — в файле обмена с 1С нет РНМ, а в выгрузке ОФД нет заводского номера, общего идентификатора между системами не существует. Обе таблицы — про одного и того же клиента, но НЕ построчно связаны друг с другом.</div>'));
   }
 
   WIDGETS["b8-1c-growth"] = {
@@ -3963,21 +4031,26 @@
           return v;
         }
 
+        // onRowClick -- клик по ИНН в раскрытой таблице открывает карточку клиента (та же,
+        // что в "Портрет клиента"): кассы ОФД + записи 1С (Дима, 2026-09-07). Одинаково на
+        // всех трёх вкладках.
+        function onInnClick(inn, cardHolder) { ofd1cShowClientCard(model, ctx, inn, cardHolder); }
+
         function renderView() {
           var v = tabs.querySelector('input:checked').value;
           viewHolder.innerHTML = "";
           if (v === "cum") {
             viewHolder.appendChild(renderCumView());
           } else if (v === "new") {
-            viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ofd1cClientsNewInMonth(model, m); }, { activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — новые клиенты" }));
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ofd1cClientsNewInMonth(model, m); }, { columns: OFD1C_DRILL_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — новые клиенты", onRowClick: onInnClick }));
           } else if (v === "churn") {
-            viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ofd1cClientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — отток клиентов" }));
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ofd1cClientsChurnedInMonth(model, m, ctx.asOf); }, { columns: OFD1C_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — отток клиентов", onRowClick: onInnClick }));
           } else if (v === "returned") {
             if (!returnedSeries) {
               returnedSeries = ofd1cComputeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
               returnedActiveByMonth = ofd1cActiveCountsAtMonthEnds(model, returnedSeries.months, ctx);
             }
-            viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ofd1cClientsReturnedInMonth(model, m); }, { activeTotalByMonth: returnedActiveByMonth, exportTitle: "Прирост базы (Обмен с 1С) — возвращённые клиенты" }));
+            viewHolder.appendChild(monthlyCountBoard(returnedSeries.months, returnedSeries.countByMonth, "Возвращённых", "var(--s2)", function (m) { return ofd1cClientsReturnedInMonth(model, m); }, { columns: OFD1C_DRILL_COLUMNS, activeTotalByMonth: returnedActiveByMonth, exportTitle: "Прирост базы (Обмен с 1С) — возвращённые клиенты", onRowClick: onInnClick }));
           }
         }
         tabs.addEventListener("change", renderView);
@@ -4039,37 +4112,792 @@
         });
       }
 
-      function renderDrill(m) {
-        var c = m.client;
-        drillHolder.innerHTML = "";
-        drillHolder.appendChild(el('<div style="font-size:13px;border-top:2px solid var(--ink);padding-top:10px;margin-top:4px"><b>' + esc(c.org || m.inn) + '</b> · ИНН ' + esc(m.inn) + (c.partner ? ' · партнёр ' + esc(c.partner) : '') + '</div>'));
-
-        var kassaHeaders = [{ label: "РНМ" }, { label: "Тариф ОФД" }, { label: "Окончание кода ОФД" }, { label: "Статус" }];
-        var kassaRows = c.kassas.map(function (k) {
-          var alive = ctx.M.isKassaAlive(k, ctx.asOf, ctx.strict);
-          var deadline = ctx.M.kassaDeadline(k, ctx.asOf, ctx.strict);
-          return [k.rnm, k.tariff || "—", fmtDate(deadline), alive ? "действует" : "истёк"];
-        });
-        drillHolder.appendChild(el('<div class="stat-label" style="margin:8px 0 4px">Кассы на ОФД (' + fmtNum(c.kassas.length) + '):</div>'));
-        var kassaScroll = el('<div class="table-scroll"></div>');
-        kassaScroll.appendChild(makeSortableTable(kassaHeaders, kassaRows));
-        drillHolder.appendChild(kassaScroll);
-
-        var ofd1cHeaders = [{ label: "Заводской номер ККТ" }, { label: "Начало обмена 1С" }, { label: "Окончание обмена 1С" }, { label: "Мес.", num: true }];
-        var ofd1cRows = m.records.map(function (r) { return [r.kktSerial || "—", fmtDate(r.tariffStart), fmtDate(r.tariffEnd), r.months || "—"]; });
-        drillHolder.appendChild(el('<div class="stat-label" style="margin:12px 0 4px">Обмен с 1С (' + fmtNum(m.records.length) + ' записей):</div>'));
-        var ofd1cScroll = el('<div class="table-scroll"></div>');
-        ofd1cScroll.appendChild(makeSortableTable(ofd1cHeaders, ofd1cRows));
-        drillHolder.appendChild(ofd1cScroll);
-
-        drillHolder.appendChild(el('<div class="stat-label" style="margin-top:8px">⚠ Прямого соответствия «эта касса ↔ этот заводской номер» нет — в файле обмена с 1С нет РНМ, а в выгрузке ОФД нет заводского номера, общего идентификатора между системами не существует. Обе таблицы — про одного и того же клиента, но НЕ построчно связаны друг с другом.</div>'));
-      }
+      function renderDrill(m) { ofd1cRenderClientCard(drillHolder, m, ctx); }
 
       renderBody();
       OFD1C_REFRESHERS[instanceId] = renderBody;
       return wrap;
     },
     onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
+  };
+
+  // ---------- "Календарь продлений (Обмен с 1С)" + "Переток тарифов (Обмен с 1С)"
+  // (Дима, 2026-09-07) -- копии функциональности b7-renewal-calendar/b7-tariff-flow на
+  // данных обмена с 1С вместо основной модели ОФД. Единица "касса" здесь = (ИНН + заводской
+  // номер ККТ), подтверждено Димой -- заводские номера сами по себе не гарантированно
+  // уникальны между разными клиентами, поэтому клиент -- часть идентичности. Список тарифов
+  // -- автоматически из встречающихся значений "Количество месяцев" (как allTariffsSorted в
+  // Б7), НЕ жёстко 1/6/12. Пороги оттока/грейса/возврата -- ТЕ ЖЕ, что уже в "Прирост базы
+  // (Обмен с 1С)" выше (OFD1C_CHURN_GRACE_DAYS/OFD1C_REANIM_WINDOW_START_DAYS). Как и
+  // остальной код раздела -- сознательно ПАРАЛЛЕЛЬНЫЕ копии функций из metrics.js
+  // (collectKassaEvents/computeRenewalCalendar/computeTariffTransitions и т.д.), не импорт --
+  // те работают на model.kassas (коды ОФД), здесь домен другой (цепочки записей 1С по
+  // заводскому номеру). Рендер переиспользует ОБЩИЕ (не завязанные на конкретную модель
+  // данных) rc*-хелперы, объявленные перед b7-renewal-calendar (rcBuildCalendarChart,
+  // rcCalcCalendarScale, rcBuildSankey, rcBuildMonthlyFlow и т.д.).
+  var OFD1C_CALENDAR_FORECAST_MONTHS = 36;
+  var OFD1C_RC_UNIT = "kassa";
+  var OFD1C_RC_CAL_ONLY_ACTIVE = false;
+  var OFD1C_RC_VIEWPORT = new Map();
+  var OFD1C_RC_FLOW_VIEWPORT = new Map();
+  var OFD1C_RC_FLOW_ONLY_ACTIVE = false;
+  var OFD1C_RC_SANKEY_ZOOM = new Map();
+
+  // Группировка записей 1С в цепочки "одна касса" = (ИНН + заводской номер), записи внутри
+  // отсортированы по дате начала тарифа. Только сопоставленные с ОФД по ИНН (client != null)
+  // -- та же граница, что и везде в разделе (несопоставленные показаны отдельно как "не
+  // найдено" в "Портрет клиента", в расчётах не участвуют).
+  function ofd1cGroupBySerial(model) {
+    var byKey = new Map();
+    OFD1C_STATE.records.forEach(function (r) {
+      if (!r.tariffStart) return;
+      var key = r.inn + "|" + (r.kktSerial || "");
+      var g = byKey.get(key);
+      if (!g) { g = { inn: r.inn, kktSerial: r.kktSerial, client: model.clients.get(r.inn) || null, records: [] }; byKey.set(key, g); }
+      g.records.push(r);
+    });
+    var chains = [];
+    byKey.forEach(function (g) {
+      if (!g.client) return;
+      g.records.sort(function (a, b) { return a.tariffStart - b.tariffStart; });
+      var ends = g.records.filter(function (r) { return r.tariffEnd; }).map(function (r) { return r.tariffEnd; });
+      g.appearance = g.records[0].tariffStart;
+      g.currentEnd = ends.length ? new Date(Math.max.apply(null, ends.map(function (d) { return d.getTime(); }))) : null;
+      chains.push(g);
+    });
+    return chains;
+  }
+  function ofd1cChainsByClient(chains) {
+    var byInn = new Map();
+    chains.forEach(function (chain) {
+      var arr = byInn.get(chain.inn);
+      if (!arr) { arr = []; byInn.set(chain.inn, arr); }
+      arr.push(chain);
+    });
+    return byInn;
+  }
+  // "Жива" ли КОНКРЕТНАЯ цепочка (заводской номер) на дату -- покрыта ли она хоть одной
+  // своей записью. Аналог kassaLapsedAt/ofd1cLapsedAt, но на уровне одной кассы 1С, не всех
+  // записей клиента разом.
+  function ofd1cSerialLapsedAt(chain, atDate) {
+    if (!chain.appearance || atDate < chain.appearance) return false;
+    for (var i = 0; i < chain.records.length; i++) {
+      var r = chain.records[i];
+      if (r.tariffStart <= atDate && (!r.tariffEnd || atDate <= r.tariffEnd)) return false;
+    }
+    return true;
+  }
+  function ofd1cClientLapsedAt1C(chainsForClient, atDate) {
+    return chainsForClient.every(function (chain) { return ofd1cSerialLapsedAt(chain, atDate); });
+  }
+  function ofd1cSerialChurnStatus(chain, asOf) {
+    if (!chain.currentEnd) return null;
+    var graceDeadline = new Date(chain.currentEnd.getTime() + OFD1C_CHURN_GRACE_DAYS * 86400000);
+    var resolveAt = new Date(chain.currentEnd.getTime() + OFD1C_REANIM_WINDOW_START_DAYS * 86400000);
+    if (asOf < resolveAt) return "pending";
+    return ofd1cSerialLapsedAt(chain, graceDeadline) ? "churned" : "safe";
+  }
+  function ofd1cAllTariffsSorted(chains) {
+    var set = new Set();
+    chains.forEach(function (chain) { chain.records.forEach(function (r) { if (r.months != null) set.add(r.months); }); });
+    var arr = Array.from(set);
+    arr.sort(function (a, b) { return b - a; });
+    return arr;
+  }
+  // Один код 1С -> до 3 событий, зеркально collectKassaEvents из metrics.js (см. HISTORY.md
+  // Б7): "new" у первой записи цепочки, "renewedFirst"/"renewedRepeat" у каждой НЕ последней
+  // (следующая запись есть -- значит продление), у последней -- forecast/churn/pending по
+  // currentEnd (максимум окончания по всей цепочке, не обязательно "хронологически
+  // последняя по началу" запись -- та же логика, что overallEnd в основной модели).
+  function ofd1cCollectSerialEvents(chain, asOf) {
+    var events = [];
+    var recs = chain.records;
+    if (!recs.length) return events;
+    events.push({ type: "new", tariff: recs[0].months, tariffLabel: recs[0].months + " мес", date: recs[0].tariffStart });
+    for (var i = 0; i < recs.length - 1; i++) {
+      var end = recs[i].tariffEnd;
+      if (!end) continue;
+      events.push({ type: i === 0 ? "renewedFirst" : "renewedRepeat", tariff: recs[i].months, tariffLabel: recs[i].months + " мес", date: end });
+    }
+    if (chain.currentEnd) {
+      var endRec = recs.filter(function (r) { return r.tariffEnd && r.tariffEnd.getTime() === chain.currentEnd.getTime(); })[0];
+      var lastTariff = endRec ? endRec.months : recs[recs.length - 1].months;
+      if (chain.currentEnd > asOf) {
+        events.push({ type: "forecast", tariff: lastTariff, tariffLabel: lastTariff + " мес", date: chain.currentEnd });
+      } else {
+        var status = ofd1cSerialChurnStatus(chain, asOf);
+        var type = status === "churned" ? "churn" : status === "pending" ? "pending" : "renewedRepeat";
+        events.push({ type: type, tariff: lastTariff, tariffLabel: lastTariff + " мес", date: chain.currentEnd });
+      }
+    }
+    return events;
+  }
+  // "Общая дата окончания" клиента -- максимум currentEnd по ВСЕМ его кассам (заводским
+  // номерам), плюс запись, которая её дала (для тарифа события отток/прогноз клиента).
+  function ofd1cClientEndInfo(chainsForClient) {
+    var ends = chainsForClient.filter(function (c) { return c.currentEnd; }).map(function (c) { return c.currentEnd; });
+    if (!ends.length) return null;
+    var end = new Date(Math.max.apply(null, ends.map(function (d) { return d.getTime(); })));
+    var endChain = chainsForClient.filter(function (c) { return c.currentEnd && c.currentEnd.getTime() === end.getTime(); })[0];
+    var endRec = endChain ? endChain.records.filter(function (r) { return r.tariffEnd && r.tariffEnd.getTime() === end.getTime(); })[0] : null;
+    return { end: end, endChain: endChain, tariff: endRec ? endRec.months : null };
+  }
+  // Клиентский юнит -- события со ВСЕХ касс (заводских номеров) клиента, дедуп продлений по
+  // (тип,тариф,месяц), отток/прогноз на уровне ВСЕГО клиента -- зеркально collectClientEvents
+  // из metrics.js. Грейса у клиента нет (той же причине, что в основной модели: "может быть
+  // несколько касс, по одной грейс, по другим всё хорошо").
+  function ofd1cCollectClient1CEvents(chainsForClient, asOf) {
+    var events = [];
+    var earliest = chainsForClient.reduce(function (a, b) { return b.appearance < a.appearance ? b : a; });
+    events.push({ type: "new", tariff: earliest.records[0].months, tariffLabel: earliest.records[0].months + " мес", date: earliest.appearance });
+
+    var seen = new Set();
+    chainsForClient.forEach(function (chain) {
+      ofd1cCollectSerialEvents(chain, asOf).forEach(function (ev) {
+        if (ev.type !== "renewedFirst" && ev.type !== "renewedRepeat") return;
+        var key = ev.type + "|" + ev.tariff + "|" + (ev.date ? ev.date.getFullYear() + "-" + ev.date.getMonth() : "no-date");
+        if (seen.has(key)) return;
+        seen.add(key);
+        events.push(ev);
+      });
+    });
+
+    var endInfo = ofd1cClientEndInfo(chainsForClient);
+    if (endInfo && endInfo.tariff != null) {
+      if (endInfo.end > asOf) {
+        events.push({ type: "forecast", tariff: endInfo.tariff, tariffLabel: endInfo.tariff + " мес", date: endInfo.end });
+      } else {
+        var graceDeadline = new Date(endInfo.end.getTime() + OFD1C_CHURN_GRACE_DAYS * 86400000);
+        var resolveAt = new Date(endInfo.end.getTime() + OFD1C_REANIM_WINDOW_START_DAYS * 86400000);
+        var status = asOf < resolveAt ? "pending" : (ofd1cClientLapsedAt1C(chainsForClient, graceDeadline) ? "churned" : "safe");
+        if (status === "churned") events.push({ type: "churn", tariff: endInfo.tariff, tariffLabel: endInfo.tariff + " мес", date: endInfo.end });
+        // status === "pending" -- грейса у клиента нет, событие не создаём
+      }
+    }
+    return events;
+  }
+  function ofd1cCalendarMonthRange(chains, asOf, forecastMonths) {
+    var minDate = null;
+    chains.forEach(function (chain) { if (!minDate || chain.appearance < minDate) minDate = chain.appearance; });
+    if (!minDate) minDate = asOf;
+    var start = new Date(minDate.getFullYear(), minDate.getMonth(), 1);
+    var end = new Date(asOf.getFullYear(), asOf.getMonth() + (forecastMonths || 0), 1);
+    return ofd1cBuildMonthRange(start, end);
+  }
+  function ofd1cEmptyCalendarCounts() { return { new: 0, renewedFirst: 0, renewedRepeat: 0, churn: 0, pending: 0, forecast: 0 }; }
+  function ofd1cMakeCalendarBuckets(months, tariffs) {
+    var b = {};
+    tariffs.concat(["total"]).forEach(function (t) { b[t] = months.map(function () { return ofd1cEmptyCalendarCounts(); }); });
+    return b;
+  }
+  function ofd1cAddEventToBuckets(buckets, months, ev) {
+    if (!buckets[ev.tariff]) return;
+    var idx = ofd1cMonthIndexOf(months, ev.date);
+    if (idx < 0) return;
+    buckets[ev.tariff][idx][ev.type] += 1;
+    buckets.total[idx][ev.type] += 1;
+  }
+  // opts: { unit: "kassa"|"client", tariffs, onlyActive } -- зеркально computeRenewalCalendar.
+  function ofd1cComputeRenewalCalendar(model, asOf, opts) {
+    opts = opts || {};
+    var forecastMonths = opts.forecastMonths || OFD1C_CALENDAR_FORECAST_MONTHS;
+    var unit = opts.unit === "client" ? "client" : "kassa";
+    var chains = ofd1cGroupBySerial(model);
+    var tariffs = opts.tariffs || ofd1cAllTariffsSorted(chains);
+    var onlyActive = !!opts.onlyActive;
+    var months = ofd1cCalendarMonthRange(chains, asOf, forecastMonths);
+    var buckets = ofd1cMakeCalendarBuckets(months, tariffs);
+    function isSurvivalGated(type) { return type === "new" || type === "renewedFirst" || type === "renewedRepeat"; }
+
+    if (unit === "kassa") {
+      chains.forEach(function (chain) {
+        var alive = !ofd1cSerialLapsedAt(chain, asOf);
+        ofd1cCollectSerialEvents(chain, asOf).forEach(function (ev) {
+          if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
+          ofd1cAddEventToBuckets(buckets, months, ev);
+        });
+      });
+    } else {
+      ofd1cChainsByClient(chains).forEach(function (chainsForClient) {
+        var alive = !ofd1cClientLapsedAt1C(chainsForClient, asOf);
+        ofd1cCollectClient1CEvents(chainsForClient, asOf).forEach(function (ev) {
+          if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
+          ofd1cAddEventToBuckets(buckets, months, ev);
+        });
+      });
+    }
+    return { months: months, buckets: buckets, unit: unit, tariffs: tariffs, chains: chains };
+  }
+  // Раскрытие по клику на сегмент Календаря -- зеркально renewalCalendarDrill.
+  function ofd1cRenewalCalendarDrill(chains, asOf, monthDate, tariffMonths, type, unit, onlyActive) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    var byClientMap = ofd1cChainsByClient(chains);
+
+    if (unit === "client" && (type === "churn" || type === "forecast")) {
+      byClientMap.forEach(function (chainsForClient, inn) {
+        var endInfo = ofd1cClientEndInfo(chainsForClient);
+        if (!endInfo || endInfo.tariff == null) return;
+        if (endInfo.end.getFullYear() !== y || endInfo.end.getMonth() !== m) return;
+        var isForecast = endInfo.end > asOf;
+        if (type === "forecast" && !isForecast) return;
+        if (type === "churn") {
+          if (isForecast) return;
+          var graceDeadline = new Date(endInfo.end.getTime() + OFD1C_CHURN_GRACE_DAYS * 86400000);
+          if (!ofd1cClientLapsedAt1C(chainsForClient, graceDeadline)) return;
+        }
+        if (endInfo.tariff !== tariffMonths) return;
+        var client = chainsForClient[0].client;
+        out.push({
+          inn: inn, org: client.org,
+          activeKassas: chainsForClient.filter(function (c) { return !ofd1cSerialLapsedAt(c, asOf); }).length,
+          tariff: tariffMonths + " мес", end: endInfo.end, partnerInn: client.partnerInn, partner: client.partner,
+        });
+      });
+      return out;
+    }
+    if (unit === "client" && type === "pending") return out; // грейса у клиента нет
+
+    var survivalGated = onlyActive && (type === "new" || type === "renewedFirst" || type === "renewedRepeat");
+    var seenClients = new Set();
+    chains.forEach(function (chain) {
+      if (survivalGated && unit !== "client" && ofd1cSerialLapsedAt(chain, asOf)) return;
+      var events = ofd1cCollectSerialEvents(chain, asOf);
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        if (ev.tariff !== tariffMonths || ev.type !== type) continue;
+        if (!ev.date || ev.date.getFullYear() !== y || ev.date.getMonth() !== m) continue;
+        if (unit === "client") {
+          if (seenClients.has(chain.inn)) break;
+          var chainsForClient = byClientMap.get(chain.inn);
+          if (survivalGated && ofd1cClientLapsedAt1C(chainsForClient, asOf)) break;
+          seenClients.add(chain.inn);
+          out.push({
+            inn: chain.inn, org: chain.client.org,
+            activeKassas: chainsForClient.filter(function (c) { return !ofd1cSerialLapsedAt(c, asOf); }).length,
+            tariff: ev.tariffLabel, end: ev.date, partnerInn: chain.client.partnerInn, partner: chain.client.partner,
+          });
+        } else {
+          out.push({
+            inn: chain.inn, org: chain.client.org, rnm: chain.kktSerial,
+            tariff: ev.tariffLabel, end: ev.date, partnerInn: chain.client.partnerInn, partner: chain.client.partner,
+          });
+        }
+        break;
+      }
+    });
+    return out;
+  }
+  function ofd1cDrillRenewalCombined(chains, asOf, monthDate, tariffMonths, type, unit, onlyActive) {
+    if (type === "renewed") {
+      return ofd1cRenewalCalendarDrill(chains, asOf, monthDate, tariffMonths, "renewedFirst", unit, onlyActive)
+        .concat(ofd1cRenewalCalendarDrill(chains, asOf, monthDate, tariffMonths, "renewedRepeat", unit, onlyActive));
+    }
+    return ofd1cRenewalCalendarDrill(chains, asOf, monthDate, tariffMonths, type, unit, onlyActive);
+  }
+  // Колонки drill-таблиц -- зеркально RC_DRILL_COLUMNS_KASSA/CLIENT, но "РНМ" заменён на
+  // "Заводской номер ККТ" (единственный ID кассы в данных 1С).
+  var OFD1C_RC_DRILL_COLUMNS_KASSA = [
+    { label: "ИНН клиента", key: "inn" }, { label: "Наименование клиента", key: "org" },
+    { label: "Заводской номер ККТ", key: "rnm" }, { label: "Тариф", key: "tariff" },
+    { label: "Дата окончания", key: "end", date: true },
+    { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
+  ];
+  var OFD1C_RC_DRILL_COLUMNS_CLIENT = [
+    { label: "ИНН клиента", key: "inn" }, { label: "Наименование клиента", key: "org" },
+    { label: "Кол-во активных касс (1С)", key: "activeKassas", num: true }, { label: "Тариф", key: "tariff" },
+    { label: "Дата окончания", key: "end", date: true },
+    { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
+  ];
+
+  WIDGETS["b8-1c-renewal-calendar"] = {
+    title: "Календарь продлений (Обмен с 1С)", type: "график + таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function renderBody() {
+        wrap.innerHTML = "";
+        if (!OFD1C_STATE.records) {
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится календарь продлений по тарифам обмена с 1С, аналогично основному «Календарю продлений».</div>'));
+          return;
+        }
+        var asOf = ctx.asOf;
+        var chains = ofd1cGroupBySerial(model);
+        var tariffs = ofd1cAllTariffsSorted(chains);
+        var cal = ofd1cComputeRenewalCalendar(model, asOf, { unit: OFD1C_RC_UNIT, tariffs: tariffs, onlyActive: OFD1C_RC_CAL_ONLY_ACTIVE });
+        var months = cal.months;
+        var asOfIdx = rcAsOfIndex(months, asOf);
+
+        var vp = OFD1C_RC_VIEWPORT.get(instanceId);
+        if (!vp) {
+          vp = { from: Math.max(0, asOfIdx - 11), to: months.length - 1 };
+          OFD1C_RC_VIEWPORT.set(instanceId, vp);
+        }
+        vp.from = Math.min(Math.max(vp.from, 0), months.length - 1);
+        vp.to = Math.min(Math.max(vp.to, vp.from), months.length - 1);
+
+        var unitRow = el(
+          '<div class="threshold-row">' +
+          '<span style="color:var(--muted)">Единица</span>' +
+          '<label><input type="radio" name="o1crc-unit-' + instanceId + '" value="kassa"' + (OFD1C_RC_UNIT === "kassa" ? " checked" : "") + '> Заводской номер (кассы)</label>' +
+          '<label><input type="radio" name="o1crc-unit-' + instanceId + '" value="client"' + (OFD1C_RC_UNIT === "client" ? " checked" : "") + '> ИНН (клиенты)</label>' +
+          '<span style="color:var(--muted);margin-left:10px">Кассы/клиенты</span>' +
+          '<label><input type="radio" name="o1crc-active-' + instanceId + '" value="all"' + (OFD1C_RC_CAL_ONLY_ACTIVE ? "" : " checked") + '> все</label>' +
+          '<label><input type="radio" name="o1crc-active-' + instanceId + '" value="active"' + (OFD1C_RC_CAL_ONLY_ACTIVE ? " checked" : "") + '> только действующие</label>' +
+          '<span style="color:var(--muted);margin-left:10px">вид</span>' +
+          '<label><input type="radio" name="o1crc-view-' + instanceId + '" value="chart" checked> график</label>' +
+          '<label><input type="radio" name="o1crc-view-' + instanceId + '" value="table"> таблица</label>' +
+          '</div>'
+        );
+        var rangeRow = el(
+          '<div class="threshold-row" style="margin-top:-4px">' +
+          '<span style="color:var(--muted)">видимый диапазон</span>' +
+          rcMonthSelectHTML("o1crc-from", months, vp.from) + ' <span>—</span> ' + rcMonthSelectHTML("o1crc-to", months, vp.to) +
+          '<button type="button" class="refresh-chart-btn o1crc-full-range">весь период</button>' +
+          '</div>'
+        );
+        var legendRow = el(
+          '<div class="threshold-row" style="margin-top:-4px">' +
+          '<label><input type="checkbox" class="o1crc-show-new" checked> Новые (светлее)</label>' +
+          '<label><input type="checkbox" class="o1crc-show-renewed" checked> Продлилось (темнее)</label>' +
+          '<span style="color:var(--muted)">Отток/грейс — своя панель под графиком · пунктир — прогноз · наведи на столбец — точное число</span>' +
+          '</div>'
+        );
+        var blocksHolder = el("<div></div>");
+        var tableHolder = el('<div style="display:none"></div>');
+        var drillHolder = el('<div style="margin-top:10px"></div>');
+        wrap.appendChild(unitRow);
+        wrap.appendChild(rangeRow);
+        wrap.appendChild(legendRow);
+        wrap.appendChild(blocksHolder);
+        wrap.appendChild(tableHolder);
+        wrap.appendChild(drillHolder);
+
+        function tariffLabelOrTotal(key) { return key == null ? "Итого" : rcTariffLabel(key); }
+
+        function buildBlock(label, tariffKeyOrNull) {
+          var block = el('<div class="rc-block"></div>');
+          block.appendChild(el('<div class="rc-block-title"><b>' + esc(label) + '</b></div>'));
+          var showNew = legendRow.querySelector(".o1crc-show-new").checked;
+          var showRenewed = legendRow.querySelector(".o1crc-show-renewed").checked;
+          var series = tariffKeyOrNull == null ? cal.buckets.total : cal.buckets[tariffKeyOrNull];
+          var sc = rcCalcCalendarScale(series, vp, asOfIdx, showNew, showRenewed);
+          var chartRow = el('<div style="display:flex;align-items:flex-start"></div>');
+          chartRow.appendChild(rcBuildCalendarAxis(sc));
+          var chartWrap = el('<div class="hscroll-chart"></div>');
+          chartWrap.appendChild(rcBuildCalendarChart(sc, cal.buckets, tariffKeyOrNull, months, asOfIdx, tariffs, showNew, showRenewed, function (monthDate, type) {
+            if (tariffKeyOrNull == null) {
+              drillHolder.innerHTML = '<div class="stat-label" style="margin-top:8px">На «Итого» клик не раскрывается (тарифы суммированы) — выбери конкретный тариф ниже.</div>';
+              return;
+            }
+            var list = ofd1cDrillRenewalCombined(cal.chains, asOf, monthDate, tariffKeyOrNull, type, OFD1C_RC_UNIT, OFD1C_RC_CAL_ONLY_ACTIVE);
+            var columns = OFD1C_RC_UNIT === "client" ? OFD1C_RC_DRILL_COLUMNS_CLIENT : OFD1C_RC_DRILL_COLUMNS_KASSA;
+            renderDrillList(drillHolder, list, columns, tariffLabelOrTotal(tariffKeyOrNull) + " · " + rcMonthLabel(monthDate) + " · " + RC_TYPE_LABEL[type]);
+          }));
+          chartRow.appendChild(chartWrap);
+          block.appendChild(chartRow);
+          return block;
+        }
+        function renderBlocks() {
+          blocksHolder.innerHTML = "";
+          blocksHolder.appendChild(buildBlock("Итого", null));
+          tariffs.forEach(function (t) { blocksHolder.appendChild(buildBlock(rcTariffLabel(t), t)); });
+          rcLinkScroll(Array.from(blocksHolder.querySelectorAll(".hscroll-chart")));
+        }
+
+        function renderTable() {
+          tableHolder.innerHTML = "";
+          var toIdx = Math.min(vp.to, asOfIdx);
+          if (vp.from > toIdx) {
+            tableHolder.appendChild(el('<div class="stat-label">В видимом диапазоне только будущие месяцы — у прогноза нет этой разбивки, сдвинь диапазон.</div>'));
+            return;
+          }
+          var groups = [null].concat(tariffs);
+          var rows = [];
+          for (var idx = vp.from; idx <= toIdx; idx++) {
+            groups.forEach(function (g) {
+              var s = g == null ? cal.buckets.total[idx] : cal.buckets[g][idx];
+              var renewed = s.renewedFirst + s.renewedRepeat;
+              var base = s.new + renewed + s.churn + s.pending;
+              function cell(v) { return base ? fmtNum(v) + " (" + (v / base * 100).toFixed(1) + "%)" : fmtNum(v); }
+              var convBase = renewed + s.churn;
+              var conv = convBase ? (renewed / convBase * 100).toFixed(1) + "%" : "—";
+              rows.push([rcMonthLabel(months[idx]), tariffLabelOrTotal(g), cell(s.new), cell(renewed), cell(s.churn), cell(s.pending), conv]);
+            });
+          }
+          var headers = [
+            { label: "Месяц" }, { label: "Тариф" }, { label: "Новые" }, { label: "Продлившиеся" },
+            { label: "Отток" }, { label: "Грейс" }, { label: "Конверсия", num: true },
+          ];
+          var scrollWrap = el('<div class="table-scroll"></div>');
+          scrollWrap.appendChild(makeSortableTable(headers, rows));
+          tableHolder.appendChild(scrollWrap);
+          tableHolder.appendChild(el('<div class="stat-label" style="margin-top:6px">% — доля от (Новые+Продлившиеся+Отток+Грейс) в этой строке. Конверсия = Продлившиеся / (Продлившиеся+Отток).</div>'));
+        }
+
+        renderBlocks();
+
+        function syncRangeSelects() {
+          rangeRow.querySelector(".o1crc-from").value = String(vp.from);
+          rangeRow.querySelector(".o1crc-to").value = String(vp.to);
+        }
+        function refreshVisible() {
+          var view = unitRow.querySelector('input[name="o1crc-view-' + instanceId + '"]:checked').value;
+          blocksHolder.style.display = view === "chart" ? "" : "none";
+          tableHolder.style.display = view === "table" ? "" : "none";
+          if (view === "chart") renderBlocks(); else renderTable();
+        }
+
+        unitRow.querySelectorAll('input[name="o1crc-unit-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () { OFD1C_RC_UNIT = r.value; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
+        });
+        unitRow.querySelectorAll('input[name="o1crc-active-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () {
+            OFD1C_RC_CAL_ONLY_ACTIVE = unitRow.querySelector('input[name="o1crc-active-' + instanceId + '"]:checked').value === "active";
+            root.OFDCanvas && root.OFDCanvas.rerenderAll();
+          });
+        });
+        unitRow.querySelectorAll('input[name="o1crc-view-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", refreshVisible);
+        });
+        rangeRow.querySelector(".o1crc-from").addEventListener("change", function (e) {
+          vp.from = parseInt(e.target.value, 10);
+          if (vp.to < vp.from) vp.to = vp.from;
+          syncRangeSelects(); refreshVisible();
+        });
+        rangeRow.querySelector(".o1crc-to").addEventListener("change", function (e) {
+          vp.to = parseInt(e.target.value, 10);
+          if (vp.from > vp.to) vp.from = vp.to;
+          syncRangeSelects(); refreshVisible();
+        });
+        rangeRow.querySelector(".o1crc-full-range").addEventListener("click", function () {
+          vp.from = 0; vp.to = months.length - 1;
+          syncRangeSelects(); refreshVisible();
+        });
+        legendRow.querySelectorAll(".o1crc-show-new, .o1crc-show-renewed").forEach(function (cb) { cb.addEventListener("change", renderBlocks); });
+      }
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; OFD1C_RC_VIEWPORT.delete(instanceId); },
+  };
+
+  // ---------- "Переток тарифов (Обмен с 1С)" -- зеркально b7-tariff-flow. БЕЗ тумблера
+  // юнита (только заводской номер), тот же принцип, что уже применён в b7-tariff-flow к
+  // основной модели: переход всегда привязан к конкретной кассе, клиентский разрез был бы
+  // лишним слоем дедупа поверх, не нужным на этом борде.
+  function ofd1cSerialTransitionEvents(chain) {
+    var events = [];
+    var recs = chain.records;
+    for (var i = 0; i < recs.length - 1; i++) {
+      var fromT = recs[i].months, toT = recs[i + 1].months;
+      if (fromT == null || toT == null) continue;
+      events.push({ from: fromT, to: toT, fromLabel: fromT + " мес", toLabel: toT + " мес", end: recs[i].tariffEnd });
+    }
+    return events;
+  }
+  function ofd1cComputeTariffTransitions(chains, onlyActive, asOf) {
+    var agg = new Map();
+    function bump(fromT, toT) { var key = fromT + "|" + toT; agg.set(key, (agg.get(key) || 0) + 1); }
+    chains.forEach(function (chain) {
+      if (onlyActive && ofd1cSerialLapsedAt(chain, asOf)) return;
+      ofd1cSerialTransitionEvents(chain).forEach(function (ev) { bump(ev.from, ev.to); });
+    });
+    var rows = [];
+    agg.forEach(function (count, key) {
+      var parts = key.split("|");
+      rows.push({ from: parseInt(parts[0], 10), to: parseInt(parts[1], 10), count: count });
+    });
+    return rows;
+  }
+  function ofd1cComputeTariffTransitionsMonthly(chains, asOf, onlyActive, tariffs) {
+    var months = ofd1cCalendarMonthRange(chains, asOf, OFD1C_CALENDAR_FORECAST_MONTHS);
+    var bySource = {};
+    tariffs.forEach(function (t) { bySource[t] = months.map(function () { return {}; }); });
+    function bump(fromT, toT, idx) {
+      if (!bySource[fromT] || idx < 0) return;
+      var bucket = bySource[fromT][idx];
+      bucket[toT] = (bucket[toT] || 0) + 1;
+    }
+    chains.forEach(function (chain) {
+      if (onlyActive && ofd1cSerialLapsedAt(chain, asOf)) return;
+      ofd1cSerialTransitionEvents(chain).forEach(function (ev) { bump(ev.from, ev.to, ofd1cMonthIndexOf(months, ev.end)); });
+    });
+    return { months: months, bySource: bySource };
+  }
+  function ofd1cTariffTransitionDrill(chains, asOf, fromT, toT, monthDate, onlyActive) {
+    var out = [];
+    function matches(ev) {
+      if (ev.from !== fromT || ev.to !== toT) return false;
+      if (!monthDate) return true;
+      return ev.end && ev.end.getFullYear() === monthDate.getFullYear() && ev.end.getMonth() === monthDate.getMonth();
+    }
+    chains.forEach(function (chain) {
+      if (onlyActive && ofd1cSerialLapsedAt(chain, asOf)) return;
+      var evs = ofd1cSerialTransitionEvents(chain);
+      var hit = null;
+      for (var i = 0; i < evs.length; i++) { if (matches(evs[i])) { hit = evs[i]; break; } }
+      if (!hit) return;
+      out.push({
+        inn: chain.inn, org: chain.client.org, rnm: chain.kktSerial,
+        tariffFrom: hit.fromLabel, tariffTo: hit.toLabel, end: hit.end,
+        partnerInn: chain.client.partnerInn, partner: chain.client.partner,
+      });
+    });
+    return out;
+  }
+  var OFD1C_RC_TRANSITION_COLUMNS = [
+    { label: "ИНН клиента", key: "inn" }, { label: "Наименование клиента", key: "org" },
+    { label: "Заводской номер ККТ", key: "rnm" }, { label: "Тариф до", key: "tariffFrom" }, { label: "Тариф после", key: "tariffTo" },
+    { label: "Дата окончания", key: "end", date: true },
+    { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
+  ];
+
+  WIDGETS["b8-1c-tariff-flow"] = {
+    title: "Переток тарифов (Обмен с 1С)", type: "график + таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function renderBody() {
+        wrap.innerHTML = "";
+        if (!OFD1C_STATE.records) {
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится переток тарифов обмена с 1С, аналогично основному «Перетоку тарифов».</div>'));
+          return;
+        }
+        var asOf = ctx.asOf;
+        var chains = ofd1cGroupBySerial(model);
+        var tariffs = ofd1cAllTariffsSorted(chains);
+        var rows = ofd1cComputeTariffTransitions(chains, OFD1C_RC_FLOW_ONLY_ACTIVE, asOf);
+        var monthly = ofd1cComputeTariffTransitionsMonthly(chains, asOf, OFD1C_RC_FLOW_ONLY_ACTIVE, tariffs);
+
+        var volume = {};
+        rows.forEach(function (r) { volume[r.from] = (volume[r.from] || 0) + r.count; volume[r.to] = (volume[r.to] || 0) + r.count; });
+        var nodeOrder = Object.keys(volume).map(Number).sort(function (a, b) { return volume[b] - volume[a]; });
+        if (!nodeOrder.length) nodeOrder = tariffs.slice();
+        function tariffLabelFn(m) { return m + " мес"; }
+
+        var flowVp = OFD1C_RC_FLOW_VIEWPORT.get(instanceId);
+        if (!flowVp) { flowVp = { from: 0, to: monthly.months.length - 1 }; OFD1C_RC_FLOW_VIEWPORT.set(instanceId, flowVp); }
+        flowVp.from = Math.min(Math.max(flowVp.from, 0), monthly.months.length - 1);
+        flowVp.to = Math.min(Math.max(flowVp.to, flowVp.from), monthly.months.length - 1);
+
+        var activeToggleId = "o1ctf-active-" + instanceId;
+        var unitRow = el(
+          '<div class="threshold-row">' +
+          '<span style="color:var(--muted)">Кассы (заводские номера)</span>' +
+          '<label><input type="radio" name="' + activeToggleId + '" value="all"' + (OFD1C_RC_FLOW_ONLY_ACTIVE ? "" : " checked") + '> все за всё время</label>' +
+          '<label><input type="radio" name="' + activeToggleId + '" value="active"' + (OFD1C_RC_FLOW_ONLY_ACTIVE ? " checked" : "") + '> только действующие сейчас</label>' +
+          '<span style="color:var(--muted);margin-left:10px">видимый диапазон ("по месяцам")</span>' +
+          rcMonthSelectHTML("o1ctf-from", monthly.months, flowVp.from) + ' <span>—</span> ' + rcMonthSelectHTML("o1ctf-to", monthly.months, flowVp.to) +
+          '<button type="button" class="refresh-chart-btn o1ctf-full-range">весь период</button>' +
+          '</div>'
+        );
+        unitRow.querySelectorAll('input[name="' + activeToggleId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () {
+            OFD1C_RC_FLOW_ONLY_ACTIVE = unitRow.querySelector("input:checked").value === "active";
+            root.OFDCanvas && root.OFDCanvas.rerenderAll();
+          });
+        });
+        var zoom = OFD1C_RC_SANKEY_ZOOM.get(instanceId) || 1;
+        var sankeyBlock = el('<div class="rc-block"></div>');
+        sankeyBlock.appendChild(el('<div class="rc-block-title"><b>Общая картина (весь период)</b></div>'));
+
+        var viewToggleId = "o1ctf-view-" + instanceId;
+        var viewToggle = el(
+          '<div class="threshold-row" style="margin-top:-4px">' +
+          '<label><input type="radio" name="' + viewToggleId + '" value="chart" checked> График</label>' +
+          '<label><input type="radio" name="' + viewToggleId + '" value="table"> Таблица</label>' +
+          '</div>'
+        );
+        sankeyBlock.appendChild(viewToggle);
+
+        var chartArea = el("<div></div>");
+        var zoomRow = el(
+          '<div class="threshold-row" style="margin-top:-4px">' +
+          '<span style="color:var(--muted)">Масштаб</span>' +
+          RC_ZOOM_LEVELS.map(function (z) { return '<button type="button" class="refresh-chart-btn rc-zoom-btn" data-zoom="' + z + '">' + Math.round(z * 100) + '%</button>'; }).join(" ") +
+          '</div>'
+        );
+        chartArea.appendChild(zoomRow);
+        var sankeyWrap = el('<div class="hscroll-chart rc-zoomable"></div>');
+        chartArea.appendChild(sankeyWrap);
+        chartArea.appendChild(el('<div class="stat-label">Клик по полосе — список клиентов/касс этого перехода за весь период · наведи — точное число</div>'));
+        sankeyBlock.appendChild(chartArea);
+
+        var tableArea = el('<div style="display:none"></div>');
+        sankeyBlock.appendChild(tableArea);
+        var tableFilters = el(
+          '<div class="threshold-row">' +
+          '<label>Тариф до <select class="o1ctf-filter-from"><option value="">все</option>' +
+          tariffs.map(function (t) { return '<option value="' + t + '">' + esc(tariffLabelFn(t)) + '</option>'; }).join("") +
+          '</select></label>' +
+          '<label>Тариф после <select class="o1ctf-filter-to"><option value="">все</option>' +
+          tariffs.map(function (t) { return '<option value="' + t + '">' + esc(tariffLabelFn(t)) + '</option>'; }).join("") +
+          '</select></label>' +
+          '</div>'
+        );
+        tableArea.appendChild(tableFilters);
+        var tableResultsHolder = el("<div></div>");
+        tableArea.appendChild(tableResultsHolder);
+
+        function markActiveZoomBtn() {
+          zoomRow.querySelectorAll(".rc-zoom-btn").forEach(function (b) {
+            var active = parseFloat(b.dataset.zoom) === zoom;
+            b.style.borderColor = active ? "var(--brand)" : "";
+            b.style.color = active ? "var(--brand)" : "";
+          });
+        }
+        markActiveZoomBtn();
+
+        var monthlyBlock = el('<div class="rc-block"></div>');
+        monthlyBlock.appendChild(el('<div class="rc-block-title"><b>По месяцам — из каждого тарифа</b></div>'));
+        var monthlyLegend = el('<div class="chart-legend"></div>');
+        monthlyLegend.innerHTML = nodeOrder.map(function (t) {
+          return '<span class="lg-item"><span class="lg-swatch" style="background:' + rcColorForTariff(t, nodeOrder) + '"></span>' + tariffLabelFn(t) + '</span>';
+        }).join("");
+        monthlyBlock.appendChild(monthlyLegend);
+        var monthlyBlocksHolder = el("<div></div>");
+        monthlyBlock.appendChild(monthlyBlocksHolder);
+        monthlyBlock.appendChild(el('<div class="stat-label" style="margin-top:6px">Клик по столбцу месяца — разбивка по тарифам ниже · клик по строке разбивки — список клиентов/касс.</div>'));
+
+        var drillHolder = el('<div style="margin-top:10px"></div>');
+        wrap.appendChild(unitRow);
+        wrap.appendChild(sankeyBlock);
+        wrap.appendChild(monthlyBlock);
+        wrap.appendChild(drillHolder);
+
+        function showDrill(fromT, toT, monthDate, caption) {
+          var list = ofd1cTariffTransitionDrill(chains, asOf, fromT, toT, monthDate || null, OFD1C_RC_FLOW_ONLY_ACTIVE);
+          renderDrillList(drillHolder, list, OFD1C_RC_TRANSITION_COLUMNS, caption);
+        }
+
+        function showMonthlyBreakdown(srcT, monthDate) {
+          var idx = rcAsOfIndex(monthly.months, monthDate);
+          var b = monthly.bySource[srcT][idx] || {};
+          var breakdown = nodeOrder.map(function (destT) { return { destT: destT, v: b[destT] || 0 }; })
+            .filter(function (r) { return r.v > 0; })
+            .sort(function (a, b) { return b.v - a.v; });
+          drillHolder.innerHTML = "";
+          drillHolder.appendChild(el('<div style="font-size:12px;border-top:2px solid var(--ink);padding-top:8px;margin-bottom:6px"><b>Из ' + esc(tariffLabelFn(srcT)) + ' · ' + rcMonthLabel(monthDate) + '</b></div>'));
+          if (!breakdown.length) {
+            drillHolder.appendChild(el('<div class="stat-label">Нет переходов в этом месяце.</div>'));
+            return;
+          }
+          var body = breakdown.map(function (r) { return [tariffLabelFn(r.destT), r.v]; });
+          var table = makeSortableTable([{ label: "Тариф после", num: true }, { label: "Сумма", num: true }], body);
+          drillHolder.appendChild(table);
+          drillHolder.appendChild(el('<div class="stat-label" style="margin-top:6px">клик по строке — список клиентов/касс этого перехода</div>'));
+          table.querySelectorAll("tbody tr").forEach(function (tr) {
+            tr.style.cursor = "pointer";
+            tr.addEventListener("click", function () {
+              var destT = parseInt(tr.children[0].textContent, 10);
+              showDrill(srcT, destT, monthDate, tariffLabelFn(srcT) + " → " + tariffLabelFn(destT) + " · " + rcMonthLabel(monthDate));
+            });
+          });
+        }
+
+        function renderSankey() {
+          sankeyWrap.innerHTML = "";
+          if (!rows.length) {
+            sankeyWrap.appendChild(el('<div class="placeholder-body">Пока нет ни одного перехода тарифов в данных обмена с 1С.</div>'));
+            return;
+          }
+          sankeyWrap.appendChild(rcBuildSankey(rows, nodeOrder, tariffLabelFn, function (fromT, toT) {
+            showDrill(fromT, toT, null, tariffLabelFn(fromT) + " → " + tariffLabelFn(toT) + " · весь период");
+          }, zoom));
+        }
+        renderSankey();
+        zoomRow.querySelectorAll(".rc-zoom-btn").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            zoom = parseFloat(btn.dataset.zoom);
+            OFD1C_RC_SANKEY_ZOOM.set(instanceId, zoom);
+            markActiveZoomBtn();
+            renderSankey();
+          });
+        });
+
+        function renderTable() {
+          tableResultsHolder.innerHTML = "";
+          var fFrom = tableFilters.querySelector(".o1ctf-filter-from").value;
+          var fTo = tableFilters.querySelector(".o1ctf-filter-to").value;
+          var filtered = rows.filter(function (r) {
+            if (fFrom && r.from !== parseInt(fFrom, 10)) return false;
+            if (fTo && r.to !== parseInt(fTo, 10)) return false;
+            return true;
+          });
+          if (!filtered.length) {
+            tableResultsHolder.appendChild(el('<div class="placeholder-body">Нет переходов по этому фильтру.</div>'));
+            return;
+          }
+          var sorted = filtered.slice().sort(function (a, b) { return b.count - a.count; });
+          var body = sorted.map(function (r) { return [tariffLabelFn(r.from), tariffLabelFn(r.to), r.count]; });
+          var tableWrap = makeSortableTable(
+            [{ label: "Тариф до", num: true }, { label: "Тариф после", num: true }, { label: "Сумма", num: true }],
+            body
+          );
+          tableResultsHolder.appendChild(tableWrap);
+          tableResultsHolder.appendChild(el('<div class="stat-label" style="margin-top:6px">найдено ' + fmtNum(filtered.length) + ' · клик по строке — список клиентов/касс этого перехода за весь период</div>'));
+          tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+            tr.style.cursor = "pointer";
+            tr.addEventListener("click", function () {
+              var fromT = parseInt(tr.children[0].textContent, 10);
+              var toT = parseInt(tr.children[1].textContent, 10);
+              showDrill(fromT, toT, null, tariffLabelFn(fromT) + " → " + tariffLabelFn(toT) + " · весь период");
+            });
+          });
+        }
+        tableFilters.addEventListener("change", renderTable);
+        tableFilters.addEventListener("input", renderTable);
+        viewToggle.querySelectorAll('input[name="' + viewToggleId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () {
+            var checkedVal = viewToggle.querySelector("input:checked").value;
+            chartArea.style.display = checkedVal === "chart" ? "" : "none";
+            tableArea.style.display = checkedVal === "table" ? "" : "none";
+            if (checkedVal === "table") renderTable();
+          });
+        });
+
+        function renderMonthlyBlocks() {
+          monthlyBlocksHolder.innerHTML = "";
+          var visMonths = monthly.months.slice(flowVp.from, flowVp.to + 1);
+          tariffs.forEach(function (srcT) {
+            var block = el('<div class="rc-block"></div>');
+            block.appendChild(el('<div class="rc-block-title">Из ' + esc(tariffLabelFn(srcT)) + '</div>'));
+            var chartWrap = el('<div class="hscroll-chart"></div>');
+            var visBucket = monthly.bySource[srcT].slice(flowVp.from, flowVp.to + 1);
+            chartWrap.appendChild(rcBuildMonthlyFlow(visBucket, visMonths, nodeOrder, tariffLabelFn, function (monthDate) {
+              showMonthlyBreakdown(srcT, monthDate);
+            }));
+            block.appendChild(chartWrap);
+            monthlyBlocksHolder.appendChild(block);
+          });
+          rcLinkScroll(Array.from(monthlyBlocksHolder.querySelectorAll(".hscroll-chart")));
+        }
+        renderMonthlyBlocks();
+
+        function syncFlowRangeSelects() {
+          unitRow.querySelector(".o1ctf-from").value = String(flowVp.from);
+          unitRow.querySelector(".o1ctf-to").value = String(flowVp.to);
+        }
+        unitRow.querySelector(".o1ctf-from").addEventListener("change", function (e) {
+          flowVp.from = parseInt(e.target.value, 10);
+          if (flowVp.to < flowVp.from) flowVp.to = flowVp.from;
+          syncFlowRangeSelects(); renderMonthlyBlocks();
+        });
+        unitRow.querySelector(".o1ctf-to").addEventListener("change", function (e) {
+          flowVp.to = parseInt(e.target.value, 10);
+          if (flowVp.from > flowVp.to) flowVp.from = flowVp.to;
+          syncFlowRangeSelects(); renderMonthlyBlocks();
+        });
+        unitRow.querySelector(".o1ctf-full-range").addEventListener("click", function () {
+          flowVp.from = 0; flowVp.to = monthly.months.length - 1;
+          syncFlowRangeSelects(); renderMonthlyBlocks();
+        });
+      }
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; OFD1C_RC_FLOW_VIEWPORT.delete(instanceId); OFD1C_RC_SANKEY_ZOOM.delete(instanceId); },
   };
 
   var api = {

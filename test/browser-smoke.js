@@ -798,6 +798,54 @@ async function main() {
     console.log("ofd1c: дедуп составным ключом не задваивает записи при повторной загрузке того же файла:", dedupedTotal === parsed1c.records.length ? "OK" : "FAIL", dedupedTotal, "vs", parsed1c.records.length);
     if (dedupedTotal !== parsed1c.records.length) ok = false;
 
+    // Колонка "Последний тариф 1С" + карточка клиента по клику на ИНН на вкладке "Новые"
+    // борда "Прирост базы (Обмен с 1С)" (Дима, 2026-09-07).
+    win.OFDCanvas.rerenderAll();
+    const growthNode2 = win.document.querySelector('[data-widget-id="b8-1c-growth"]');
+    const newTab = Array.from(growthNode2.querySelectorAll('input[type="radio"]')).find((r) => r.value === "new");
+    newTab.checked = true;
+    newTab.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const monthRowsGrowth = growthNode2.querySelectorAll("table tbody tr");
+    let cardRendered = false, lastTariffHeaderFound = false;
+    if (monthRowsGrowth.length) {
+      monthRowsGrowth[0].dispatchEvent(new win.Event("click", { bubbles: true }));
+      const headers = Array.from(growthNode2.querySelectorAll("th")).map((th) => th.textContent);
+      lastTariffHeaderFound = headers.includes("Последний тариф 1С");
+      const innRow = growthNode2.querySelector(".expand-scroll tbody tr");
+      if (innRow) {
+        innRow.dispatchEvent(new win.Event("click", { bubbles: true }));
+        cardRendered = Array.from(growthNode2.querySelectorAll(".stat-label")).some((n) => n.textContent.indexOf("Кассы на ОФД") !== -1);
+      }
+    }
+    console.log("ofd1c: вкладка «Новые» показывает колонку «Последний тариф 1С»:", lastTariffHeaderFound ? "OK" : "FAIL");
+    if (!lastTariffHeaderFound) ok = false;
+    console.log("ofd1c: клик по ИНН на вкладке «Новые» открывает карточку клиента (кассы ОФД + обмен 1С):", cardRendered ? "OK" : "FAIL");
+    if (!cardRendered) ok = false;
+
+    // Новые борды "Календарь продлений (1С)" и "Переток тарифов (1С)" (Дима, 2026-09-07) --
+    // базовая проверка, что рендерятся без ошибок и показывают график/таблицу с данными.
+    win.OFDCanvas.rerenderAll();
+    const calNode = win.document.querySelector('[data-widget-id="b8-1c-renewal-calendar"]');
+    const calHasChart = calNode && calNode.querySelector(".rc-block svg") != null;
+    console.log("ofd1c: «Календарь продлений (Обмен с 1С)» рендерит график с загруженными данными:", calHasChart ? "OK" : "FAIL");
+    if (!calHasChart) ok = false;
+
+    const flowNode = win.document.querySelector('[data-widget-id="b8-1c-tariff-flow"]');
+    const flowHasSankeyOrPlaceholder = flowNode && (flowNode.querySelector(".hscroll-chart svg") != null || flowNode.querySelector(".placeholder-body") != null);
+    console.log("ofd1c: «Переток тарифов (Обмен с 1С)» рендерит без ошибок (sankey или плейсхолдер «нет переходов»):", flowHasSankeyOrPlaceholder ? "OK" : "FAIL");
+    if (!flowHasSankeyOrPlaceholder) ok = false;
+
+    // Клик по кассовому сегменту Календаря -- раскрытие таблицей с "Заводской номер ККТ"
+    // вместо "РНМ" (единственный ID кассы в данных 1С, см. OFD1C_RC_DRILL_COLUMNS_KASSA).
+    const calBar = calNode.querySelector(".rc-block:nth-of-type(2) svg rect[style*='cursor:pointer']");
+    if (calBar) {
+      calBar.dispatchEvent(new win.Event("click", { bubbles: true }));
+      const calDrillHeaders = Array.from(calNode.querySelectorAll("th")).map((th) => th.textContent);
+      const calDrillOk = calDrillHeaders.includes("Заводской номер ККТ");
+      console.log("ofd1c: раскрытие Календаря использует «Заводской номер ККТ», не «РНМ»:", calDrillOk ? "OK" : "FAIL");
+      if (!calDrillOk) ok = false;
+    }
+
     win.OFDWidgets.ofd1cSetState({ records: null, fileName: null, sheetsCount: null, headerMismatch: false }); // не протекает в другие тесты этого файла
   } else {
     console.log("ofd1c: OFD_1C_TEST_FILE не задан -- пропускаю проверку на реальном файле «Обмен с 1С» (не критично, не входит в репозиторий)");
