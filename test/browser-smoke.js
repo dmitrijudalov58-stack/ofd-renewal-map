@@ -747,9 +747,34 @@ async function main() {
     if (worstResidualIdx >= 0 && worstResidualAbs > 0) {
       ngRows[worstResidualIdx].dispatchEvent(new win.Event("click", { bubbles: true }));
       const drillTables = ngNode.querySelectorAll("table");
-      const drillRows = drillTables.length > 1 ? drillTables[drillTables.length - 1].querySelectorAll("tbody tr").length : 0;
+      const drillTable = drillTables.length > 1 ? drillTables[drillTables.length - 1] : null;
+      const drillRows = drillTable ? drillTable.querySelectorAll("tbody tr").length : 0;
       console.log("b1-netgrowth: клик по строке с наибольшим «Временным разрывом» (" + worstResidualAbs + ") открывает непустой список:", drillRows > 0 ? "OK" : "FAIL", drillRows, "строк");
       if (drillRows === 0) ok = false;
+
+      // Классификация причины (Дима, 2026-09-08: "перепроверь логику, перепиши") -- drill
+      // ОБЯЗАН различать грейс/спрятанный-отток/возврат явно, не смешивать в одном тексте.
+      const drillHeadersNg = drillTable ? Array.from(drillTable.querySelectorAll("th")).map((th) => th.textContent) : [];
+      const hasTypeCol = drillHeadersNg.includes("Что произошло");
+      const hasDateCol = drillHeadersNg.includes("Ключевая дата");
+      console.log("b1-netgrowth: drill содержит колонки «Что произошло» и «Ключевая дата»:", hasTypeCol && hasDateCol ? "OK" : "FAIL", drillHeadersNg);
+      if (!hasTypeCol || !hasDateCol) ok = false;
+
+      const typeColIdx = drillHeadersNg.indexOf("Что произошло");
+      const dateColIdx = drillHeadersNg.indexOf("Ключевая дата");
+      const knownTypes = ["Грейс", "Отток спрятан", "Продлился до истечения", "Возврат после разрыва", "Не классифицировано"];
+      let unknownType = false, emptyDate = false;
+      if (drillTable && typeColIdx >= 0 && dateColIdx >= 0) {
+        drillTable.querySelectorAll("tbody tr").forEach((tr) => {
+          const typeText = tr.children[typeColIdx].textContent;
+          if (!knownTypes.some((k) => typeText.indexOf(k) === 0)) unknownType = true;
+          if (tr.children[dateColIdx].textContent.trim() === "—" || tr.children[dateColIdx].textContent.trim() === "") emptyDate = true;
+        });
+      }
+      console.log("b1-netgrowth: у каждой строки drill есть распознанный тип из известного набора:", !unknownType ? "OK" : "FAIL");
+      if (unknownType) ok = false;
+      console.log("b1-netgrowth: у каждой строки drill проставлена «Ключевая дата» (не пусто):", !emptyDate ? "OK" : "FAIL");
+      if (emptyDate) ok = false;
     } else {
       console.log("b1-netgrowth: «Временный разрыв» везде 0 на этом периоде/файле -- клик по drill не проверялся (нечего раскрывать)");
     }

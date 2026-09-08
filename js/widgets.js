@@ -836,27 +836,68 @@
   var NETGROWTH_RESIDUAL_COLUMNS = [
     { label: "ИНН", key: "key" }, { label: "Наименование", key: "org" },
     { label: "Партнёр", key: "partner" }, { label: "Активных касс", key: "activeKassas", num: true },
-    { label: "Что произошло", key: "type" },
+    { label: "Что произошло", key: "type" }, { label: "Ключевая дата", key: "keyDate", date: true },
   ];
-  function netgrowthResidualRow(model, ctx, inn, type) {
+  // Классификация КОНКРЕТНОЙ причины (Дима, 2026-09-08 -- см. чат: два разных явления
+  // смешивались в одной строке "Временный разрыв" без разметки, что вводило в заблуждение
+  // на реальных примерах -- проверено на реальных данных, три категории ниже покрывают все
+  // найденные случаи).
+  //
+  // extraLeft (клиент физически потерял покрытие на конец месяца, но НЕ в подтверждённом
+  // "Отток" этого месяца):
+  //   А. currentEnd клиента попадает В ЭТОТ ЖЕ месяц, официальный статус ещё "pending" --
+  //      это ТОТ ЖЕ грейс (0-30 дней), что уже показан оранжевым "(N не продлились)" в
+  //      колонке "Отток" этой строки -- НЕ новое явление, просто не вычтено оттуда явно.
+  //   Б. currentEnd клиента НЕ в этом месяце (сдвинут более поздним продлением вперёд, в
+  //      будущее) -- отток физически произошёл в ЭТОМ месяце, но официально "спрятан" за
+  //      более позднюю дату окончания -- то, что называли "Временный разрыв" изначально.
+  //   В. currentEnd в этом месяце, но статус уже "safe" (успел продлиться до истечения
+  //      грейса) -- редкий пограничный случай, физический разрыв длился меньше месяца.
+  function netgrowthClassifyLeft(ctx, c, monthDate) {
+    var end = c.currentEnd;
+    var endInThisMonth = end && end.getFullYear() === monthDate.getFullYear() && end.getMonth() === monthDate.getMonth();
+    if (!endInThisMonth) {
+      return { type: "Отток спрятан более поздним продлением (актуальная дата окончания клиента — другая)", keyDate: end };
+    }
+    var status = ctx.M.clientChurnStatus(c, ctx.asOf);
+    if (status === "pending") {
+      return { type: "Грейс 0-30 дней (тот же, что «не продлились» в колонке «Отток» этой строки)", keyDate: end };
+    }
+    return { type: "Продлился до истечения грейса (короткий физический разрыв внутри месяца)", keyDate: end };
+  }
+  // extraEntered (клиент физически появился/вернулся на конец месяца, но НЕ в официальных
+  // "Новые" этого месяца): почти всегда -- возврат клиента после разрыва (appearance давно,
+  // просто ожил заново). clientReturnInfo -- та же функция, что строит вкладку "Возвращённые".
+  function netgrowthClassifyEntered(ctx, c) {
+    var ri = ctx.M.clientReturnInfo(c);
+    if (ri) {
+      return { type: "Возврат после разрыва (" + ri.days + " дн., тег «" + ri.tag + "»)", keyDate: ri.returnDate };
+    }
+    return { type: "Не классифицировано (появление раньше этого месяца, разрыв не найден)", keyDate: c.appearance };
+  }
+  function netgrowthResidualRow(model, ctx, inn, classification) {
     var c = model.clients.get(inn);
     if (!c) return null;
     var activeKassas = c.kassas.filter(function (k) { return ctx.M.isKassaAlive(k, ctx.asOf, true); }).length;
-    return { key: inn, org: c.org, partner: c.partner, activeKassas: activeKassas, type: type };
+    return { key: inn, org: c.org, partner: c.partner, activeKassas: activeKassas, type: classification.type, keyDate: classification.keyDate };
   }
   function renderNetgrowthResidualDrill(container, model, ctx, drillEntry, monthDate) {
     var rows = [];
     drillEntry.extraEntered.forEach(function (inn) {
-      var r = netgrowthResidualRow(model, ctx, inn, "Стал активен (не входит в «Новые» этого месяца)");
+      var c = model.clients.get(inn);
+      if (!c) return;
+      var r = netgrowthResidualRow(model, ctx, inn, netgrowthClassifyEntered(ctx, c));
       if (r) rows.push(r);
     });
     drillEntry.extraLeft.forEach(function (inn) {
-      var r = netgrowthResidualRow(model, ctx, inn, "Стал неактивен (не входит в подтверждённый «Отток» этого месяца)");
+      var c = model.clients.get(inn);
+      if (!c) return;
+      var r = netgrowthResidualRow(model, ctx, inn, netgrowthClassifyLeft(ctx, c, monthDate));
       if (r) rows.push(r);
     });
     var monthLabel = MONTHS_SHORT[monthDate.getMonth()] + " " + monthDate.getFullYear();
     renderDrillList(container, rows, NETGROWTH_RESIDUAL_COLUMNS, "Временный разрыв · " + monthLabel);
-    container.appendChild(el('<div class="stat-label" style="margin-top:6px">Клиенты, у кого физически поменялось покрытие на конец месяца, но событие не попало ни в «Новые», ни в подтверждённый «Отток» — обычно потому, что их «Общая дата окончания» уже сдвинута далеко вперёд более поздним продлением, и старый разрыв формально «не отток» (статус ещё pending относительно НОВОЙ даты). Не путать с оранжевым «(N не продлились)» в колонке «Отток» — там про грейс 0-30 дней у клиентов, чей КОНЕЦ приходится именно на этот месяц.</div>'));
+    container.appendChild(el('<div class="stat-label" style="margin-top:6px">Колонка «Что произошло» — точная причина по каждому клиенту (клик на заголовок — сортировка, сгруппируй одинаковые). Число «Временный разрыв» — это ВСЕГДА реальная разница между «Активных» и «Новые−Отток», без исключений; список ниже — расшифровка, кто в него входит и почему.</div>'));
   }
 
   WIDGETS["b1-netgrowth"] = {
