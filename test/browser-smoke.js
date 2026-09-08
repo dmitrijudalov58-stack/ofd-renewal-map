@@ -689,6 +689,110 @@ async function main() {
   renewClientsNode.querySelector(".f-status").value = "active";
   renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
 
+  // b1-netgrowth "Прирост базы" -- сходимость "Дельта изменения" с реальной разницей
+  // снэпшотов "Активных на конец месяца" (Дима, 2026-09-08, см. чат: до правки Новые-Отток
+  // НЕ обязана была совпадать с фактическим изменением активных из-за того, что currentEnd
+  // клиента -- максимум по всей его жизни, сдвигается вперёд при будущих продлениях и
+  // "стирает" старые разрывы из подтверждённого оттока). Проверка -- независимый пересчёт
+  // снэпшотов через computeSnapshot напрямую, не через тот же путь, что использует виджет.
+  // Дефолтный тестовый период (2024) может не пересекаться с данными конкретного файла
+  // (напр. выгрузка только с 2025) -- тогда "Временный разрыв" тривиально везде 0, это не
+  // проверяет реальную ветку. Временно расширяем период на весь диапазон файла, потом
+  // возвращаем обратно -- не протекает в последующие тесты (та же дисциплина, что и
+  // ofd1cSetState({records:null,...}) ниже).
+  const ngOrigCtx = win.OFDState.ctx;
+  const ngMinAppearance = Array.from(model.clients.values()).reduce((min, c) => (c.appearance && (!min || c.appearance < min) ? c.appearance : min), null);
+  win.OFDState.ctx = Object.assign({}, ngOrigCtx, { periodStart: ngMinAppearance || ngOrigCtx.periodStart, periodEnd: new win.Date(ngOrigCtx.asOf.getTime()) });
+  win.OFDCanvas.rerenderAll();
+  {
+    const ngCtx = win.OFDState.ctx;
+    const ngNode = win.document.querySelector('[data-widget-id="b1-netgrowth"]');
+    const ngSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, false);
+    function ngMonthEndClamped(m) {
+      const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      return end < ngCtx.asOf ? end : ngCtx.asOf;
+    }
+    function ngActiveAt(m) {
+      return win.OFDMetrics.computeSnapshot(model, ngMonthEndClamped(m), { strict: ngCtx.strict }).activeClients;
+    }
+    const ngRows = Array.from(ngNode.querySelectorAll("table tbody tr"));
+    console.log("b1-netgrowth: число строк таблицы совпадает с числом месяцев периода:", ngRows.length === ngSeries.months.length ? "OK" : "FAIL", ngRows.length, "vs", ngSeries.months.length);
+    let deltaMismatch = false, activeMismatch = false, arithmeticMismatch = false;
+    let worstResidualIdx = -1, worstResidualAbs = -1;
+    const num = (td) => parseInt(td.textContent.replace(/\s/g, "").replace("+", ""), 10);
+    ngRows.forEach((tr, i) => {
+      const m = ngSeries.months[i];
+      const prevM = i === 0 ? win.OFDMetrics.addMonths(ngSeries.months[0], -1) : ngSeries.months[i - 1];
+      const expectedRealDelta = ngActiveAt(m) - ngActiveAt(prevM);
+      const shownActive = num(tr.children[4]);
+      const shownDelta = num(tr.children[3]);
+      const shownNew = num(tr.children[1]);
+      const shownConfirmedChurn = parseInt(tr.children[2].querySelector("span").textContent.replace(/\s/g, ""), 10);
+      const shownResidual = num(tr.children[7]);
+      if (shownActive !== ngActiveAt(m)) activeMismatch = true;
+      if (shownDelta !== expectedRealDelta) deltaMismatch = true;
+      if (shownNew - shownConfirmedChurn + shownResidual !== shownDelta) {
+        arithmeticMismatch = true;
+        if (process.env.NG_DEBUG) console.error("DEBUG2 row", i, "shownNew", shownNew, "shownChurn", shownConfirmedChurn, "shownResidual", shownResidual, "computed", shownNew - shownConfirmedChurn + shownResidual, "shownDelta", shownDelta);
+      }
+      if (Math.abs(shownResidual) > worstResidualAbs) { worstResidualAbs = Math.abs(shownResidual); worstResidualIdx = i; }
+    });
+    console.log("b1-netgrowth: «Кол-во клиентов» в таблице совпадает с независимым computeSnapshot по каждому месяцу:", !activeMismatch ? "OK" : "FAIL");
+    if (activeMismatch) ok = false;
+    console.log("b1-netgrowth: «Дельта изменения» точно равна реальной разнице снэпшотов Активных[i]-Активных[i-1] по каждому месяцу:", !deltaMismatch ? "OK" : "FAIL");
+    if (deltaMismatch) ok = false;
+    console.log("b1-netgrowth: Новые − ПодтвОтток + Временный_разрыв === Дельта изменения (внутренняя арифметика) по каждому месяцу:", !arithmeticMismatch ? "OK" : "FAIL");
+    if (arithmeticMismatch) ok = false;
+
+    if (worstResidualIdx >= 0 && worstResidualAbs > 0) {
+      ngRows[worstResidualIdx].dispatchEvent(new win.Event("click", { bubbles: true }));
+      const drillTables = ngNode.querySelectorAll("table");
+      const drillRows = drillTables.length > 1 ? drillTables[drillTables.length - 1].querySelectorAll("tbody tr").length : 0;
+      console.log("b1-netgrowth: клик по строке с наибольшим «Временным разрывом» (" + worstResidualAbs + ") открывает непустой список:", drillRows > 0 ? "OK" : "FAIL", drillRows, "строк");
+      if (drillRows === 0) ok = false;
+    } else {
+      console.log("b1-netgrowth: «Временный разрыв» везде 0 на этом периоде/файле -- клик по drill не проверялся (нечего раскрывать)");
+    }
+  }
+
+  // b2-netgrowth "Прирост базы (кассы)" -- эту таблицу не трогали (нет 4-й колонки, "Дельта"
+  // по-прежнему Новые-Отток как раньше), но formula-фикс kassaLapsedAt (metrics.js, 2026-09-08)
+  // меняет числа в колонке "Активных касс" для КАЖДОГО прошлого месяца -- проверяем, что
+  // рендер по-прежнему честно совпадает с независимым пересчётом (уже используем расширенный
+  // период из блока b1-netgrowth выше -- ctx ещё не восстановлен).
+  {
+    const ngCtx = win.OFDState.ctx;
+    const ngKassaNode = win.document.querySelector('[data-widget-id="b2-netgrowth"]');
+    const ngKassaSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, true);
+    function ngKassaEndClamped(m) {
+      const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      return end < ngCtx.asOf ? end : ngCtx.asOf;
+    }
+    const ngKassaRows = Array.from(ngKassaNode.querySelectorAll("table tbody tr"));
+    let kassaActiveMismatch = false, kassaNaNFound = false;
+    const numK = (td) => {
+      const v = parseInt(td.textContent.replace(/\s/g, "").replace("+", ""), 10);
+      if (Number.isNaN(v)) kassaNaNFound = true;
+      return v;
+    };
+    ngKassaRows.forEach((tr, i) => {
+      const m = ngKassaSeries.months[i];
+      if (!m) return;
+      const expected = win.OFDMetrics.computeSnapshot(model, ngKassaEndClamped(m), { strict: ngCtx.strict }).activeKassas;
+      const shown = numK(tr.children[4]);
+      numK(tr.children[1]); numK(tr.children[3]); // заодно ловим NaN в остальных числовых колонках
+      if (shown !== expected) kassaActiveMismatch = true;
+    });
+    console.log("b2-netgrowth: строк в таблице:", ngKassaRows.length, "vs месяцев:", ngKassaSeries.months.length, ngKassaRows.length === ngKassaSeries.months.length ? "OK" : "FAIL");
+    if (ngKassaRows.length !== ngKassaSeries.months.length) ok = false;
+    console.log("b2-netgrowth: «Активных касс» в таблице совпадает с независимым computeSnapshot (после formula-фикса) по каждому месяцу:", !kassaActiveMismatch ? "OK" : "FAIL");
+    if (kassaActiveMismatch) ok = false;
+    console.log("b2-netgrowth: нет NaN в числовых колонках:", !kassaNaNFound ? "OK" : "FAIL");
+    if (kassaNaNFound) ok = false;
+  }
+  win.OFDState.ctx = ngOrigCtx; // возвращаем период -- не протекает в следующие тесты
+  win.OFDCanvas.rerenderAll();
+
   // B8 "Обмен с 1С" -- на реальном файле сверки, если путь передан (личный файл в Downloads,
   // не часть репозитория, поэтому опционален через отдельный env var, не валит весь сьют,
   // если не задан). Тот же приём, что для основного файла (строка 66-67 выше) -- парсим

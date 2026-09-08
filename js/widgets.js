@@ -578,7 +578,11 @@
   // activeByMonth — массив того же размера что series.months: действующие (клиенты или
   // кассы) на КОНЕЦ КАЖДОГО месяца (не одно фиксированное "сейчас" на все строки) — п.5,
   // 2026-08-11. % оттока/% притока считаются от знаменателя СВОЕГО месяца, не текущего.
-  function gradientFlowTable(series, activeByMonth, unitLabel) {
+  // opts (необязательно, 2026-09-08, пока только b1-netgrowth) -- {realDeltaByMonth,
+  // residualByMonth, residualLabel, onResidualClick(monthLabel)}. Без opts поведение НЕ
+  // меняется ни на йоту (b2-netgrowth/b8-1c-growth продолжают работать как раньше).
+  function gradientFlowTable(series, activeByMonth, unitLabel, opts) {
+    opts = opts || {};
     var wrap = el("<div></div>");
     var tableHolder = el('<div></div>');
     wrap.appendChild(tableHolder);
@@ -590,31 +594,50 @@
     function render() {
       var rows = series.months.map(function (m, i) {
         var denom = activeByMonth[i];
-        var net = series.newByMonth[i] - series.churnByMonth[i];
+        var officialNet = series.newByMonth[i] - series.churnByMonth[i];
+        var net = opts.realDeltaByMonth ? opts.realDeltaByMonth[i] : officialNet;
         var sign = net > 0 ? "+" : "";
         var churnText = '<span style="color:var(--crit)">' + fmtNum(series.churnByMonth[i]) + '</span>';
         if (series.graceByMonth[i] > 0) {
           churnText += ' <span style="color:var(--warn)">(' + fmtNum(series.graceByMonth[i]) + ' не продлились)</span>';
         }
-        return [
+        var row = [
           MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear(),
           fmtNum(series.newByMonth[i]),
           churnText,
-          sign + fmtNum(Math.abs(net)),
+          sign + fmtNum(net), // fmtNum сам ставит "-" на отрицательных (toLocaleString) -- Math.abs()
+                               // тут был БАГОМ (2026-09-08): стирал минус на любом отрицательном net,
+                               // отрицательная дельта показывалась как положительная. Задело и
+                               // b2-netgrowth/b8-1c-growth (та же функция) -- не только этот борд.
           fmtNum(denom),
           pct(series.churnByMonth[i], denom),
           pct(series.newByMonth[i], denom),
         ];
+        if (opts.residualByMonth) {
+          var r = opts.residualByMonth[i];
+          row.push((r > 0 ? "+" : "") + fmtNum(r));
+        }
+        return row;
       });
+      var headers = [
+        { label: "Месяц" }, { label: "Новые" }, { label: "Факт. отток (не продлились)", html: true }, { label: "Дельта изменения" },
+        { label: "Кол-во " + unitLabel, num: true }, { label: "% оттока", num: true }, { label: "% притока", num: true },
+      ];
+      if (opts.residualByMonth) headers.push({ label: opts.residualLabel || "Временный разрыв", num: true });
       tableHolder.innerHTML = "";
-      tableHolder.appendChild(makeSortableTable(
-        [{ label: "Месяц" }, { label: "Новые" }, { label: "Факт. отток (не продлились)", html: true }, { label: "Дельта изменения" },
-         { label: "Кол-во " + unitLabel, num: true }, { label: "% оттока", num: true }, { label: "% притока", num: true }],
-        rows
-      ));
+      var tableWrap = makeSortableTable(headers, rows);
+      tableHolder.appendChild(tableWrap);
+      if (opts.onResidualClick) {
+        tableWrap.querySelectorAll("tbody tr").forEach(function (tr) {
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () { opts.onResidualClick(tr.children[0].textContent); });
+        });
+      }
     }
     render();
-    wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">Красным — подтверждённый отток (30+ дней). Оранжевым в скобках — ещё не продлились (0-30 дней), может стать оттоком позже. «Кол-во ' + unitLabel + '» — действующих на КОНЕЦ соответствующего месяца (не сейчас) — от этого числа считаются % оттока/притока в той же строке.</div>'));
+    var note = 'Красным — подтверждённый отток (30+ дней). Оранжевым в скобках — ещё не продлились (0-30 дней), может стать оттоком позже. «Кол-во ' + unitLabel + '» — действующих на КОНЕЦ соответствующего месяца (не сейчас) — от этого числа считаются % оттока/притока в той же строке.';
+    if (opts.residualByMonth) note += ' «Дельта изменения» теперь — реальная разница «Кол-во ' + unitLabel + '» между этим и прошлым месяцем (не Новые−Отток напрямую). «' + (opts.residualLabel || "Временный разрыв") + '» — остаток, который делает эту сходимость точной, см. подробности по клику на строку.';
+    wrap.appendChild(el('<div class="stat-label" style="margin-top:6px">' + note + '</div>'));
     return wrap;
   }
 
@@ -749,6 +772,93 @@
     exportable: true,
   };
 
+  // ---------- Сверка "Прирост базы" со снэпшотом активных (Дима, 2026-09-08) ----------
+  //
+  // Проблема (найдена и разобрана в чате, реальные данные): "Дельта" (Новых-ПодтвОтток) и
+  // разница "Активных на конец месяца" между соседними месяцами -- НЕ обязаны совпадать.
+  // Причина: `c.currentEnd` -- максимум по ВСЕЙ жизни клиента, сдвигается вперёд при любом
+  // будущем продлении -- старый разрыв покрытия "стирается" из подтверждённого оттока
+  // (событие оттока привязано к currentEnd, а не к дате КОНКРЕТНОГО разрыва). На реальном
+  // файле (2022-02..2026-09) суммарный дрейф — 127174 клиента, 77924 клиента сейчас "зависли"
+  // с currentEnd больше чем на 90 дней в будущем.
+  //
+  // Решение (согласовано с Димой): смысл "Новые"/"Отток" (30-дневный грейс) НЕ трогаем --
+  // используется везде в приложении. Вместо этого явно считаем Остаток = РеальнаяДельта -
+  // (Новых-Отток) и показываем отдельной колонкой "Временный разрыв". ТОЛЬКО для
+  // b1-netgrowth -- изолировано намеренно (для лёгкого отката, см. чат): не трогает
+  // metrics.js, не трогает b2-netgrowth/b8-1c-growth (те просто не передают новые opts в
+  // gradientFlowTable ниже).
+  function netgrowthActiveInnSet(model, ctx, atDate) {
+    var set = new Set();
+    model.clients.forEach(function (c) {
+      if (!ctx.M.clientLapsedAt(c, atDate)) set.add(c.key);
+    });
+    return set;
+  }
+  function netgrowthMonthEndClamped(m, asOf) {
+    var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+    return end < asOf ? end : asOf;
+  }
+  // Возвращает { realDeltaByMonth, residualByMonth, drill } -- drill[i] = {extraEntered,
+  // extraLeft} (массивы ИНН), для раскрытия по клику (иллюстративный список "кто это").
+  // Остаток[i] считается НАПРЯМУЮ как РеальнаяДельта[i] - (Новых[i]-Отток[i]) -- гарантированно
+  // точно по построению (тавтология), а НЕ через |extraEntered|-|extraLeft| (тот способ
+  // проверялся математически точным, но на реальных данных нашёлся редкий edge-case --
+  // клиент появился и уже потерял покрытие В ТЕЧЕНИЕ ТОГО ЖЕ месяца, короткий тариф без
+  // продления: он есть в OfficialNew, но не в Entered (то же самое зеркально возможно и для
+  // Left/OfficialChurn) -- расхождение на единицы, некритично для ЧИСЛА, но ломало точное
+  // равенство. Число теперь точное всегда; extraEntered/extraLeft в drill могут не суммироваться
+  // ровно в это число в этих редких случаях -- список иллюстративный, не формальное тождество).
+  function netgrowthReconcile(model, ctx, months, series, clientsNewInMonthFn, clientsChurnedInMonthFn) {
+    if (!months.length) return { realDeltaByMonth: [], residualByMonth: [], drill: [] };
+    var boundaryMonths = [ctx.M.addMonths(months[0], -1)].concat(months);
+    var boundarySets = boundaryMonths.map(function (m) {
+      return netgrowthActiveInnSet(model, ctx, netgrowthMonthEndClamped(m, ctx.asOf));
+    });
+    var realDeltaByMonth = [], residualByMonth = [], drill = [];
+    for (var i = 0; i < months.length; i++) {
+      var before = boundarySets[i], after = boundarySets[i + 1];
+      var entered = [], left = [];
+      after.forEach(function (inn) { if (!before.has(inn)) entered.push(inn); });
+      before.forEach(function (inn) { if (!after.has(inn)) left.push(inn); });
+      var officialNewInns = new Set(clientsNewInMonthFn(months[i]).map(function (x) { return x.key; }));
+      var officialChurnInns = new Set(clientsChurnedInMonthFn(months[i]).map(function (x) { return x.key; }));
+      var extraEntered = entered.filter(function (inn) { return !officialNewInns.has(inn); });
+      var extraLeft = left.filter(function (inn) { return !officialChurnInns.has(inn); });
+      var realDelta = after.size - before.size;
+      var officialNet = series.newByMonth[i] - series.churnByMonth[i];
+      realDeltaByMonth.push(realDelta);
+      residualByMonth.push(realDelta - officialNet);
+      drill.push({ extraEntered: extraEntered, extraLeft: extraLeft });
+    }
+    return { realDeltaByMonth: realDeltaByMonth, residualByMonth: residualByMonth, drill: drill };
+  }
+  var NETGROWTH_RESIDUAL_COLUMNS = [
+    { label: "ИНН", key: "key" }, { label: "Наименование", key: "org" },
+    { label: "Партнёр", key: "partner" }, { label: "Активных касс", key: "activeKassas", num: true },
+    { label: "Что произошло", key: "type" },
+  ];
+  function netgrowthResidualRow(model, ctx, inn, type) {
+    var c = model.clients.get(inn);
+    if (!c) return null;
+    var activeKassas = c.kassas.filter(function (k) { return ctx.M.isKassaAlive(k, ctx.asOf, true); }).length;
+    return { key: inn, org: c.org, partner: c.partner, activeKassas: activeKassas, type: type };
+  }
+  function renderNetgrowthResidualDrill(container, model, ctx, drillEntry, monthDate) {
+    var rows = [];
+    drillEntry.extraEntered.forEach(function (inn) {
+      var r = netgrowthResidualRow(model, ctx, inn, "Стал активен (не входит в «Новые» этого месяца)");
+      if (r) rows.push(r);
+    });
+    drillEntry.extraLeft.forEach(function (inn) {
+      var r = netgrowthResidualRow(model, ctx, inn, "Стал неактивен (не входит в подтверждённый «Отток» этого месяца)");
+      if (r) rows.push(r);
+    });
+    var monthLabel = MONTHS_SHORT[monthDate.getMonth()] + " " + monthDate.getFullYear();
+    renderDrillList(container, rows, NETGROWTH_RESIDUAL_COLUMNS, "Временный разрыв · " + monthLabel);
+    container.appendChild(el('<div class="stat-label" style="margin-top:6px">Клиенты, у кого физически поменялось покрытие на конец месяца, но событие не попало ни в «Новые», ни в подтверждённый «Отток» — обычно потому, что их «Общая дата окончания» уже сдвинута далеко вперёд более поздним продлением, и старый разрыв формально «не отток» (статус ещё pending относительно НОВОЙ даты). Не путать с оранжевым «(N не продлились)» в колонке «Отток» — там про грейс 0-30 дней у клиентов, чей КОНЕЦ приходится именно на этот месяц.</div>'));
+  }
+
   WIDGETS["b1-netgrowth"] = {
     // Переименован "Нетто-прирост базы" -> "Прирост базы" (п.3.3). 3 градации оттока +
     // тумблер % (п.3.1/3.2/3.4). Накопительная кривая — по подтверждённому оттоку (не
@@ -759,6 +869,10 @@
     render: function (model, ctx) {
       var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
       var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, false);
+      var reconcile = netgrowthReconcile(model, ctx, series.months, series,
+        function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); },
+        function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }
+      );
       var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
       var returnedActiveByMonth = null; // считается лениво вместе с returnedSeries -- свой months-массив
 
@@ -779,11 +893,12 @@
       wrap.appendChild(viewHolder);
 
       function renderCumView() {
-        var cum = [], net = [], acc = 0;
-        for (var i = 0; i < series.months.length; i++) {
-          var n = series.newByMonth[i] - series.churnByMonth[i];
-          net.push(n); acc += n; cum.push(acc);
-        }
+        // Накопительная линия теперь строится по РЕАЛЬНОЙ разнице снэпшотов "Активных"
+        // (reconcile.realDeltaByMonth), а не по Новые-ПодтвОтток -- график буквально
+        // повторяет форму "Активных на конец месяца" (см. чат 2026-09-08 -- та самая
+        // сходимость, которую просил Дима).
+        var cum = [], net = reconcile.realDeltaByMonth, acc = 0;
+        for (var i = 0; i < series.months.length; i++) { acc += net[i]; cum.push(acc); }
         var tooltips = series.months.map(function (m, i) {
           var sign = net[i] > 0 ? "+" : "";
           return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
@@ -792,8 +907,20 @@
         var v = el("<div></div>");
         v.appendChild(el('<div>' + chart + '</div>'));
         var tableHolder = el('<div style="margin-top:14px"></div>');
-        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов"));
+        var residualDrillHolder = el('<div style="margin-top:10px"></div>');
+        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов", {
+          realDeltaByMonth: reconcile.realDeltaByMonth,
+          residualByMonth: reconcile.residualByMonth,
+          residualLabel: "Временный разрыв (вне грейса)",
+          onResidualClick: function (monthLabel) {
+            var idx = series.months.findIndex(function (m) { return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() === monthLabel; });
+            if (idx < 0) return;
+            renderNetgrowthResidualDrill(residualDrillHolder, model, ctx, reconcile.drill[idx], series.months[idx]);
+          },
+        }));
         v.appendChild(tableHolder);
+        v.appendChild(el('<div class="stat-label" style="margin-top:2px">Клик по строке таблицы — раскрытие «Временного разрыва» этого месяца.</div>'));
+        v.appendChild(residualDrillHolder);
         return v;
       }
 
