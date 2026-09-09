@@ -635,6 +635,28 @@
     return { months: months, countByMonth: countByMonth };
   }
 
+  // Помесячный счёт "вернувшихся" по МЕСЯЦУ ИСХОДНОГО ОТТОКА (ri.gapEnd — дата, из которой
+  // ушли), не по месяцу возврата (в отличие от computeReturnedByMonth выше) — Дима,
+  // 2026-09-09: колонка "Вернувшиеся" в "Прирост базы", в строке месяца N показывает,
+  // сколько из оттока ИМЕННО этого месяца уже продлились к текущему asOf. То же понятие
+  // "Возврат" (findReturn/clientReturnInfo), оба тега разом (вернувшийся 31-90 дней +
+  // возвращённый 91д-3года) — грейс (ri.days <= 30) исключён явно, это не отток, его не
+  // нужно "возвращать". Ограничение унаследовано от findReturn: ловит только ПОСЛЕДНИЙ
+  // разрыв-возврат в истории клиента (см. комментарий у findReturn) — то же самое
+  // ограничение, что и у "Возвращённые клиенты", ничем не хуже.
+  function computeReturnedByChurnMonth(model, periodStart, periodEnd) {
+    var months = buildMonthRange(periodStart, periodEnd);
+    var countByMonth = months.map(function () { return 0; });
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var ri = clientReturnInfo(c);
+      if (!ri || ri.days <= 30 || !inRange(ri.gapEnd, periodStart, periodEnd)) return;
+      var i = monthIndexOf(months, ri.gapEnd);
+      if (i >= 0) countByMonth[i]++;
+    });
+    return { months: months, countByMonth: countByMonth };
+  }
+
   function activeKassaCountOf(client, asOf) {
     return client.kassas.filter(function (k) { return !kassaLapsedAt(k, asOf); }).length;
   }
@@ -1583,6 +1605,7 @@
     computeMonthlySeriesKassas: computeMonthlySeriesKassas,
     computeChurnGradient: computeChurnGradient,
     computeReturnedByMonth: computeReturnedByMonth,
+    computeReturnedByChurnMonth: computeReturnedByChurnMonth,
     clientsNewInMonth: clientsNewInMonth,
     clientsReturnedInMonth: clientsReturnedInMonth,
     clientsChurnedInMonth: clientsChurnedInMonth,

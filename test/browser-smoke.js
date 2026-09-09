@@ -690,15 +690,16 @@ async function main() {
   renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
 
   // b1-netgrowth "Прирост базы" -- сходимость "Дельта изменения" с реальной разницей
-  // снэпшотов "Активных на конец месяца" (Дима, 2026-09-08, см. чат: до правки Новые-Отток
-  // НЕ обязана была совпадать с фактическим изменением активных из-за того, что currentEnd
-  // клиента -- максимум по всей его жизни, сдвигается вперёд при будущих продлениях и
-  // "стирает" старые разрывы из подтверждённого оттока). Проверка -- независимый пересчёт
-  // снэпшотов через computeSnapshot напрямую, не через тот же путь, что использует виджет.
-  // Дефолтный тестовый период (2024) может не пересекаться с данными конкретного файла
-  // (напр. выгрузка только с 2025) -- тогда "Временный разрыв" тривиально везде 0, это не
-  // проверяет реальную ветку. Временно расширяем период на весь диапазон файла, потом
-  // возвращаем обратно -- не протекает в последующие тесты (та же дисциплина, что и
+  // снэпшотов "Активных на конец месяца" (currentEnd клиента -- максимум по всей его жизни,
+  // сдвигается вперёд при будущих продлениях -- Новые-Отток НЕ обязана совпадать с реальным
+  // изменением активных, это осознанный риск динамических данных, не баг, см. HISTORY.md
+  // 2026-09-08/09). Колонка "Временный разрыв" убрана 2026-09-09 (Дима отклонил как лишнюю
+  // сложность) -- вместо неё "Грейс" (своя колонка, было в скобках) и "Вернувшиеся" (сколько
+  // из оттока ИМЕННО этого месяца уже продлились сейчас, computeReturnedByChurnMonth).
+  // Проверка -- независимый пересчёт снэпшотов через computeSnapshot напрямую, не через тот
+  // же путь, что использует виджет. Дефолтный тестовый период может не пересекаться с
+  // данными файла -- временно расширяем период на весь диапазон файла, потом возвращаем
+  // обратно -- не протекает в последующие тесты (та же дисциплина, что и
   // ofd1cSetState({records:null,...}) ниже).
   const ngOrigCtx = win.OFDState.ctx;
   const ngMinAppearance = Array.from(model.clients.values()).reduce((min, c) => (c.appearance && (!min || c.appearance < min) ? c.appearance : min), null);
@@ -708,6 +709,7 @@ async function main() {
     const ngCtx = win.OFDState.ctx;
     const ngNode = win.document.querySelector('[data-widget-id="b1-netgrowth"]');
     const ngSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, false);
+    const ngReturned = win.OFDMetrics.computeReturnedByChurnMonth(model, ngCtx.periodStart, ngCtx.periodEnd).countByMonth;
     function ngMonthEndClamped(m) {
       const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
       return end < ngCtx.asOf ? end : ngCtx.asOf;
@@ -717,67 +719,37 @@ async function main() {
     }
     const ngRows = Array.from(ngNode.querySelectorAll("table tbody tr"));
     console.log("b1-netgrowth: число строк таблицы совпадает с числом месяцев периода:", ngRows.length === ngSeries.months.length ? "OK" : "FAIL", ngRows.length, "vs", ngSeries.months.length);
-    let deltaMismatch = false, activeMismatch = false, arithmeticMismatch = false;
-    let worstResidualIdx = -1, worstResidualAbs = -1;
+    if (ngRows.length !== ngSeries.months.length) ok = false;
+    // Колонки: Месяц, Новые, Отток, Грейс, Вернувшиеся, Дельта изменения, Кол-во клиентов, % оттока, % притока
+    let deltaMismatch = false, activeMismatch = false, churnMismatch = false, graceMismatch = false, returnedMismatch = false;
     const num = (td) => parseInt(td.textContent.replace(/\s/g, "").replace("+", ""), 10);
     ngRows.forEach((tr, i) => {
       const m = ngSeries.months[i];
       const prevM = i === 0 ? win.OFDMetrics.addMonths(ngSeries.months[0], -1) : ngSeries.months[i - 1];
       const expectedRealDelta = ngActiveAt(m) - ngActiveAt(prevM);
-      const shownActive = num(tr.children[4]);
-      const shownDelta = num(tr.children[3]);
       const shownNew = num(tr.children[1]);
-      const shownConfirmedChurn = parseInt(tr.children[2].querySelector("span").textContent.replace(/\s/g, ""), 10);
-      const shownResidual = num(tr.children[7]);
+      const shownChurn = num(tr.children[2]);
+      const shownGrace = num(tr.children[3]);
+      const shownReturned = num(tr.children[4]);
+      const shownDelta = num(tr.children[5]);
+      const shownActive = num(tr.children[6]);
       if (shownActive !== ngActiveAt(m)) activeMismatch = true;
       if (shownDelta !== expectedRealDelta) deltaMismatch = true;
-      if (shownNew - shownConfirmedChurn + shownResidual !== shownDelta) {
-        arithmeticMismatch = true;
-        if (process.env.NG_DEBUG) console.error("DEBUG2 row", i, "shownNew", shownNew, "shownChurn", shownConfirmedChurn, "shownResidual", shownResidual, "computed", shownNew - shownConfirmedChurn + shownResidual, "shownDelta", shownDelta);
-      }
-      if (Math.abs(shownResidual) > worstResidualAbs) { worstResidualAbs = Math.abs(shownResidual); worstResidualIdx = i; }
+      if (shownNew !== ngSeries.newByMonth[i]) { /* новые сверяются отдельно другими тестами выше -- тут не дублируем */ }
+      if (shownChurn !== ngSeries.churnByMonth[i]) churnMismatch = true;
+      if (shownGrace !== ngSeries.graceByMonth[i]) graceMismatch = true;
+      if (shownReturned !== (ngReturned[i] || 0)) returnedMismatch = true;
     });
     console.log("b1-netgrowth: «Кол-во клиентов» в таблице совпадает с независимым computeSnapshot по каждому месяцу:", !activeMismatch ? "OK" : "FAIL");
     if (activeMismatch) ok = false;
     console.log("b1-netgrowth: «Дельта изменения» точно равна реальной разнице снэпшотов Активных[i]-Активных[i-1] по каждому месяцу:", !deltaMismatch ? "OK" : "FAIL");
     if (deltaMismatch) ok = false;
-    console.log("b1-netgrowth: Новые − ПодтвОтток + Временный_разрыв === Дельта изменения (внутренняя арифметика) по каждому месяцу:", !arithmeticMismatch ? "OK" : "FAIL");
-    if (arithmeticMismatch) ok = false;
-
-    if (worstResidualIdx >= 0 && worstResidualAbs > 0) {
-      ngRows[worstResidualIdx].dispatchEvent(new win.Event("click", { bubbles: true }));
-      const drillTables = ngNode.querySelectorAll("table");
-      const drillTable = drillTables.length > 1 ? drillTables[drillTables.length - 1] : null;
-      const drillRows = drillTable ? drillTable.querySelectorAll("tbody tr").length : 0;
-      console.log("b1-netgrowth: клик по строке с наибольшим «Временным разрывом» (" + worstResidualAbs + ") открывает непустой список:", drillRows > 0 ? "OK" : "FAIL", drillRows, "строк");
-      if (drillRows === 0) ok = false;
-
-      // Классификация причины (Дима, 2026-09-08: "перепроверь логику, перепиши") -- drill
-      // ОБЯЗАН различать грейс/спрятанный-отток/возврат явно, не смешивать в одном тексте.
-      const drillHeadersNg = drillTable ? Array.from(drillTable.querySelectorAll("th")).map((th) => th.textContent) : [];
-      const hasTypeCol = drillHeadersNg.includes("Что произошло");
-      const hasDateCol = drillHeadersNg.includes("Ключевая дата");
-      console.log("b1-netgrowth: drill содержит колонки «Что произошло» и «Ключевая дата»:", hasTypeCol && hasDateCol ? "OK" : "FAIL", drillHeadersNg);
-      if (!hasTypeCol || !hasDateCol) ok = false;
-
-      const typeColIdx = drillHeadersNg.indexOf("Что произошло");
-      const dateColIdx = drillHeadersNg.indexOf("Ключевая дата");
-      const knownTypes = ["Грейс", "Отток спрятан", "Продлился до истечения", "Возврат после разрыва", "Не классифицировано"];
-      let unknownType = false, emptyDate = false;
-      if (drillTable && typeColIdx >= 0 && dateColIdx >= 0) {
-        drillTable.querySelectorAll("tbody tr").forEach((tr) => {
-          const typeText = tr.children[typeColIdx].textContent;
-          if (!knownTypes.some((k) => typeText.indexOf(k) === 0)) unknownType = true;
-          if (tr.children[dateColIdx].textContent.trim() === "—" || tr.children[dateColIdx].textContent.trim() === "") emptyDate = true;
-        });
-      }
-      console.log("b1-netgrowth: у каждой строки drill есть распознанный тип из известного набора:", !unknownType ? "OK" : "FAIL");
-      if (unknownType) ok = false;
-      console.log("b1-netgrowth: у каждой строки drill проставлена «Ключевая дата» (не пусто):", !emptyDate ? "OK" : "FAIL");
-      if (emptyDate) ok = false;
-    } else {
-      console.log("b1-netgrowth: «Временный разрыв» везде 0 на этом периоде/файле -- клик по drill не проверялся (нечего раскрывать)");
-    }
+    console.log("b1-netgrowth: «Отток» в таблице совпадает с series.churnByMonth:", !churnMismatch ? "OK" : "FAIL");
+    if (churnMismatch) ok = false;
+    console.log("b1-netgrowth: «Грейс» в таблице совпадает с series.graceByMonth:", !graceMismatch ? "OK" : "FAIL");
+    if (graceMismatch) ok = false;
+    console.log("b1-netgrowth: «Вернувшиеся» в таблице совпадает с computeReturnedByChurnMonth:", !returnedMismatch ? "OK" : "FAIL");
+    if (returnedMismatch) ok = false;
   }
 
   // b2-netgrowth "Прирост базы (кассы)" -- эту таблицу не трогали (нет 4-й колонки, "Дельта"
