@@ -98,7 +98,7 @@
       partners.map(function (p) { return '<option>' + esc(p) + '</option>'; }).join("") + '</select></label>' +
       '<label>Тариф <select class="f-tariff"><option value="">все</option>' +
       tariffs.map(function (t) { return '<option>' + esc(t) + '</option>'; }).join("") + '</select></label>' +
-      '<label>Статус <select class="f-status"><option value="">все</option><option value="alive">активна</option><option value="lapsed">в оттоке</option></select></label>' +
+      '<label>Статус <select class="f-status"><option value="">все</option><option value="alive">активна</option><option value="lapsed">не действует</option></select></label>' +
       '<label>ИНН клиента <input type="text" class="f-inn" placeholder="поиск" style="width:110px"></label>' +
       '<span style="display:flex;gap:8px;align-items:center;color:var(--muted)">Продлений:' +
       RENEWAL_BUCKETS.map(function (b) { return '<label style="display:flex;gap:3px;align-items:center;color:var(--ink)"><input type="checkbox" class="f-ren" value="' + b.id + '"> ' + b.label + '</label>'; }).join("") +
@@ -135,7 +135,20 @@
         // k.overallEnd), не прячем её за пустотой, когда касса уже в оттоке (п.17.2,
         // 2026-08-06). Статус-пилюля отдельно берёт живую дедлайн-логику (deadlineOf).
         var deadline = deadlineOf(k);
-        var status = deadline ? riskPill(daysBetween(asOf, deadline)) : '<span class="status-pill crit"><span class="dot"></span>в оттоке</span>';
+        var status;
+        if (deadline) {
+          status = riskPill(daysBetween(asOf, deadline));
+        } else {
+          // Не действует прямо сейчас -- но это ещё не значит "отток" (п.1, метрики
+          // 2026-08-06): 0-30 дней после даты окончания -- грейс, продление ещё может
+          // спасти, финальный отток не подтверждён и никуда не засчитывается. Раньше
+          // пилюля сразу красным писала "в оттоке" с первого дня просрочки -- расходилось
+          // с формулой оттока (churnStatusFromEnd) и путало Диму визуально (2026-09-09).
+          var overdueDays = daysBetween(k.overallEnd, asOf);
+          status = M && M.kassaChurnStatus(k, asOf) === "pending"
+            ? '<span class="status-pill warn"><span class="dot"></span>грейс · ' + overdueDays + ' дн.</span>'
+            : '<span class="status-pill crit"><span class="dot"></span>' + overdueDays + ' дн. в оттоке</span>';
+        }
         var row = [k.rnm, k.clientKey || "—", k.partner || "—", k.renewals];
         if (!opts.hideTariff) row.push(k.tariff || "—");
         row.push(fmtDate(k.overallEnd), status);
@@ -175,7 +188,9 @@
           var row = { РНМ: k.rnm, ИННКлиента: k.clientKey || "", Партнёр: k.partner || "", Продлений: k.renewals };
           if (!opts.hideTariff) row.Тариф = k.tariff || "";
           row.ОбщаяДатаОкончания = fmtDate(k.overallEnd);
-          row.Статус = alive ? "активна" : "в оттоке";
+          // Тот же грейс-фикс, что и в статус-пилюле на экране (2026-09-09) — экспорт не
+          // должен расходиться с тем, что видно в таблице.
+          row.Статус = alive ? "активна" : (M && M.kassaChurnStatus(k, asOf) === "pending" ? "грейс (0-30 дн.)" : "в оттоке");
           return row;
         });
       };
