@@ -594,12 +594,17 @@
   // кассы) на КОНЕЦ КАЖДОГО месяца (не одно фиксированное "сейчас" на все строки) — п.5,
   // 2026-08-11. % оттока/% притока считаются от знаменателя СВОЕГО месяца, не текущего.
   // opts (необязательно, пока только b1-netgrowth) -- {realDeltaByMonth, graceColumn,
-  // returnedByMonth}. Без opts поведение НЕ меняется ни на йоту (b2-netgrowth/b8-1c-growth
-  // продолжают работать как раньше). Раньше (2026-09-08) тут была ещё колонка "Временный
-  // разрыв" (residualByMonth) — убрана 2026-09-09 по решению Димы: отток считается от
-  // currentEnd, который сдвигается будущими продлениями — это осознанный риск динамических
-  // данных ("плюс-минус похоже на правду"), не баг, который нужно было патчить остатком.
-  // Вместо него — прозрачные "Грейс" и "Вернувшиеся" колонки (см. WIDGETS["b1-netgrowth"]).
+  // graceByMonth, returnedByMonth}. Без opts поведение НЕ меняется ни на йоту
+  // (b2-netgrowth/b8-1c-growth продолжают работать как раньше, видят "сырой"
+  // series.graceByMonth). graceByMonth (если передан) заменяет series.graceByMonth только
+  // для отображения в колонке "Грейс" — используется в b1-netgrowth, чтобы показать ПОЛНЫЙ
+  // грейс (текущий незакрытый + уже закрывшиеся короткие разрывы, см.
+  // computeClosedGraceByMonth в metrics.js), а не только текущий. Раньше (2026-09-08) тут
+  // была ещё колонка "Временный разрыв" (residualByMonth) — убрана 2026-09-09 по решению
+  // Димы: отток считается от currentEnd, который сдвигается будущими продлениями — это
+  // осознанный риск динамических данных ("плюс-минус похоже на правду"), не баг, который
+  // нужно было патчить остатком. Вместо него — прозрачные "Грейс" и "Вернувшиеся" колонки
+  // (см. WIDGETS["b1-netgrowth"]).
   function gradientFlowTable(series, activeByMonth, unitLabel, opts) {
     opts = opts || {};
     var wrap = el("<div></div>");
@@ -630,7 +635,7 @@
           fmtNum(series.newByMonth[i]),
           churnCell,
         ];
-        if (opts.graceColumn) row.push(fmtNum(series.graceByMonth[i]));
+        if (opts.graceColumn) row.push(fmtNum((opts.graceByMonth || series.graceByMonth)[i]));
         if (opts.returnedByMonth) row.push(fmtNum(opts.returnedByMonth[i] || 0));
         row.push(sign + fmtNum(net)); // fmtNum сам ставит "-" на отрицательных (toLocaleString) --
                                        // Math.abs() тут был БАГОМ (2026-09-08): стирал минус на
@@ -848,6 +853,13 @@
       var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, false);
       var realDeltaByMonth = netgrowthRealDeltaByMonth(model, ctx, series.months);
       var returnedByChurnMonth = ctx.M.computeReturnedByChurnMonth(model, ctx.periodStart, ctx.periodEnd).countByMonth;
+      // "Полный" грейс = текущий незакрытый (series.graceByMonth, currentEnd-based) +
+      // уже закрывшиеся короткие разрывы (Дима, 2026-09-09 — currentEnd-based грейс
+      // пропускает клиентов, у которых был короткий разрыв в середине истории, а потом
+      // ещё одно продление сдвинуло currentEnd вперёд — см. HISTORY.md, реальный пример
+      // КОРУНД-СОФТ). Множества не пересекаются (см. комментарий в metrics.js).
+      var closedGraceByMonth = ctx.M.computeClosedGraceByMonth(model, ctx.periodStart, ctx.periodEnd).countByMonth;
+      var fullGraceByMonth = series.months.map(function (m, i) { return series.graceByMonth[i] + (closedGraceByMonth[i] || 0); });
       var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
       var returnedActiveByMonth = null; // считается лениво вместе с returnedSeries -- свой months-массив
 
@@ -884,6 +896,7 @@
         tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов", {
           realDeltaByMonth: realDeltaByMonth,
           graceColumn: true,
+          graceByMonth: fullGraceByMonth,
           returnedByMonth: returnedByChurnMonth,
         }));
         v.appendChild(tableHolder);

@@ -710,6 +710,7 @@ async function main() {
     const ngNode = win.document.querySelector('[data-widget-id="b1-netgrowth"]');
     const ngSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, false);
     const ngReturned = win.OFDMetrics.computeReturnedByChurnMonth(model, ngCtx.periodStart, ngCtx.periodEnd).countByMonth;
+    const ngClosedGrace = win.OFDMetrics.computeClosedGraceByMonth(model, ngCtx.periodStart, ngCtx.periodEnd).countByMonth;
     function ngMonthEndClamped(m) {
       const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
       return end < ngCtx.asOf ? end : ngCtx.asOf;
@@ -737,7 +738,7 @@ async function main() {
       if (shownDelta !== expectedRealDelta) deltaMismatch = true;
       if (shownNew !== ngSeries.newByMonth[i]) { /* новые сверяются отдельно другими тестами выше -- тут не дублируем */ }
       if (shownChurn !== ngSeries.churnByMonth[i]) churnMismatch = true;
-      if (shownGrace !== ngSeries.graceByMonth[i]) graceMismatch = true;
+      if (shownGrace !== ngSeries.graceByMonth[i] + (ngClosedGrace[i] || 0)) graceMismatch = true;
       if (shownReturned !== (ngReturned[i] || 0)) returnedMismatch = true;
     });
     console.log("b1-netgrowth: «Кол-во клиентов» в таблице совпадает с независимым computeSnapshot по каждому месяцу:", !activeMismatch ? "OK" : "FAIL");
@@ -746,7 +747,7 @@ async function main() {
     if (deltaMismatch) ok = false;
     console.log("b1-netgrowth: «Отток» в таблице совпадает с series.churnByMonth:", !churnMismatch ? "OK" : "FAIL");
     if (churnMismatch) ok = false;
-    console.log("b1-netgrowth: «Грейс» в таблице совпадает с series.graceByMonth:", !graceMismatch ? "OK" : "FAIL");
+    console.log("b1-netgrowth: «Грейс» в таблице совпадает с graceByMonth+ClosedGrace (полный грейс):", !graceMismatch ? "OK" : "FAIL");
     if (graceMismatch) ok = false;
     console.log("b1-netgrowth: «Вернувшиеся» в таблице совпадает с computeReturnedByChurnMonth:", !returnedMismatch ? "OK" : "FAIL");
     if (returnedMismatch) ok = false;

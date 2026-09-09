@@ -657,6 +657,34 @@
     return { months: months, countByMonth: countByMonth };
   }
 
+  // "Закрытый грейс" по месяцу -- в дополнение к graceByMonth из computeChurnGradient,
+  // который ловит ТОЛЬКО текущий, ещё НЕ закрытый разрыв (currentEnd клиента в этом
+  // месяце, покрытия до сих пор нет). Он целиком пропускает клиентов, у которых был
+  // короткий (<=30 дней) разрыв ГДЕ-ТО В СЕРЕДИНЕ истории, а потом ещё одно продление —
+  // currentEnd сдвигается вперёд на дату этого последующего продления, и клиент выпадает
+  // из проверки "currentEnd в этом месяце" целиком (реальный пример -- Дима, 2026-09-09,
+  // HISTORY.md: разрыв 15.08-03.09.2026, 19 дней, потом продление на годы вперёд —
+  // currentEnd больше не в августе, грейс августа нигде не виден, кроме как минусом в
+  // реальном снэпшоте). Эта функция явно находит такие УЖЕ ЗАКРЫВШИЕСЯ короткие разрывы
+  // через findReturn (та же функция, что и "Вернувшиеся" computeReturnedByChurnMonth
+  // выше, только противоположный фильтр по days). Множества НЕ пересекаются с
+  // graceByMonth: findReturn требует, чтобы СЛЕДУЮЩИЙ интервал уже начался (разрыв
+  // закрылся), а currentEnd-грейс требует, чтобы клиент ПРЯМО СЕЙЧАС оставался лапнутым
+  // (следующего интервала ещё нет) — взаимоисключающие условия, суммировать можно без
+  // задвоения.
+  function computeClosedGraceByMonth(model, periodStart, periodEnd) {
+    var months = buildMonthRange(periodStart, periodEnd);
+    var countByMonth = months.map(function () { return 0; });
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var ri = clientReturnInfo(c);
+      if (!ri || ri.days > 30 || !inRange(ri.gapEnd, periodStart, periodEnd)) return;
+      var i = monthIndexOf(months, ri.gapEnd);
+      if (i >= 0) countByMonth[i]++;
+    });
+    return { months: months, countByMonth: countByMonth };
+  }
+
   function activeKassaCountOf(client, asOf) {
     return client.kassas.filter(function (k) { return !kassaLapsedAt(k, asOf); }).length;
   }
@@ -1606,6 +1634,7 @@
     computeChurnGradient: computeChurnGradient,
     computeReturnedByMonth: computeReturnedByMonth,
     computeReturnedByChurnMonth: computeReturnedByChurnMonth,
+    computeClosedGraceByMonth: computeClosedGraceByMonth,
     clientsNewInMonth: clientsNewInMonth,
     clientsReturnedInMonth: clientsReturnedInMonth,
     clientsChurnedInMonth: clientsChurnedInMonth,
