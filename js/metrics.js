@@ -912,6 +912,7 @@
     var out = [];
     model.clients.forEach(function (c) {
       if (c.phys || !c.appearance) return;
+      if (asOf && c.appearance > asOf) return; // ещё не появился на момент asOf (ретроспектива) -- симметрично computeGapFlow
       if (c.appearance.getFullYear() === y && c.appearance.getMonth() === m) {
         // первое появление -- "ухода" до этого момента не было по определению
         out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: activeKassaCountOf(c, asOf), arrivedAt: c.appearance, leftAt: null });
@@ -996,11 +997,12 @@
     return { rnm: k.rnm, clientKey: k.clientKey || "—", org: client ? client.org : null, partner: k.partner, partnerInn: k.partnerInn, tariff: k.tariff };
   }
 
-  function kassasNewInMonth(model, monthDate) {
+  function kassasNewInMonth(model, monthDate, asOf) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
     model.kassas.forEach(function (k) {
       if (!k.appearance) return;
+      if (asOf && k.appearance > asOf) return; // симметрично clientsNewInMonth выше
       if (k.appearance.getFullYear() === y && k.appearance.getMonth() === m) {
         var row = kassaRowFor(k, model);
         row.arrivedAt = k.appearance; row.leftAt = null;
@@ -1906,6 +1908,7 @@
     computeReturnedClients: computeReturnedClients,
     clientReturnInfo: clientReturnInfo,
     kassaReturnInfo: kassaReturnInfo,
+    mergeIntervals: mergeIntervals,
     kassaCoverage: kassaCoverage,
     clientCoverage: clientCoverage,
     coverageGaps: coverageGaps,

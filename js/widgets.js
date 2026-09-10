@@ -1,7 +1,7 @@
 /*
  * Рендер виджетов: DOM-слой поверх js/metrics.js.
  * Каждый виджет — запись в WIDGETS: { title, type, scope, span, render(model, ctx) -> HTMLElement }.
- * ctx = { M, periodStart, periodEnd, asOf } — M это window.OFDMetrics.
+ * ctx = { M, periodStart, periodEnd, asOf } — M это root.OFDMetrics.
  */
 (function (root) {
   "use strict";
@@ -1397,7 +1397,7 @@
         if (v === "cum") {
           viewHolder.appendChild(renderCumView());
         } else if (v === "new") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, Object.assign({ exportTitle: "Прирост базы (кассы) — новые кассы" }, kassaDrillOpts)));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m, ctx.asOf); }, Object.assign({ exportTitle: "Прирост базы (кассы) — новые кассы" }, kassaDrillOpts)));
         } else if (v === "churn") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonthGap(model, m, ctx.asOf); }, Object.assign({ exportTitle: "Прирост базы (кассы) — отток касс" }, kassaChurnOpts)));
         } else if (v === "returned") {
@@ -3981,6 +3981,57 @@
     });
     return { months: months, countByMonth: countByMonth };
   }
+  // per-gap модель (2026-09-10) -- та же архитектура, что в metrics.js computeGapFlow/
+  // computeGapActiveCount (см. HISTORY.md), применена к домену "Обмен с 1С" (единица --
+  // ИНН клиента, объединённые интервалы ВСЕХ его записей 1С, аналогично объединению касс
+  // клиента в основной модели). Заменяет ofd1cComputeChurnGradient/ofd1cActiveCountsAtMonthEnds
+  // ниже (currentEnd-based, ОСТАВЛЕНЫ нетронутыми для отката, просто больше не вызываются
+  // из виджета) -- та же ошибка классификации была и тут: entry.currentEnd = максимум по
+  // ВСЕМ записям клиента, стирал прошлые разрывы будущими продлениями. Дима предполагал,
+  // что тут "ничего сильно не поменяется" -- неверно: код структурно идентичен старой
+  // (уже исправленной) основной модели, содержит ТУ ЖЕ уязвимость. Пороги грейса/реанимации
+  // (OFD1C_CHURN_GRACE_DAYS=30/OFD1C_REANIM_WINDOW_START_DAYS=31) совпадают с основной
+  // моделью -- coverageGaps/isAliveAtWithGrace/mergeIntervals из metrics.js переиспользуются
+  // напрямую через root.OFDMetrics, не дублируются.
+  function ofd1cCoverage(e) {
+    return root.OFDMetrics.mergeIntervals(e.intervals);
+  }
+  function ofd1cComputeGapFlow(model, periodStart, periodEnd, asOf) {
+    var months = ofd1cBuildMonthRange(periodStart, periodEnd);
+    var newByMonth = months.map(function () { return 0; });
+    var churnByMonth = months.map(function () { return 0; });
+    var graceByMonth = months.map(function () { return 0; });
+    var returnedByMonth = months.map(function () { return 0; });
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var coverage = ofd1cCoverage(e);
+      if (!coverage.length || coverage[0].start > asOf) return;
+      var ni = ofd1cMonthIndexOf(months, coverage[0].start);
+      if (ni >= 0) newByMonth[ni]++;
+      var gaps = root.OFDMetrics.coverageGaps(coverage, asOf);
+      gaps.forEach(function (g) {
+        if (g.status === "churned") {
+          var ei = ofd1cMonthIndexOf(months, g.E);
+          if (ei >= 0) churnByMonth[ei]++;
+          if (g.S) { var si = ofd1cMonthIndexOf(months, g.S); if (si >= 0) returnedByMonth[si]++; }
+        } else if (g.status === "pending") {
+          var pi = ofd1cMonthIndexOf(months, g.E);
+          if (pi >= 0) graceByMonth[pi]++;
+        }
+      });
+    });
+    return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth, graceByMonth: graceByMonth, returnedByMonth: returnedByMonth };
+  }
+  function ofd1cComputeGapActiveCount(model, atDate, asOf) {
+    var n = 0;
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var coverage = ofd1cCoverage(e);
+      if (!coverage.length) return;
+      var gaps = root.OFDMetrics.coverageGaps(coverage, asOf);
+      if (root.OFDMetrics.isAliveAtWithGrace(coverage, gaps, atDate)) n++;
+    });
+    return n;
+  }
+
   function ofd1cActiveCountsAtMonthEnds(model, months, ctx) {
     var entries = ofd1cMatchedEntries(model);
     return months.map(function (m) {
@@ -4002,11 +4053,12 @@
     var last = starts.reduce(function (a, b) { return b.tariffStart > a.tariffStart ? b : a; });
     return last.months != null ? last.months + " мес" : null;
   }
-  function ofd1cClientsNewInMonth(model, monthDate) {
+  function ofd1cClientsNewInMonth(model, monthDate, asOf) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
     ofd1cMatchedEntries(model).forEach(function (e) {
       if (!e.appearance || e.appearance.getFullYear() !== y || e.appearance.getMonth() !== m) return;
+      if (asOf && e.appearance > asOf) return; // симметрично clientsNewInMonth в metrics.js
       var c = e.client;
       out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: e.appearance, leftAt: null, lastTariff: ofd1cLastTariffLabel(e) });
     });
@@ -4034,6 +4086,22 @@
       if (!ri || ri.tag !== "возвращённый" || ri.returnDate.getFullYear() !== y || ri.returnDate.getMonth() !== m) return;
       var c = e.client;
       out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, activeKassas: c.kassas.length, arrivedAt: ri.returnDate, leftAt: ri.gapEnd, lastTariff: ofd1cLastTariffLabel(e) });
+    });
+    return out;
+  }
+  // per-gap версия для drill-down (2026-09-10) -- см. clientsChurnedInMonthGap в metrics.js,
+  // тот же принцип: список ОБЯЗАН соответствовать computeGapFlow.churnByMonth того же месяца.
+  function ofd1cClientsChurnedInMonthGap(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    ofd1cMatchedEntries(model).forEach(function (e) {
+      var coverage = ofd1cCoverage(e);
+      if (!coverage.length) return;
+      var gaps = root.OFDMetrics.coverageGaps(coverage, asOf);
+      var hit = gaps.find(function (g) { return g.status === "churned" && g.E.getFullYear() === y && g.E.getMonth() === m; });
+      if (!hit) return;
+      var c = e.client;
+      out.push({ key: e.inn, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: hit.E, activeKassas: c.kassas.length, lastTariff: ofd1cLastTariffLabel(e) });
     });
     return out;
   }
@@ -4089,8 +4157,15 @@
           wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится помесячный прирост клиентов, подключивших обмен с 1С: накопительный эффект, новые/отток/возвращённые, по той же логике, что «Прирост базы» на кодах ОФД.</div>'));
           return;
         }
-        var series = ofd1cComputeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
-        var activeByMonth = ofd1cActiveCountsAtMonthEnds(model, series.months, ctx);
+        // per-gap модель (2026-09-10) -- см. HISTORY.md.
+        var series = ofd1cComputeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+        function monthEndClamped(m) {
+          var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+          return end < ctx.asOf ? end : ctx.asOf;
+        }
+        var activeByMonth = series.months.map(function (m) { return ofd1cComputeGapActiveCount(model, monthEndClamped(m), ctx.asOf); });
+        var boundaryPrev = ofd1cComputeGapActiveCount(model, monthEndClamped(root.OFDMetrics.addMonths(series.months[0], -1)), ctx.asOf);
+        var realDeltaByMonth = series.months.map(function (m, i) { return activeByMonth[i] - (i === 0 ? boundaryPrev : activeByMonth[i - 1]); });
         var returnedSeries = null, returnedActiveByMonth = null;
 
         var ngId = "ofd1cngview-" + Math.random().toString(36).slice(2, 7);
@@ -4107,11 +4182,8 @@
         wrap.appendChild(viewHolder);
 
         function renderCumView() {
-          var cum = [], net = [], acc = 0;
-          for (var i = 0; i < series.months.length; i++) {
-            var n = series.newByMonth[i] - series.churnByMonth[i];
-            net.push(n); acc += n; cum.push(acc);
-          }
+          var cum = [], net = realDeltaByMonth, acc = 0;
+          for (var i = 0; i < series.months.length; i++) { acc += net[i]; cum.push(acc); }
           var tooltips = series.months.map(function (m, i) {
             var sign = net[i] > 0 ? "+" : "";
             return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
@@ -4120,7 +4192,11 @@
           var v = el("<div></div>");
           v.appendChild(el('<div>' + chart + '</div>'));
           var tableHolder = el('<div style="margin-top:14px"></div>');
-          tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов с обменом 1С"));
+          tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов с обменом 1С", {
+            realDeltaByMonth: realDeltaByMonth,
+            graceColumn: true,
+            returnedByMonth: series.returnedByMonth,
+          }));
           v.appendChild(tableHolder);
           return v;
         }
@@ -4136,9 +4212,9 @@
           if (v === "cum") {
             viewHolder.appendChild(renderCumView());
           } else if (v === "new") {
-            viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ofd1cClientsNewInMonth(model, m); }, { columns: OFD1C_DRILL_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — новые клиенты", onRowClick: onInnClick }));
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ofd1cClientsNewInMonth(model, m, ctx.asOf); }, { columns: OFD1C_DRILL_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — новые клиенты", onRowClick: onInnClick }));
           } else if (v === "churn") {
-            viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ofd1cClientsChurnedInMonth(model, m, ctx.asOf); }, { columns: OFD1C_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — отток клиентов", onRowClick: onInnClick }));
+            viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ofd1cClientsChurnedInMonthGap(model, m, ctx.asOf); }, { columns: OFD1C_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы (Обмен с 1С) — отток клиентов", onRowClick: onInnClick }));
           } else if (v === "returned") {
             if (!returnedSeries) {
               returnedSeries = ofd1cComputeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
@@ -5008,6 +5084,9 @@
     ofd1cClientsNewInMonth: ofd1cClientsNewInMonth,
     ofd1cClientsChurnedInMonth: ofd1cClientsChurnedInMonth,
     ofd1cClientsReturnedInMonth: ofd1cClientsReturnedInMonth,
+    ofd1cComputeGapFlow: ofd1cComputeGapFlow,
+    ofd1cComputeGapActiveCount: ofd1cComputeGapActiveCount,
+    ofd1cClientsChurnedInMonthGap: ofd1cClientsChurnedInMonthGap,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
     // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
     // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без

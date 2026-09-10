@@ -864,19 +864,20 @@ async function main() {
     console.log("ofd1c: борд «Портрет клиента» рендерит таблицу с загруженными данными:", summaryHasTable ? "OK" : "FAIL");
     if (!summaryHasTable) ok = false;
 
-    // "Прирост базы (Обмен с 1С)" (Дима, 2026-09-05: "логика должна быть той же, что и по
-    // кодам ОФД") -- внутренняя согласованность: сумма новых по вкладке "Новые" ЗА КАЖДЫЙ
-    // месяц должна совпасть с series.newByMonth того же месяца (тот же принцип, что и у
-    // основного "Прирост базы" -- график и drill-down не должны расходиться в цифрах).
+    // "Прирост базы (Обмен с 1С)" -- per-gap модель (2026-09-10, см. HISTORY.md), та же
+    // архитектура что и в b1-netgrowth/b2-netgrowth: computeGapFlow/computeGapActiveCount
+    // из metrics.js переиспользуются напрямую (не дублированы для 1С). Внутренняя
+    // согласованность: сумма по вкладкам ЗА КАЖДЫЙ месяц должна совпасть с series того же
+    // месяца, и инвариант Новые-Отток-Грейс+Вернувшиеся=Дельта должен сходиться точно.
     const periodStart = new win.Date("2025-01-01");
     const periodEnd = new win.Date("2026-09-30");
     const asOfOfd1c = win.OFDState.asOf;
-    const gradSeries = win.OFDWidgets.ofd1cComputeChurnGradient(model, periodStart, periodEnd, asOfOfd1c);
+    const gradSeries = win.OFDWidgets.ofd1cComputeGapFlow(model, periodStart, periodEnd, asOfOfd1c);
     let newSumMismatch = false, churnSumMismatch = false;
     gradSeries.months.forEach((m, i) => {
-      const newDrill = win.OFDWidgets.ofd1cClientsNewInMonth(model, m).length;
+      const newDrill = win.OFDWidgets.ofd1cClientsNewInMonth(model, m, asOfOfd1c).length;
       if (newDrill !== gradSeries.newByMonth[i]) newSumMismatch = true;
-      const churnDrill = win.OFDWidgets.ofd1cClientsChurnedInMonth(model, m, asOfOfd1c).length;
+      const churnDrill = win.OFDWidgets.ofd1cClientsChurnedInMonthGap(model, m, asOfOfd1c).length;
       if (churnDrill !== gradSeries.churnByMonth[i]) churnSumMismatch = true;
     });
     console.log("ofd1c: «Новые» по месяцам в графике сходятся с drill-down по месяцам:", !newSumMismatch ? "OK" : "FAIL");
@@ -884,9 +885,25 @@ async function main() {
     console.log("ofd1c: «Отток» по месяцам в графике сходятся с drill-down по месяцам:", !churnSumMismatch ? "OK" : "FAIL");
     if (churnSumMismatch) ok = false;
     const totalNewOfd1c = gradSeries.newByMonth.reduce((s, v) => s + v, 0);
-    const matchedWithAppearance = win.OFDWidgets.ofd1cMatchedEntries(model).filter((e) => e.appearance && e.appearance >= periodStart && e.appearance <= periodEnd).length;
+    const matchedWithAppearance = win.OFDWidgets.ofd1cMatchedEntries(model).filter((e) => e.appearance && e.appearance >= periodStart && e.appearance <= periodEnd && e.appearance <= asOfOfd1c).length;
     console.log("ofd1c: сумма «Новых» за период сходится с независимым пересчётом:", totalNewOfd1c === matchedWithAppearance ? "OK" : "FAIL", totalNewOfd1c, "vs", matchedWithAppearance);
     if (totalNewOfd1c !== matchedWithAppearance) ok = false;
+
+    // Инвариант Новые-Отток-Грейс+Вернувшиеся=Дельта (та же проверка, что для b1/b2-netgrowth).
+    function ofd1cMonthEndClamped(m) {
+      const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+      return end < asOfOfd1c ? end : asOfOfd1c;
+    }
+    const activeOfd1c = gradSeries.months.map((m) => win.OFDWidgets.ofd1cComputeGapActiveCount(model, ofd1cMonthEndClamped(m), asOfOfd1c));
+    const boundaryPrevOfd1c = win.OFDWidgets.ofd1cComputeGapActiveCount(model, ofd1cMonthEndClamped(win.OFDMetrics.addMonths(gradSeries.months[0], -1)), asOfOfd1c);
+    let ofd1cArithmeticMismatch = false;
+    gradSeries.months.forEach((m, i) => {
+      const delta = activeOfd1c[i] - (i === 0 ? boundaryPrevOfd1c : activeOfd1c[i - 1]);
+      const calc = gradSeries.newByMonth[i] - gradSeries.churnByMonth[i] - gradSeries.graceByMonth[i] + gradSeries.returnedByMonth[i];
+      if (calc !== delta) ofd1cArithmeticMismatch = true;
+    });
+    console.log("ofd1c: Новые − Отток − Грейс + Вернувшиеся === Дельта изменения (инвариант) по каждому месяцу:", !ofd1cArithmeticMismatch ? "OK" : "FAIL");
+    if (ofd1cArithmeticMismatch) ok = false;
 
     // Клик по строке "Портрет клиента" -- раскрытие показывает ОБЕ таблицы (кассы ОФД +
     // записи обмена 1С) без построчного соответствия друг другу (Дима, 2026-09-05).
@@ -918,23 +935,32 @@ async function main() {
     if (dedupedTotal !== parsed1c.records.length) ok = false;
 
     // Колонка "Последний тариф 1С" + карточка клиента по клику на ИНН на вкладке "Новые"
-    // борда "Прирост базы (Обмен с 1С)" (Дима, 2026-09-07).
+    // борда "Прирост базы (Обмен с 1С)" (Дима, 2026-09-07). Дефолтный ctx.period приложения
+    // может не пересекаться с датами конкретного тестового файла 1С (напр. файл только за
+    // июль-сентябрь 2026, а дефолтный period -- 2024 год) -- тогда таблица "Новые" пуста и
+    // клик не по чему. Временно ставим period = тот же диапазон, что уже использован выше
+    // для gradSeries (2025-01-01..2026-09-30), потом восстанавливаем -- та же дисциплина,
+    // что и в блоке b1-netgrowth (не протекает в другие тесты).
+    const ofd1cOrigCtx = win.OFDState.ctx;
+    win.OFDState.ctx = Object.assign({}, ofd1cOrigCtx, { periodStart: periodStart, periodEnd: periodEnd });
     win.OFDCanvas.rerenderAll();
     const growthNode2 = win.document.querySelector('[data-widget-id="b8-1c-growth"]');
     const newTab = Array.from(growthNode2.querySelectorAll('input[type="radio"]')).find((r) => r.value === "new");
     newTab.checked = true;
     newTab.dispatchEvent(new win.Event("change", { bubbles: true }));
     const monthRowsGrowth = growthNode2.querySelectorAll("table tbody tr");
-    let cardRendered = false, lastTariffHeaderFound = false;
-    if (monthRowsGrowth.length) {
-      monthRowsGrowth[0].dispatchEvent(new win.Event("click", { bubbles: true }));
+    let cardRendered = false, lastTariffHeaderFound = false, innRow = null;
+    // первый месяц диапазона может иметь 0 новых (данные файла необязательно начинаются
+    // ровно с periodStart) -- ищем первую строку, чей клик реально раскрывает непустой drill
+    for (let idx = 0; idx < monthRowsGrowth.length && !innRow; idx++) {
+      monthRowsGrowth[idx].dispatchEvent(new win.Event("click", { bubbles: true }));
+      innRow = growthNode2.querySelector(".expand-scroll tbody tr");
+    }
+    if (innRow) {
       const headers = Array.from(growthNode2.querySelectorAll("th")).map((th) => th.textContent);
       lastTariffHeaderFound = headers.includes("Последний тариф 1С");
-      const innRow = growthNode2.querySelector(".expand-scroll tbody tr");
-      if (innRow) {
-        innRow.dispatchEvent(new win.Event("click", { bubbles: true }));
-        cardRendered = Array.from(growthNode2.querySelectorAll(".stat-label")).some((n) => n.textContent.indexOf("Кассы на ОФД") !== -1);
-      }
+      innRow.dispatchEvent(new win.Event("click", { bubbles: true }));
+      cardRendered = Array.from(growthNode2.querySelectorAll(".stat-label")).some((n) => n.textContent.indexOf("Кассы на ОФД") !== -1);
     }
     console.log("ofd1c: вкладка «Новые» показывает колонку «Последний тариф 1С»:", lastTariffHeaderFound ? "OK" : "FAIL");
     if (!lastTariffHeaderFound) ok = false;
@@ -965,6 +991,7 @@ async function main() {
       if (!calDrillOk) ok = false;
     }
 
+    win.OFDState.ctx = ofd1cOrigCtx; // возвращаем период -- не протекает в следующие тесты
     win.OFDWidgets.ofd1cSetState({ records: null, fileName: null, sheetsCount: null, headerMismatch: false }); // не протекает в другие тесты этого файла
   } else {
     console.log("ofd1c: OFD_1C_TEST_FILE не задан -- пропускаю проверку на реальном файле «Обмен с 1С» (не критично, не входит в репозиторий)");
