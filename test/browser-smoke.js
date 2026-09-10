@@ -689,18 +689,16 @@ async function main() {
   renewClientsNode.querySelector(".f-status").value = "active";
   renewClientsNode.querySelector(".f-status").dispatchEvent(new win.Event("change", { bubbles: true }));
 
-  // b1-netgrowth "Прирост базы" -- сходимость "Дельта изменения" с реальной разницей
-  // снэпшотов "Активных на конец месяца" (currentEnd клиента -- максимум по всей его жизни,
-  // сдвигается вперёд при будущих продлениях -- Новые-Отток НЕ обязана совпадать с реальным
-  // изменением активных, это осознанный риск динамических данных, не баг, см. HISTORY.md
-  // 2026-09-08/09). Колонка "Временный разрыв" убрана 2026-09-09 (Дима отклонил как лишнюю
-  // сложность) -- вместо неё "Грейс" (своя колонка, было в скобках) и "Вернувшиеся" (сколько
-  // из оттока ИМЕННО этого месяца уже продлились сейчас, computeReturnedByChurnMonth).
-  // Проверка -- независимый пересчёт снэпшотов через computeSnapshot напрямую, не через тот
-  // же путь, что использует виджет. Дефолтный тестовый период может не пересекаться с
-  // данными файла -- временно расширяем период на весь диапазон файла, потом возвращаем
-  // обратно -- не протекает в последующие тесты (та же дисциплина, что и
-  // ofd1cSetState({records:null,...}) ниже).
+  // b1-netgrowth "Прирост базы" -- per-gap модель (2026-09-10, см. HISTORY.md): каждый
+  // разрыв в истории клиента классифицируется независимо (safe/churned/pending) по своей
+  // дате, а не по currentEnd (максимуму по всей жизни, который раньше "стирал" прошлые
+  // разрывы при последующих продлениях). Дельта/Отток/Грейс/Вернувшиеся ВСЕ выведены из
+  // одной и той же модели (computeGapFlow/computeGapActiveCount) -- поэтому обязаны
+  // сходиться арифметически ТОЧНО: Дельта = Новые - Отток - Грейс + Вернувшиеся.
+  // Проверка -- независимый пересчёт через computeGapFlow/computeGapActiveCount напрямую,
+  // не через тот же путь, что использует виджет. Дефолтный тестовый период может не
+  // пересекаться с данными файла -- временно расширяем период на весь диапазон файла,
+  // потом возвращаем обратно -- не протекает в последующие тесты.
   const ngOrigCtx = win.OFDState.ctx;
   const ngMinAppearance = Array.from(model.clients.values()).reduce((min, c) => (c.appearance && (!min || c.appearance < min) ? c.appearance : min), null);
   win.OFDState.ctx = Object.assign({}, ngOrigCtx, { periodStart: ngMinAppearance || ngOrigCtx.periodStart, periodEnd: new win.Date(ngOrigCtx.asOf.getTime()) });
@@ -708,21 +706,19 @@ async function main() {
   {
     const ngCtx = win.OFDState.ctx;
     const ngNode = win.document.querySelector('[data-widget-id="b1-netgrowth"]');
-    const ngSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, false);
-    const ngReturned = win.OFDMetrics.computeReturnedByChurnMonth(model, ngCtx.periodStart, ngCtx.periodEnd).countByMonth;
-    const ngClosedGrace = win.OFDMetrics.computeClosedGraceByMonth(model, ngCtx.periodStart, ngCtx.periodEnd).countByMonth;
+    const ngSeries = win.OFDMetrics.computeGapFlow(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, false);
     function ngMonthEndClamped(m) {
       const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
       return end < ngCtx.asOf ? end : ngCtx.asOf;
     }
     function ngActiveAt(m) {
-      return win.OFDMetrics.computeSnapshot(model, ngMonthEndClamped(m), { strict: ngCtx.strict }).activeClients;
+      return win.OFDMetrics.computeGapActiveCount(model, ngMonthEndClamped(m), ngCtx.asOf, false);
     }
     const ngRows = Array.from(ngNode.querySelectorAll("table tbody tr"));
     console.log("b1-netgrowth: число строк таблицы совпадает с числом месяцев периода:", ngRows.length === ngSeries.months.length ? "OK" : "FAIL", ngRows.length, "vs", ngSeries.months.length);
     if (ngRows.length !== ngSeries.months.length) ok = false;
     // Колонки: Месяц, Новые, Отток, Грейс, Вернувшиеся, Дельта изменения, Кол-во клиентов, % оттока, % притока
-    let deltaMismatch = false, activeMismatch = false, churnMismatch = false, graceMismatch = false, returnedMismatch = false;
+    let deltaMismatch = false, activeMismatch = false, churnMismatch = false, graceMismatch = false, returnedMismatch = false, arithmeticMismatch = false;
     const num = (td) => parseInt(td.textContent.replace(/\s/g, "").replace("+", ""), 10);
     ngRows.forEach((tr, i) => {
       const m = ngSeries.months[i];
@@ -738,19 +734,23 @@ async function main() {
       if (shownDelta !== expectedRealDelta) deltaMismatch = true;
       if (shownNew !== ngSeries.newByMonth[i]) { /* новые сверяются отдельно другими тестами выше -- тут не дублируем */ }
       if (shownChurn !== ngSeries.churnByMonth[i]) churnMismatch = true;
-      if (shownGrace !== ngSeries.graceByMonth[i] + (ngClosedGrace[i] || 0)) graceMismatch = true;
-      if (shownReturned !== (ngReturned[i] || 0)) returnedMismatch = true;
+      if (shownGrace !== ngSeries.graceByMonth[i]) graceMismatch = true;
+      if (shownReturned !== ngSeries.returnedByMonth[i]) returnedMismatch = true;
+      const calc = shownNew - shownChurn - shownGrace + shownReturned;
+      if (calc !== shownDelta) { arithmeticMismatch = true; if (process.env.NG_DEBUG) console.error("DEBUG row", i, m, "new", shownNew, "churn", shownChurn, "grace", shownGrace, "ret", shownReturned, "calc", calc, "delta", shownDelta, "asOf", ngCtx.asOf, "periodStart", ngCtx.periodStart); }
     });
-    console.log("b1-netgrowth: «Кол-во клиентов» в таблице совпадает с независимым computeSnapshot по каждому месяцу:", !activeMismatch ? "OK" : "FAIL");
+    console.log("b1-netgrowth: «Кол-во клиентов» в таблице совпадает с независимым computeGapActiveCount по каждому месяцу:", !activeMismatch ? "OK" : "FAIL");
     if (activeMismatch) ok = false;
     console.log("b1-netgrowth: «Дельта изменения» точно равна реальной разнице снэпшотов Активных[i]-Активных[i-1] по каждому месяцу:", !deltaMismatch ? "OK" : "FAIL");
     if (deltaMismatch) ok = false;
-    console.log("b1-netgrowth: «Отток» в таблице совпадает с series.churnByMonth:", !churnMismatch ? "OK" : "FAIL");
+    console.log("b1-netgrowth: «Отток» в таблице совпадает с computeGapFlow.churnByMonth:", !churnMismatch ? "OK" : "FAIL");
     if (churnMismatch) ok = false;
-    console.log("b1-netgrowth: «Грейс» в таблице совпадает с graceByMonth+ClosedGrace (полный грейс):", !graceMismatch ? "OK" : "FAIL");
+    console.log("b1-netgrowth: «Грейс» в таблице совпадает с computeGapFlow.graceByMonth:", !graceMismatch ? "OK" : "FAIL");
     if (graceMismatch) ok = false;
-    console.log("b1-netgrowth: «Вернувшиеся» в таблице совпадает с computeReturnedByChurnMonth:", !returnedMismatch ? "OK" : "FAIL");
+    console.log("b1-netgrowth: «Вернувшиеся» в таблице совпадает с computeGapFlow.returnedByMonth:", !returnedMismatch ? "OK" : "FAIL");
     if (returnedMismatch) ok = false;
+    console.log("b1-netgrowth: Новые − Отток − Грейс + Вернувшиеся === Дельта изменения (инвариант) по каждому месяцу:", !arithmeticMismatch ? "OK" : "FAIL");
+    if (arithmeticMismatch) ok = false;
   }
 
   // b2-netgrowth "Прирост базы (кассы)" -- эту таблицу не трогали (нет 4-й колонки, "Дельта"
@@ -759,15 +759,18 @@ async function main() {
   // рендер по-прежнему честно совпадает с независимым пересчётом (уже используем расширенный
   // период из блока b1-netgrowth выше -- ctx ещё не восстановлен).
   {
+    // per-gap модель (2026-09-10, зеркало b1-netgrowth) -- та же таблица с Грейс/
+    // Вернувшиеся колонками, индексы сдвинуты: Месяц,Новые,Отток,Грейс,Вернувшиеся,
+    // Дельта,Активные,%отток,%приток.
     const ngCtx = win.OFDState.ctx;
     const ngKassaNode = win.document.querySelector('[data-widget-id="b2-netgrowth"]');
-    const ngKassaSeries = win.OFDMetrics.computeChurnGradient(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, true);
+    const ngKassaSeries = win.OFDMetrics.computeGapFlow(model, ngCtx.periodStart, ngCtx.periodEnd, ngCtx.asOf, true);
     function ngKassaEndClamped(m) {
       const end = new win.Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
       return end < ngCtx.asOf ? end : ngCtx.asOf;
     }
     const ngKassaRows = Array.from(ngKassaNode.querySelectorAll("table tbody tr"));
-    let kassaActiveMismatch = false, kassaNaNFound = false;
+    let kassaActiveMismatch = false, kassaNaNFound = false, kassaChurnMismatch = false, kassaGraceMismatch = false, kassaReturnedMismatch = false, kassaArithmeticMismatch = false;
     const numK = (td) => {
       const v = parseInt(td.textContent.replace(/\s/g, "").replace("+", ""), 10);
       if (Number.isNaN(v)) kassaNaNFound = true;
@@ -776,15 +779,29 @@ async function main() {
     ngKassaRows.forEach((tr, i) => {
       const m = ngKassaSeries.months[i];
       if (!m) return;
-      const expected = win.OFDMetrics.computeSnapshot(model, ngKassaEndClamped(m), { strict: ngCtx.strict }).activeKassas;
-      const shown = numK(tr.children[4]);
-      numK(tr.children[1]); numK(tr.children[3]); // заодно ловим NaN в остальных числовых колонках
-      if (shown !== expected) kassaActiveMismatch = true;
+      const prevM = i === 0 ? win.OFDMetrics.addMonths(ngKassaSeries.months[0], -1) : ngKassaSeries.months[i - 1];
+      const activeAt = (mm) => win.OFDMetrics.computeGapActiveCount(model, ngKassaEndClamped(mm), ngCtx.asOf, true);
+      const shownNew = numK(tr.children[1]);
+      const shownChurn = numK(tr.children[2]);
+      const shownGrace = numK(tr.children[3]);
+      const shownReturned = numK(tr.children[4]);
+      const shownDelta = numK(tr.children[5]);
+      const shownActive = numK(tr.children[6]);
+      if (shownActive !== activeAt(m)) kassaActiveMismatch = true;
+      if (shownDelta !== activeAt(m) - activeAt(prevM)) { /* сверено ниже общим инвариантом */ }
+      if (shownChurn !== ngKassaSeries.churnByMonth[i]) kassaChurnMismatch = true;
+      if (shownGrace !== ngKassaSeries.graceByMonth[i]) kassaGraceMismatch = true;
+      if (shownReturned !== ngKassaSeries.returnedByMonth[i]) kassaReturnedMismatch = true;
+      if (shownNew - shownChurn - shownGrace + shownReturned !== shownDelta) kassaArithmeticMismatch = true;
     });
     console.log("b2-netgrowth: строк в таблице:", ngKassaRows.length, "vs месяцев:", ngKassaSeries.months.length, ngKassaRows.length === ngKassaSeries.months.length ? "OK" : "FAIL");
     if (ngKassaRows.length !== ngKassaSeries.months.length) ok = false;
-    console.log("b2-netgrowth: «Активных касс» в таблице совпадает с независимым computeSnapshot (после formula-фикса) по каждому месяцу:", !kassaActiveMismatch ? "OK" : "FAIL");
+    console.log("b2-netgrowth: «Активных касс» в таблице совпадает с независимым computeGapActiveCount по каждому месяцу:", !kassaActiveMismatch ? "OK" : "FAIL");
     if (kassaActiveMismatch) ok = false;
+    console.log("b2-netgrowth: «Отток»/«Грейс»/«Вернувшиеся» совпадают с computeGapFlow:", !kassaChurnMismatch && !kassaGraceMismatch && !kassaReturnedMismatch ? "OK" : "FAIL");
+    if (kassaChurnMismatch || kassaGraceMismatch || kassaReturnedMismatch) ok = false;
+    console.log("b2-netgrowth: Новые − Отток − Грейс + Вернувшиеся === Дельта изменения (инвариант) по каждому месяцу:", !kassaArithmeticMismatch ? "OK" : "FAIL");
+    if (kassaArithmeticMismatch) ok = false;
     console.log("b2-netgrowth: нет NaN в числовых колонках:", !kassaNaNFound ? "OK" : "FAIL");
     if (kassaNaNFound) ok = false;
   }

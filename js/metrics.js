@@ -298,6 +298,206 @@
     return findReturn(kassa.intervals);
   }
 
+  // ---------- per-gap модель оттока/грейса/возврата (Дима, 2026-09-10, см. HISTORY.md) ----------
+  //
+  // ЗАМЕНЯЕТ формулу currentEnd/overallEnd-based (churnStatusFromEnd/kassaChurnStatus/
+  // clientChurnStatus выше) в местах, использующих computeGapFlow/computeGapActiveCount
+  // ниже. Проблема старой формулы: она смотрит на МАКСИМАЛЬНУЮ дату окончания за всю жизнь
+  // сущности (currentEnd/overallEnd) -- если после разрыва было ЕЩЁ одно продление, эта
+  // дата сдвигается на новое продление, и ВЕСЬ предыдущий разрыв (даже подтверждённый,
+  // >30 дней) исчезает из статистики того месяца, где он реально произошёл. Доказано на
+  // 3 реальных клиентах (ИНН 5190308840/7604258100/0101010301, см. HISTORY.md) -- это баг
+  // классификации, не "естественная погрешность данных".
+  //
+  // Новая модель классифицирует КАЖДЫЙ разрыв в истории сущности НЕЗАВИСИМО, по дате его
+  // начала (E = конец интервала перед разрывом), а не по глобальному максимуму:
+  //   - closed, gapDays<=30 ("safe")   -- успел продлиться внутри грейса, НИКОГДА не был
+  //     отток. Не появляется нигде в Отток/Грейс/Вернувшиеся -- как будто разрыва не было.
+  //     Сущность считается "активной" на любую дату внутри этого разрыва тоже (прощаем
+  //     задним числом, раз известно, что разрыв закрылся успешно).
+  //   - closed, gapDays>30 ("churned") -- подтверждённый отток, ЗАМОРОЖЕН НАВСЕГДА за
+  //     месяцем E, даже если сущность потом вернулась. Возврат -- отдельная запись
+  //     ("Вернувшиеся") за месяцем S (дата фактического возврата), не за месяцем E.
+  //   - open (S ещё не существует), asOf-E<=30 ("pending") -- ЖИВОЙ статус "Грейс[месяц E]",
+  //     меняется при пересчёте: либо тихо станет "safe" (продлится), либо дозреет до
+  //     "churned" (не продлится за отпущенные 30 дней).
+  //   - open, asOf-E>30 ("churned")    -- подтверждённый отток без возврата (пока).
+  //
+  // Для клиента разрывы считаются по ОБЪЕДИНЁННОМУ покрытию всех его касс (clientCoverage,
+  // union интервалов) -- клиент "в разрыве", только если НИ ОДНА его касса не активна;
+  // для кассы -- напрямую по её собственным интервалам (kassaCoverage).
+  function mergeIntervals(intervals) {
+    var sorted = intervals.filter(function (iv) { return iv.end; }).slice().sort(function (a, b) { return a.start - b.start; });
+    var merged = [];
+    sorted.forEach(function (iv) {
+      var last = merged[merged.length - 1];
+      if (last && iv.start <= last.end) { if (iv.end > last.end) last.end = iv.end; }
+      else merged.push({ start: iv.start, end: iv.end });
+    });
+    return merged;
+  }
+
+  function kassaCoverage(kassa) { return mergeIntervals(kassa.intervals); }
+  function clientCoverage(client) {
+    var all = [];
+    client.kassas.forEach(function (k) { all = all.concat(k.intervals); });
+    return mergeIntervals(all);
+  }
+
+  // Разрывы между соседними объединёнными интервалами покрытия + открытый "хвост", если
+  // последний интервал уже закончился к asOf.
+  function coverageGaps(coverage, asOf) {
+    // ВАЖНО: интервалы, начинающиеся ПОЗЖЕ asOf, ещё "не известны" на момент asOf --
+    // отбрасываем их перед вычислением gaps, иначе классификация разрыва (safe/churned)
+    // неправомерно использует "знание из будущего" относительно asOf. Проявляется только
+    // при ретроспективном asOf (< максимальной даты в данных) -- приложение явно
+    // поддерживает такой просмотр (редактируемое поле "as-of"), для "текущего" asOf
+    // ("сегодня") все интервалы уже known по определению, поведение не меняется.
+    var known = coverage.filter(function (iv) { return iv.start <= asOf; });
+    var gaps = [];
+    for (var i = 0; i < known.length - 1; i++) {
+      var E = known[i].end, S = known[i + 1].start;
+      var days = daysBetween(E, S);
+      gaps.push({ E: E, S: S, days: days, status: days <= CHURN_GRACE_DAYS ? "safe" : "churned" });
+    }
+    if (known.length) {
+      var last = known[known.length - 1];
+      if (last.end < asOf) {
+        var d = daysBetween(last.end, asOf);
+        gaps.push({ E: last.end, S: null, days: d, status: d <= CHURN_GRACE_DAYS ? "pending" : "churned" });
+      }
+    }
+    return gaps;
+  }
+
+  // Активна ли сущность на ИСТОРИЧЕСКУЮ дату atDate, с учётом того, что уже ИЗВЕСТНО к
+  // asOf (грейс-осведомлённо): покрыта напрямую, ИЛИ разрыв, в который попадает atDate,
+  // уже известен как "safe" (закрылся успешно в пределах 30 дней) -- прощаем задним числом.
+  function isAliveAtWithGrace(coverage, gaps, atDate) {
+    for (var i = 0; i < coverage.length; i++) {
+      if (atDate >= coverage[i].start && atDate <= coverage[i].end) return true;
+    }
+    for (var j = 0; j < gaps.length; j++) {
+      var g = gaps[j];
+      if (atDate > g.E && (g.S === null || atDate <= g.S) && g.status === "safe") return true;
+    }
+    return false;
+  }
+
+  // Помесячные Новые/Отток/Грейс/Вернувшиеся по per-gap модели. byKassa=true -- уровень
+  // касс (coverage = её собственные интервалы, без union); false -- клиенты (union по
+  // всем кассам клиента).
+  function computeGapFlow(model, periodStart, periodEnd, asOf, byKassa) {
+    var months = buildMonthRange(periodStart, periodEnd);
+    var newByMonth = months.map(function () { return 0; });
+    var churnByMonth = months.map(function () { return 0; });
+    var graceByMonth = months.map(function () { return 0; });
+    var returnedByMonth = months.map(function () { return 0; });
+
+    var coll = byKassa ? model.kassas : model.clients;
+    coll.forEach(function (e) {
+      if (!byKassa && e.phys) return;
+      var coverage = byKassa ? kassaCoverage(e) : clientCoverage(e);
+      if (!coverage.length) return;
+      // ещё не появился на момент asOf (ретроспективный просмотр) -- как будто его вообще
+      // нет в данных, иначе "Новые" видят будущее относительно as-of.
+      if (coverage[0].start > asOf) return;
+      var ni = monthIndexOf(months, coverage[0].start);
+      if (ni >= 0) newByMonth[ni]++;
+
+      var gaps = coverageGaps(coverage, asOf);
+      gaps.forEach(function (g) {
+        if (g.status === "churned") {
+          var ei = monthIndexOf(months, g.E);
+          if (ei >= 0) churnByMonth[ei]++;
+          if (g.S) { var si = monthIndexOf(months, g.S); if (si >= 0) returnedByMonth[si]++; }
+        } else if (g.status === "pending") {
+          var pi = monthIndexOf(months, g.E);
+          if (pi >= 0) graceByMonth[pi]++;
+        }
+      });
+    });
+    return { months: months, newByMonth: newByMonth, churnByMonth: churnByMonth, graceByMonth: graceByMonth, returnedByMonth: returnedByMonth };
+  }
+
+  // Снэпшот "активных" на ИСТОРИЧЕСКУЮ дату atDate, грейс-осведомлённый (прощает уже
+  // закрывшиеся короткие разрывы) -- источник для "Активные"/"Дельта изменения" в
+  // "Прирост базы". Для atDate === asOf ("сейчас") совпадает с обычным физическим снэпшотом
+  // (прощать нечего -- судьба текущего разрыва, если он есть, ещё не может быть "уже
+  // известна как safe" раньше самого atDate).
+  function computeGapActiveCount(model, atDate, asOf, byKassa) {
+    var coll = byKassa ? model.kassas : model.clients;
+    var n = 0;
+    coll.forEach(function (e) {
+      if (!byKassa && e.phys) return;
+      var coverage = byKassa ? kassaCoverage(e) : clientCoverage(e);
+      if (!coverage.length) return;
+      var gaps = coverageGaps(coverage, asOf);
+      if (isAliveAtWithGrace(coverage, gaps, atDate)) n++;
+    });
+    return n;
+  }
+
+  // Партнёрская агрегация по per-gap модели -- заменяет computePartnerFlow/
+  // computePartnerFlowKassas выше (currentEnd/overallEnd-based) для "Топ оттока по
+  // партнёрам"/"Партнёр: новые/отток/% эффективности" -- та же ошибка классификации,
+  // что и в "Прирост базы", была и тут: клиент/касса, ушедшие и потом вернувшиеся,
+  // "стирались" из оттока того месяца, где реально ушли.
+  function computeGapPartnerFlow(model, periodStart, periodEnd, asOf) {
+    var byPartner = new Map();
+    function bucket(name) {
+      var p = byPartner.get(name);
+      if (!p) { p = { name: name, newClients: 0, churnedClients: 0, pendingClients: 0, baseAtStart: 0, baseAtEnd: 0 }; byPartner.set(name, p); }
+      return p;
+    }
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var name = c.partner || "—";
+      var coverage = clientCoverage(c);
+      if (!coverage.length || coverage[0].start > asOf) return;
+      if (inRange(coverage[0].start, periodStart, periodEnd)) bucket(name).newClients++;
+      var gaps = coverageGaps(coverage, asOf);
+      gaps.forEach(function (g) {
+        if (g.status === "churned" && inRange(g.E, periodStart, periodEnd)) bucket(name).churnedClients++;
+        if (g.status === "pending" && inRange(g.E, periodStart, periodEnd)) bucket(name).pendingClients++;
+      });
+      if (c.appearance && c.appearance < periodStart && isAliveAtWithGrace(coverage, gaps, periodStart)) bucket(name).baseAtStart++;
+      if (c.appearance && c.appearance <= periodEnd && isAliveAtWithGrace(coverage, gaps, periodEnd)) bucket(name).baseAtEnd++;
+    });
+    var rows = [];
+    byPartner.forEach(function (p) {
+      var retention = p.baseAtStart > 0 ? 1 - (p.churnedClients / p.baseAtStart) : null;
+      rows.push({ name: p.name, newClients: p.newClients, churnedClients: p.churnedClients, pendingClients: p.pendingClients, baseAtStart: p.baseAtStart, baseAtEnd: p.baseAtEnd, retention: retention });
+    });
+    return rows;
+  }
+
+  function computeGapPartnerFlowKassas(model, periodStart, periodEnd, asOf) {
+    var byPartner = new Map();
+    function bucket(name) {
+      var p = byPartner.get(name);
+      if (!p) { p = { name: name, newKassas: 0, churnedKassas: 0, baseAtStart: 0 }; byPartner.set(name, p); }
+      return p;
+    }
+    model.kassas.forEach(function (k) {
+      var name = k.partner || "—";
+      var coverage = kassaCoverage(k);
+      if (!coverage.length || coverage[0].start > asOf) return;
+      if (inRange(coverage[0].start, periodStart, periodEnd)) bucket(name).newKassas++;
+      var gaps = coverageGaps(coverage, asOf);
+      gaps.forEach(function (g) {
+        if (g.status === "churned" && inRange(g.E, periodStart, periodEnd)) bucket(name).churnedKassas++;
+      });
+      if (k.appearance && k.appearance < periodStart && isAliveAtWithGrace(coverage, gaps, periodStart)) bucket(name).baseAtStart++;
+    });
+    var rows = [];
+    byPartner.forEach(function (p) {
+      var retention = p.baseAtStart > 0 ? 1 - (p.churnedKassas / p.baseAtStart) : null;
+      rows.push({ name: p.name, newKassas: p.newKassas, churnedKassas: p.churnedKassas, baseAtStart: p.baseAtStart, retention: retention });
+    });
+    return rows;
+  }
+
 
   // ---------- потоковые метрики (период) ----------
 
@@ -606,6 +806,22 @@
     return out;
   }
 
+  // per-gap версия (2026-09-10) -- та же ошибка, что и у остальных currentEnd-based
+  // функций: пропускала клиентов, чей ТЕКУЩИЙ грейс не совпадает с currentEnd из-за
+  // более раннего скрытого разрыва. Ищет ЛЮБОЙ pending-разрыв с E в периоде.
+  function computeGapPendingClientsList(model, periodStart, periodEnd, asOf) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var coverage = clientCoverage(c);
+      if (!coverage.length) return;
+      var gaps = coverageGaps(coverage, asOf);
+      var hit = gaps.some(function (g) { return g.status === "pending" && inRange(g.E, periodStart, periodEnd); });
+      if (hit) out.push({ partner: c.partner || "—", key: c.key, org: c.org || "" });
+    });
+    return out;
+  }
+
   // Возвращённые клиенты (91 день - 3 года) за период, по дате возврата.
   function computeReturnedClients(model, periodStart, periodEnd) {
     var out = [];
@@ -740,6 +956,26 @@
     return out;
   }
 
+  // per-gap версия для drill-down (2026-09-10) -- ОБЯЗАНА давать список, точно
+  // соответствующий computeGapFlow.churnByMonth того же месяца, иначе число в заголовке
+  // и раскрытый список разойдутся (число из per-gap модели, список из currentEnd-based).
+  // "end" здесь -- дата КОНКРЕТНОГО разрыва (g.E), не c.currentEnd (который может быть
+  // сильно позже, если клиент потом продлился ещё раз).
+  function clientsChurnedInMonthGap(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var coverage = clientCoverage(c);
+      if (!coverage.length) return;
+      var gaps = coverageGaps(coverage, asOf);
+      var hit = gaps.find(function (g) { return g.status === "churned" && g.E.getFullYear() === y && g.E.getMonth() === m; });
+      if (!hit) return;
+      out.push({ key: c.key, org: c.org, partner: c.partner, partnerInn: c.partnerInn, end: hit.E, activeKassas: activeKassaCountOf(c, asOf) });
+    });
+    return out;
+  }
+
   // Кассовые зеркала трёх функций выше — для вкладок Новые/Отток/Возвращённые в "Прирост
   // базы (кассы)" (зеркало п.3.5, 2026-08-06). Отток без раскрытия (как и у клиентов), тут
   // не нужен.
@@ -805,6 +1041,25 @@
       var row = kassaRowFor(k, model);
       var client = k.clientKey ? model.clients.get(k.clientKey) : null;
       row.end = end;
+      row.activeKassas = client ? activeKassaCountOf(client, asOf) : 0;
+      out.push(row);
+    });
+    return out;
+  }
+
+  // per-gap версия -- см. clientsChurnedInMonthGap выше, тот же принцип.
+  function kassasChurnedInMonthGap(model, monthDate, asOf) {
+    var y = monthDate.getFullYear(), m = monthDate.getMonth();
+    var out = [];
+    model.kassas.forEach(function (k) {
+      var coverage = kassaCoverage(k);
+      if (!coverage.length) return;
+      var gaps = coverageGaps(coverage, asOf);
+      var hit = gaps.find(function (g) { return g.status === "churned" && g.E.getFullYear() === y && g.E.getMonth() === m; });
+      if (!hit) return;
+      var row = kassaRowFor(k, model);
+      var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+      row.end = hit.E;
       row.activeKassas = client ? activeKassaCountOf(client, asOf) : 0;
       out.push(row);
     });
@@ -1651,6 +1906,17 @@
     computeReturnedClients: computeReturnedClients,
     clientReturnInfo: clientReturnInfo,
     kassaReturnInfo: kassaReturnInfo,
+    kassaCoverage: kassaCoverage,
+    clientCoverage: clientCoverage,
+    coverageGaps: coverageGaps,
+    isAliveAtWithGrace: isAliveAtWithGrace,
+    computeGapFlow: computeGapFlow,
+    computeGapActiveCount: computeGapActiveCount,
+    computeGapPartnerFlow: computeGapPartnerFlow,
+    computeGapPartnerFlowKassas: computeGapPartnerFlowKassas,
+    clientsChurnedInMonthGap: clientsChurnedInMonthGap,
+    kassasChurnedInMonthGap: kassasChurnedInMonthGap,
+    computeGapPendingClientsList: computeGapPendingClientsList,
     computePartnerFlow: computePartnerFlow,
     computePartnerFlowKassas: computePartnerFlowKassas,
     computePendingClientsList: computePendingClientsList,

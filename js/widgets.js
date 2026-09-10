@@ -748,10 +748,15 @@
   WIDGETS["b1-new"] = {
     title: "Новые клиенты за период", type: "карточка + график", scope: "период", span: true,
     render: function (model, ctx) {
+      // per-gap модель (2026-09-10) -- computeFlow.new/computeMonthlySeries заменены на
+      // computeGapFlow (каждый разрыв классифицируется по своей дате, а не по currentEnd,
+      // см. metrics.js). "reanim" (0-90 дней) -- отдельная, информационная карточка про
+      // скорость возврата, не участвует в балансе оттока -- оставлена на старой clientReturnInfo.
       var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
+      var totalNew = series.newByMonth.reduce(function (a, b) { return a + b; }, 0);
       var head = '<div class="stat-row">' +
-        '<div>' + statBlock(fmtNum(flow.clients.new), "новые (раньше не было)", true) + '</div>' +
+        '<div>' + statBlock(fmtNum(totalNew), "новые (раньше не было)", true) + '</div>' +
         '<div>' + statBlock(fmtNum(flow.clients.reanim), "вернувшиеся (31–90 дней после ухода)", true) + '</div>' +
         '</div>';
       var chart = lineChart(series.months, [{ label: "Новые", values: series.newByMonth, color: "var(--s1)" }], { area: true });
@@ -762,11 +767,12 @@
   WIDGETS["b1-churn"] = {
     title: "Отток клиентов за период", type: "карточка + график", scope: "период", span: true,
     render: function (model, ctx) {
-      var flow = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
-      var head = statBlock(fmtNum(flow.clients.churn), "клиентов не продлились 30+ дней (не считая тех, кто ещё вернулся)", true);
+      // per-gap модель (2026-09-10) -- см. b1-new выше и HISTORY.md.
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
+      var totalChurn = series.churnByMonth.reduce(function (a, b) { return a + b; }, 0);
+      var head = statBlock(fmtNum(totalChurn), "клиентов не продлились 30+ дней (по факту разрыва, включая тех, кто позже вернулся — см. «Вернувшиеся»)", true);
       var chart = lineChart(series.months, [{ label: "Отток", values: series.churnByMonth, color: "var(--s2)" }], { area: true });
-      var note = '<div class="stat-label" style="margin-top:6px">Ретроспективно: месяц окончания кода, статус известен только когда с даты окончания прошло 31+ дней от as-of — последние месяцы периода могут быть занижены.</div>';
+      var note = '<div class="stat-label" style="margin-top:6px">Каждый разрыв покрытия учтён в месяце, когда он произошёл, даже если клиент позже вернулся — «Отток» этого месяца зафиксирован навсегда. Последние ~30 дней периода могут быть занижены, пока грейс ещё не разрешился.</div>';
       return '<div>' + head + '<div style="margin-top:10px">' + chart + '</div>' + note + '</div>';
     },
   };
@@ -799,67 +805,33 @@
     exportable: true,
   };
 
-  // ---------- Сверка "Прирост базы" со снэпшотом активных (Дима, 2026-09-08) ----------
+  // ---------- "Прирост базы" -- per-gap модель (Дима, 2026-09-10, см. HISTORY.md) ----------
   //
-  // Проблема (найдена и разобрана в чате, реальные данные): "Дельта" (Новых-ПодтвОтток) и
-  // разница "Активных на конец месяца" между соседними месяцами -- НЕ обязаны совпадать.
-  // Причина: `c.currentEnd` -- максимум по ВСЕЙ жизни клиента, сдвигается вперёд при любом
-  // будущем продлении -- старый разрыв покрытия "стирается" из подтверждённого оттока
-  // (событие оттока привязано к currentEnd, а не к дате КОНКРЕТНОГО разрыва). На реальном
-  // файле (2022-02..2026-09) суммарный дрейф — 127174 клиента, 77924 клиента сейчас "зависли"
-  // с currentEnd больше чем на 90 дней в будущем.
+  // Заменяет ВСЮ цепочку правок 2026-09-08/09 (currentEnd-based Отток/Грейс + "Временный
+  // разрыв" + "Вернувшиеся"-заплатка): та цепочка патчила симптом (несовпадение Новые-Отток
+  // с реальным снэпшотом), не причину. Причина -- Отток считался по currentEnd (максимум по
+  // всей жизни клиента), который сдвигается будущими продлениями и стирает разрыв из
+  // статистики того месяца, где он реально произошёл. Доказано численно на 3 реальных
+  // клиентах (см. HISTORY.md) -- баг классификации, не "естественная погрешность".
   //
-  // Решение (2026-09-08/09-09): смысл "Новые"/"Отток" (30-дневный грейс) НЕ трогаем --
-  // отток остаётся привязан к currentEnd (сдвигается будущими продлениями) -- это осознанный
-  // риск динамических данных, Дима прямо принял его ("пусть стирается задним числом, у нас
-  // динамические данные"). Раньше (08.09) здесь была попытка залатать несовпадение
-  // "Новые-Отток" с реальным снэпшотом отдельной колонкой "Временный разрыв" (residual +
-  // классификация причин) -- Дима её отклонил как лишнюю сложность (09.09): вместо патча
-  // остатком показываем два прозрачных факта рядом -- "Грейс" (сколько сейчас ещё не
-  // продлились, 0-30 дней) и "Вернувшиеся" (сколько из оттока ИМЕННО этого месяца уже
-  // продлились к текущему asOf, computeReturnedByChurnMonth в metrics.js). "Дельта
-  // изменения" остаётся реальной разницей снэпшотов (не Новые-Отток) -- ТОЛЬКО для
-  // b1-netgrowth, изолировано намеренно: не трогает metrics.js churn/грейс, не трогает
-  // b2-netgrowth/b8-1c-growth (те просто не передают opts в gradientFlowTable ниже).
-  function netgrowthActiveInnCount(model, ctx, atDate) {
-    var n = 0;
-    model.clients.forEach(function (c) { if (!ctx.M.clientLapsedAt(c, atDate)) n++; });
-    return n;
-  }
-  function netgrowthMonthEndClamped(m, asOf) {
-    var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
-    return end < asOf ? end : asOf;
-  }
-  function netgrowthRealDeltaByMonth(model, ctx, months) {
-    if (!months.length) return [];
-    var boundaryMonths = [ctx.M.addMonths(months[0], -1)].concat(months);
-    var boundaryCounts = boundaryMonths.map(function (m) {
-      return netgrowthActiveInnCount(model, ctx, netgrowthMonthEndClamped(m, ctx.asOf));
-    });
-    var out = [];
-    for (var i = 0; i < months.length; i++) out.push(boundaryCounts[i + 1] - boundaryCounts[i]);
-    return out;
-  }
-
+  // Теперь: computeGapFlow/computeGapActiveCount (metrics.js) классифицируют КАЖДЫЙ разрыв
+  // в истории клиента отдельно (safe/churned/pending), и "Активные"/"Дельта" тоже считаются
+  // по этой же, единой модели (грейс-осведомлённый снэпшот, computeGapActiveCount) --
+  // поэтому Дельта = Новые − Отток − Грейс + Вернувшиеся сходится ТОЧНО, без остатка,
+  // проверено на реальных данных вручную построчно перед тем как писать этот код.
   WIDGETS["b1-netgrowth"] = {
-    // Переименован "Нетто-прирост базы" -> "Прирост базы" (п.3.3). 3 градации оттока +
-    // тумблер % (п.3.1/3.2/3.4). Накопительная кривая — по подтверждённому оттоку (не
-    // трогает не продлившихся/прогноз, те ещё не факт). Вкладки Новые/Отток/Возвращённые
-    // (п.3.5, 2026-08-06) — существующий накопительный график НЕ тронут, стал одной из
-    // вкладок (первой, по умолчанию). Только клиенты (ИНН) — не кассы, п.3.5 про них.
+    // Переименован "Нетто-прирост базы" -> "Прирост базы" (п.3.3). Только клиенты (ИНН) --
+    // не кассы, зеркало для касс -- b2-netgrowth.
     title: "Прирост базы", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
-      var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
-      var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, false);
-      var realDeltaByMonth = netgrowthRealDeltaByMonth(model, ctx, series.months);
-      var returnedByChurnMonth = ctx.M.computeReturnedByChurnMonth(model, ctx.periodStart, ctx.periodEnd).countByMonth;
-      // "Полный" грейс = текущий незакрытый (series.graceByMonth, currentEnd-based) +
-      // уже закрывшиеся короткие разрывы (Дима, 2026-09-09 — currentEnd-based грейс
-      // пропускает клиентов, у которых был короткий разрыв в середине истории, а потом
-      // ещё одно продление сдвинуло currentEnd вперёд — см. HISTORY.md, реальный пример
-      // КОРУНД-СОФТ). Множества не пересекаются (см. комментарий в metrics.js).
-      var closedGraceByMonth = ctx.M.computeClosedGraceByMonth(model, ctx.periodStart, ctx.periodEnd).countByMonth;
-      var fullGraceByMonth = series.months.map(function (m, i) { return series.graceByMonth[i] + (closedGraceByMonth[i] || 0); });
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
+      function monthEndClamped(m) {
+        var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+        return end < ctx.asOf ? end : ctx.asOf;
+      }
+      var activeByMonth = series.months.map(function (m) { return ctx.M.computeGapActiveCount(model, monthEndClamped(m), ctx.asOf, false); });
+      var boundaryPrev = ctx.M.computeGapActiveCount(model, monthEndClamped(ctx.M.addMonths(series.months[0], -1)), ctx.asOf, false);
+      var realDeltaByMonth = series.months.map(function (m, i) { return activeByMonth[i] - (i === 0 ? boundaryPrev : activeByMonth[i - 1]); });
       var returnedSeries = null; // считается лениво -- полный перебор клиентов, не нужен пока вкладка не открыта
       var returnedActiveByMonth = null; // считается лениво вместе с returnedSeries -- свой months-массив
 
@@ -895,9 +867,8 @@
         var tableHolder = el('<div style="margin-top:14px"></div>');
         tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "клиентов", {
           realDeltaByMonth: realDeltaByMonth,
-          graceColumn: true,
-          graceByMonth: fullGraceByMonth,
-          returnedByMonth: returnedByChurnMonth,
+          graceColumn: true, // series.graceByMonth теперь уже полный (per-gap) -- override не нужен
+          returnedByMonth: series.returnedByMonth,
         }));
         v.appendChild(tableHolder);
         return v;
@@ -911,7 +882,7 @@
         } else if (v === "new") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.clientsNewInMonth(model, m, ctx.asOf); }, { activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы — новые клиенты" }));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonth(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы — отток клиентов" }));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.clientsChurnedInMonthGap(model, m, ctx.asOf); }, { columns: CLIENT_CHURN_COLUMNS, activeTotalByMonth: activeByMonth, exportTitle: "Прирост базы — отток клиентов" }));
         } else if (v === "returned") {
           if (!returnedSeries) {
             returnedSeries = ctx.M.computeReturnedByMonth(model, ctx.periodStart, ctx.periodEnd);
@@ -1316,10 +1287,15 @@
     // computeFlow.kassas, просто карточками вместо графика+таблицы.
     title: "Новые / отток / вернувшиеся касс", type: "карточки", scope: "период", span: true,
     render: function (model, ctx) {
+      // per-gap модель (2026-09-10) -- new/churn через computeGapFlow, "reanim" (0-90 дней)
+      // информационная, оставлена на старой clientReturnInfo/kassaReturnInfo (см. b1-new).
       var f = ctx.M.computeFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf).kassas;
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
+      var totalNew = series.newByMonth.reduce(function (a, b) { return a + b; }, 0);
+      var totalChurn = series.churnByMonth.reduce(function (a, b) { return a + b; }, 0);
       return '<div class="stat-row">' +
-        '<div>' + statBlock(fmtNum(f.new), "новые кассы", true) + '</div>' +
-        '<div>' + statBlock(fmtNum(f.churn), "отток касс (30+ дн. без продления)", true) + '</div>' +
+        '<div>' + statBlock(fmtNum(totalNew), "новые кассы", true) + '</div>' +
+        '<div>' + statBlock(fmtNum(totalChurn), "отток касс (30+ дн. без продления)", true) + '</div>' +
         '<div>' + statBlock(fmtNum(f.reanim), "вернувшиеся (31–90 дней)", true) + '</div>' +
         '</div>';
     },
@@ -1332,8 +1308,15 @@
     // клиентов (2026-08-06).
     title: "Прирост базы (кассы)", type: "график", scope: "период", span: true,
     render: function (model, ctx) {
-      var series = ctx.M.computeChurnGradient(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
-      var activeByMonth = activeCountsAtMonthEnds(model, series.months, ctx, true);
+      // per-gap модель (2026-09-10, зеркало b1-netgrowth) -- см. HISTORY.md.
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
+      function monthEndClamped(m) {
+        var end = new Date(m.getFullYear(), m.getMonth() + 1, 0, 23, 59, 59);
+        return end < ctx.asOf ? end : ctx.asOf;
+      }
+      var activeByMonth = series.months.map(function (m) { return ctx.M.computeGapActiveCount(model, monthEndClamped(m), ctx.asOf, true); });
+      var boundaryPrev = ctx.M.computeGapActiveCount(model, monthEndClamped(ctx.M.addMonths(series.months[0], -1)), ctx.asOf, true);
+      var realDeltaByMonth = series.months.map(function (m, i) { return activeByMonth[i] - (i === 0 ? boundaryPrev : activeByMonth[i - 1]); });
       var returnedSeries = null;
       var returnedActiveByMonth = null;
 
@@ -1352,11 +1335,8 @@
       wrap.appendChild(viewHolder);
 
       function renderCumView() {
-        var cum = [], net = [], acc = 0;
-        for (var i = 0; i < series.months.length; i++) {
-          var n = series.newByMonth[i] - series.churnByMonth[i];
-          net.push(n); acc += n; cum.push(acc);
-        }
+        var cum = [], net = realDeltaByMonth, acc = 0;
+        for (var i = 0; i < series.months.length; i++) { acc += net[i]; cum.push(acc); }
         var tooltips = series.months.map(function (m, i) {
           var sign = net[i] > 0 ? "+" : "";
           return MONTHS_SHORT[m.getMonth()] + " " + m.getFullYear() + ": прирост " + sign + fmtNum(net[i]) + " · накопительно " + fmtNum(cum[i]);
@@ -1365,7 +1345,11 @@
         var v = el("<div></div>");
         v.appendChild(el('<div>' + chart + '</div>'));
         var tableHolder = el('<div style="margin-top:14px"></div>');
-        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "касс"));
+        tableHolder.appendChild(gradientFlowTable(series, activeByMonth, "касс", {
+          realDeltaByMonth: realDeltaByMonth,
+          graceColumn: true,
+          returnedByMonth: series.returnedByMonth,
+        }));
         v.appendChild(tableHolder);
         return v;
       }
@@ -1415,7 +1399,7 @@
         } else if (v === "new") {
           viewHolder.appendChild(monthlyCountBoard(series.months, series.newByMonth, "Новых", "var(--s1)", function (m) { return ctx.M.kassasNewInMonth(model, m); }, Object.assign({ exportTitle: "Прирост базы (кассы) — новые кассы" }, kassaDrillOpts)));
         } else if (v === "churn") {
-          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonth(model, m, ctx.asOf); }, Object.assign({ exportTitle: "Прирост базы (кассы) — отток касс" }, kassaChurnOpts)));
+          viewHolder.appendChild(monthlyCountBoard(series.months, series.churnByMonth, "Отток", "var(--crit)", function (m) { return ctx.M.kassasChurnedInMonthGap(model, m, ctx.asOf); }, Object.assign({ exportTitle: "Прирост базы (кассы) — отток касс" }, kassaChurnOpts)));
         } else if (v === "returned") {
           if (!returnedSeries) {
             returnedSeries = ctx.M.computeReturnedByMonthKassas(model, ctx.periodStart, ctx.periodEnd);
@@ -1847,7 +1831,10 @@
     // "новые + отток + база на КОНЕЦ периода" — три голых числа: пришло/ушло/осталось.
     title: "Топ оттока по партнёрам", type: "таблица, раскрывается", scope: "период", span: true,
     render: function (model, ctx) {
-      var rows = ctx.M.computePartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      // per-gap модель (2026-09-10) -- см. HISTORY.md, та же ошибка была и в retention:
+      // currentEnd-based отток "стирал" клиентов, ушедших и вернувшихся, из статистики
+      // того месяца, где они реально ушли.
+      var rows = ctx.M.computeGapPartnerFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       rows = rows.filter(function (p) { return p.churnedClients > 0; });
       rows.sort(function (a, b) { return b.churnedClients - a.churnedClients; });
       var top = rows.slice(0, 100);
@@ -1882,7 +1869,7 @@
       var graceBtn = el('<button class="export-grace-btn" style="margin-top:10px">⬇ скачать грейс 0-30 дней — все клиенты по всем партнёрам</button>');
       wrap.appendChild(graceBtn);
       graceBtn.addEventListener("click", function () {
-        var pending = ctx.M.computePendingClientsList(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+        var pending = ctx.M.computeGapPendingClientsList(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
         pending.sort(function (a, b) { return (a.partner || "").localeCompare(b.partner || "", "ru"); });
         var exportRows = pending.map(function (p) { return { Партнёр: p.partner, ИННКлиента: p.key, НаименованиеКлиента: p.org }; });
         OFDExport.downloadCSV("грейс_0-30_по_партнёрам", exportRows);
@@ -1890,7 +1877,7 @@
 
       wrap.appendChild(el('<div style="height:16px"></div>'));
       wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
-      var series = ctx.M.computeMonthlySeries(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, false);
       wrap.appendChild(monthlyFlowTable(series, ctx));
       wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, НовыхКлиентов: p.newClients, КлиентовВОттоке: p.churnedClients, Клиентов0_30Дней: p.pendingClients, КлиентовНаКонецПериода: p.baseAtEnd }; }); };
       return wrap;
@@ -1901,7 +1888,8 @@
   WIDGETS["b3-partner-eff"] = {
     title: "Партнёр: новые / отток / % эффективности (кассы)", type: "таблица", scope: "период", span: true,
     render: function (model, ctx) {
-      var rows = ctx.M.computePartnerFlowKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      // per-gap модель (2026-09-10) -- см. b3-churn-top выше и HISTORY.md.
+      var rows = ctx.M.computeGapPartnerFlowKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
       rows.sort(function (a, b) { return (b.retention === null ? -1 : b.retention) - (a.retention === null ? -1 : a.retention); });
       var top = rows.slice(0, 150);
       var body = top.map(function (p) { return [p.name, p.baseAtStart, p.newKassas, p.churnedKassas, p.retention !== null ? fmtPct(p.retention) : "—"]; });
@@ -1913,7 +1901,7 @@
       ));
       wrap.appendChild(el('<div style="height:16px"></div>'));
       wrap.appendChild(el('<div class="stat-label" style="margin-bottom:6px">Помесячно по всей базе касс (не по партнёрам — контекст, почему итог выше может быть занижен)</div>'));
-      var series = ctx.M.computeMonthlySeriesKassas(model, ctx.periodStart, ctx.periodEnd, ctx.asOf);
+      var series = ctx.M.computeGapFlow(model, ctx.periodStart, ctx.periodEnd, ctx.asOf, true);
       wrap.appendChild(monthlyFlowTable(series, ctx));
       wrap._getExportRows = function () { return rows.map(function (p) { return { Партнёр: p.name, КассНаНачалоПериода: p.baseAtStart, НовыхКасс: p.newKassas, ОтТокКасс: p.churnedKassas, Эффективность: p.retention !== null ? (p.retention * 100).toFixed(1) + "%" : "" }; }); };
       return wrap;
