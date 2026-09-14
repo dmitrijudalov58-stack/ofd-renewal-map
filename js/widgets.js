@@ -2126,14 +2126,16 @@
   // нужно звать ПОСЛЕ восстановления локальной раскладки (app.js, после
   // OFDCanvas.loadSavedLayout()) -- только тогда достоверно известно, есть ли уже на холсте
   // ЭТОГО браузера свои custom-борды (ccCustomNames заполняется через applyPersistState
-  // именно во время loadSavedLayout). Если есть хоть один непустой -- ничего не делаем, не
-  // дублируем; иначе создаём по одному борду на каждое сохранённое имя, партнёры подтянутся
-  // сами (они уже в ccOverrides из ccBootstrapFromServer/локального localStorage).
+  // именно во время loadSavedLayout). Сравнение ПОИМЁННОЕ (по Set имён), не булевым флагом
+  // "есть хоть один local custom" -- фикс бага от 2026-09-11 (жалоба коллеги "борды не
+  // сохраняются"): со старой булевой проверкой НОВЫЙ борд, сохранённый ТОЛЬКО на сервере
+  // (кнопка "Сохранить" на самой карточке нажата, а топбар "Сохранить расположение" -- нет,
+  // из-за чего борд не попал в LAYOUT_KEY_V2), после reload никогда не подтягивался, если на
+  // холсте уже был ДРУГОЙ, ранее сохранённый в layout custom-борд -- функция видела
+  // "локальный custom уже есть" и выходила, даже не взглянув на список имён с сервера.
   function ccBootstrapCustomChannelsFromServer() {
     if (typeof fetch !== "function") return;
     if (!root.OFDCanvas || typeof root.OFDCanvas.addWidget !== "function") return;
-    var hasLocalCustom = Array.from(ccCustomNames.values()).some(function (n) { return n; });
-    if (hasLocalCustom) return;
     fetch(CC_API_OVERRIDES_URL).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
@@ -2141,9 +2143,12 @@
       var names = (data && Array.isArray(data.customChannels)) ? data.customChannels : [];
       var uniqueNames = Array.from(new Set(names.filter(function (n) { return n && typeof n === "string"; })));
       if (!uniqueNames.length) return;
-      // Повторная проверка -- пока шёл сетевой запрос, пользователь мог САМ создать custom-борд.
-      if (Array.from(ccCustomNames.values()).some(function (n) { return n; })) return;
+      // Локальный набор считаем ЗДЕСЬ, после await сетевого запроса -- та же защита от гонки,
+      // что была в старой "повторной проверке" (пока шёл запрос, пользователь мог сам создать
+      // борд), только теперь по конкретному имени, а не общим флагом.
+      var localNames = new Set(Array.from(ccCustomNames.values()).filter(function (n) { return n; }));
       uniqueNames.forEach(function (name) {
+        if (localNames.has(name)) return; // уже есть на холсте -- не дублируем
         root.OFDCanvas.addWidget("b5-revenue-custom", null, null, null, null, name);
       });
     }).catch(function () { /* нет сети/сервер недоступен -- борд просто не появится, не критично */ });
