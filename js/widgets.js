@@ -4022,12 +4022,13 @@
     var buyersByPartner = new Map();
     buyerEntries.forEach(function (entry) {
       var p = (entry.client && entry.client.partner) || "—";
-      buyersByPartner.set(p, (buyersByPartner.get(p) || 0) + 1);
+      if (!buyersByPartner.has(p)) buyersByPartner.set(p, []);
+      buyersByPartner.get(p).push(entry);
     });
     var rows = Array.from(buyersByPartner.keys()).map(function (p) {
-      var buyers = buyersByPartner.get(p);
+      var entries = buyersByPartner.get(p);
       var total = totalByPartner.get(p) || 0;
-      return { partner: p, buyers: buyers, total: total, rate: total > 0 ? buyers / total : 0 };
+      return { partner: p, buyers: entries.length, total: total, rate: total > 0 ? entries.length / total : 0, entries: entries };
     });
     rows.sort(function (a, b) { return b.rate - a.rate; });
     return rows;
@@ -4356,6 +4357,174 @@
       return wrap;
     },
     onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
+  };
+
+  // ---------- Борд A "Купившие 1С vs контроль" (2026-09-17, фаза 2 часть 2 — UI).
+  // Колонки/маппинг строк — та же плоская форма {key,org,partner,partnerInn,activeKassas,...},
+  // что везде в 1С-drilldown (см. OFD1C_DRILL_COLUMNS выше, ofd1cClientsNewInMonth и
+  // соседи) — переиспользуем renderDrillTable/makeSortableTable НАПРЯМУЮ, не пишем свою
+  // таблицу. НЕ клик по самому SVG-бару (barList не даёт хука на конкретный rect без
+  // переписывания barList) — по СТРОКЕ списка бакетов под графиком, тот же UX, что уже
+  // проверен на "Прирост базы" (monthlyCountBoard: "Клик по строке — список ... за этот
+  // месяц"), только по бакету, не по месяцу.
+  var OFD1C_PORTRAIT_COLUMNS = [
+    { label: "ИНН", key: "key" }, { label: "Наименование", key: "org" },
+    { label: "Партнёр", key: "partner" }, { label: "Касс сейчас", key: "activeKassas", num: true },
+  ];
+  var OFD1C_PORTRAIT_TENURE_COLUMNS = OFD1C_PORTRAIT_COLUMNS.concat([
+    { label: "Срок до покупки, мес", key: "tenureMonths", num: true },
+    { label: "Первая покупка 1С", key: "firstPurchase", date: true },
+  ]);
+  var OFD1C_PORTRAIT_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Наименование", key: "org" }, { label: "Партнёр", key: "partner" }];
+
+  function ofd1cClientRow(client) {
+    return { key: client.key, org: client.org, partner: client.partner, partnerInn: client.partnerInn, activeKassas: client.kassas.length };
+  }
+  function ofd1cEntryRow(entry) {
+    var row = ofd1cClientRow(entry.client);
+    row.key = entry.inn;
+    var months = ofd1cTenureMonths(entry);
+    row.tenureMonths = months == null ? null : Math.round(months * 10) / 10;
+    row.firstPurchase = entry.appearance;
+    return row;
+  }
+
+  // Общий компонент для всех 4 графиков борда A: столбчатый график сверху + список
+  // бакетов (label/count), клик по строке бакета раскрывает под ним таблицу (renderDrillTable)
+  // + появляется кнопка "Скачать" именно под ЭТОЙ таблицей (Дима, 2026-09-17: "при нажатии
+  // на графики... должен открываться список с этими клиентами... и кнопка Скачать").
+  // buckets: [{label, count, rows}], rows — уже готовые плоские объекты (ofd1cClientRow/
+  // ofd1cEntryRow), не сырые client/entry — иначе renderDrillTable/makeSortableTable не
+  // найдут нужных плоских ключей (см. DEFAULT_DRILL_COLUMNS -- та же плоская форма всюду).
+  function ofd1cBucketDrillBoard(buckets, opts) {
+    opts = opts || {};
+    var columns = opts.columns || OFD1C_PORTRAIT_COLUMNS;
+    var entityLabel = opts.entityLabel || "клиентов";
+    var exportName = opts.exportName || "Портрет 1С";
+    var wrap = el("<div></div>");
+    var chartHolder = el("<div></div>");
+    var chartRows = buckets.map(function (b) { return { label: b.label, value: b.count }; });
+    chartHolder.appendChild(el(barList(chartRows, { color: opts.color, caption: opts.caption })));
+    wrap.appendChild(chartHolder);
+
+    var listWrap = el('<div style="margin-top:8px"></div>');
+    var expandArea = el('<div style="margin-top:10px"></div>');
+    var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px" disabled>Скачать (выбери строку ниже)</button>');
+    var selected = null;
+
+    buckets.forEach(function (b) {
+      var row = el(
+        '<div class="drill-row" style="cursor:pointer;padding:7px 2px;border-bottom:1px solid var(--line);' +
+        'display:flex;justify-content:space-between;font-size:13px"><span>' + esc(b.label) + '</span>' +
+        '<span style="font-family:var(--mono)">' + fmtNum(b.count) + '</span></div>'
+      );
+      row.addEventListener("click", function () {
+        selected = b;
+        renderDrillTable(expandArea, b.rows, columns, OFD1C_PORTRAIT_FILTERS, entityLabel, b.label, 300);
+        downloadBtn.disabled = !b.rows.length;
+        downloadBtn.textContent = "Скачать «" + b.label + "» (" + fmtNum(b.rows.length) + ")";
+      });
+      listWrap.appendChild(row);
+    });
+    wrap.appendChild(listWrap);
+    wrap.appendChild(expandArea);
+    downloadBtn.addEventListener("click", function () {
+      if (!selected) return;
+      var exportRows = selected.rows.map(function (item) {
+        var out = {};
+        columns.forEach(function (c) {
+          var v = item[c.key];
+          out[c.label.replace(/\s+/g, "")] = c.date ? (v ? fmtDate(v) : "") : (v == null ? "" : v);
+        });
+        return out;
+      });
+      if (root.OFDExport) root.OFDExport.downloadCSV(exportName + " — " + selected.label, exportRows);
+    });
+    wrap.appendChild(downloadBtn);
+    return wrap;
+  }
+
+  WIDGETS["b8-1c-portrait-compare"] = {
+    title: "Обмен с 1С — купившие vs контроль", type: "график + таблица", scope: "as-of", span: true,
+    render: function (model) {
+      var wrap = el('<div></div>');
+      if (!OFD1C_STATE.records) {
+        wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится сравнение купивших 1С с контрольной группой не-купивших.</div>'));
+        return wrap;
+      }
+      var entries = ofd1cMatchedEntries(model);
+      if (!entries.length) {
+        wrap.appendChild(el('<div class="placeholder-body">Ни один клиент из файла обмена 1С не сопоставился с базой ОФД по ИНН — сравнивать не с чем.</div>'));
+        return wrap;
+      }
+      var buyerInns = entries.map(function (e) { return e.inn; });
+      var control = ofd1cControlGroup(model, buyerInns);
+      wrap.appendChild(el(
+        '<div class="stat-label" style="margin-bottom:10px">Купивших 1С: ' + fmtNum(entries.length) +
+        ' · контрольная группа (случайная выборка не-купивших того же размера): ' + fmtNum(control.length) +
+        ' · распределение по кассам ниже — доля, НЕ подогнанная под купивших, разница в форме графиков и есть сигнал.</div>'
+      ));
+
+      var buyerClients = entries.map(function (e) { return e.client; });
+
+      function twoSeriesSection(title, buyerDist, controlDist) {
+        var section = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
+        section.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>' + esc(title) + '</b></div>'));
+        var cols = el('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"></div>');
+        var buyerCol = el('<div></div>');
+        buyerCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Купившие 1С</div>'));
+        buyerCol.appendChild(ofd1cBucketDrillBoard(buyerDist.buckets.map(function (b) {
+          return { label: b.label, count: b.count, rows: b.clients ? b.clients.map(ofd1cClientRow) : b.entries.map(ofd1cEntryRow) };
+        }), { color: "var(--s1)", exportName: title + " — купившие 1С", columns: buyerDist.buckets[0] && buyerDist.buckets[0].entries ? OFD1C_PORTRAIT_TENURE_COLUMNS : OFD1C_PORTRAIT_COLUMNS }));
+        var controlCol = el('<div></div>');
+        controlCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Контрольная группа</div>'));
+        controlCol.appendChild(ofd1cBucketDrillBoard(controlDist.buckets.map(function (b) {
+          return { label: b.label, count: b.count, rows: b.clients.map(ofd1cClientRow) };
+        }), { color: "var(--s2)", exportName: title + " — контроль", columns: OFD1C_PORTRAIT_COLUMNS }));
+        cols.appendChild(buyerCol);
+        cols.appendChild(controlCol);
+        section.appendChild(cols);
+        return section;
+      }
+
+      // График 1 — распределение по кассам, купившие vs контроль (обе стороны сопоставимы).
+      wrap.appendChild(twoSeriesSection(
+        "Число касс на дату сравнения",
+        ofd1cKassaDistribution(buyerClients),
+        ofd1cKassaDistribution(control)
+      ));
+
+      // График 2 — срок в ОФД до покупки 1С. У контроля нет даты покупки 1С (её не
+      // существует) -- эта секция ТОЛЬКО у купивших, одна колонка, не двухколоночная форма.
+      var tenureDist = ofd1cTenureDistribution(entries);
+      var tenureSection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
+      tenureSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Срок в ОФД до покупки 1С</b></div>'));
+      if (tenureDist.excluded.length) {
+        tenureSection.appendChild(el('<div class="stat-label" style="margin-bottom:6px;color:var(--muted)">' + fmtNum(tenureDist.excluded.length) + ' клиент(ов) исключены из графика — покупка 1С датирована раньше прихода в ОФД (аномалия в данных, не бакетируется).</div>'));
+      }
+      tenureSection.appendChild(ofd1cBucketDrillBoard(tenureDist.buckets.map(function (b) {
+        return { label: b.label, count: b.count, rows: b.entries.map(ofd1cEntryRow) };
+      }), { color: "var(--s1)", exportName: "Срок до покупки 1С", columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
+      wrap.appendChild(tenureSection);
+
+      // График 3 — конверсия в 1С по партнёру (топ-15, иначе список на несколько тысяч
+      // партнёров нечитаем — тот же урок, что и с плоским списком партнёров в B5,
+      // HISTORY.md 2026-08-19: "плохо, максимально плохо").
+      var partnerRows = ofd1cPartnerConversion(model, entries).filter(function (r) { return r.total > 0; }).slice(0, 15);
+      var partnerSection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
+      partnerSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Конверсия в 1С по партнёру (топ-15 по доле)</b></div>'));
+      partnerSection.appendChild(ofd1cBucketDrillBoard(partnerRows.map(function (r) {
+        return { label: r.partner + " (" + fmtPct(r.rate) + " из " + fmtNum(r.total) + ")", count: r.buyers, rows: r.entries.map(ofd1cEntryRow) };
+      }), { color: "var(--brand)", exportName: "Конверсия по партнёру", columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
+      wrap.appendChild(partnerSection);
+
+      // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) сознательно отложена
+      // (Дима, 2026-09-17: "начинай без отрасли, будем обогащать постепенно") -- плейсхолдер
+      // до появления dadata-cache.json, тот же паттерн, что у остальных "загрузи файл" бордов.
+      wrap.appendChild(el('<div class="placeholder-body">Отрасль (ОКВЭД) — появится после подключения обогащения DaData (фаза 1, отложена по решению Димы 2026-09-17).</div>'));
+
+      return wrap;
+    },
   };
 
   WIDGETS["b8-1c-summary"] = {

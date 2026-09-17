@@ -926,6 +926,31 @@ async function main() {
     console.log("ofd1c: борд «Портрет клиента» рендерит таблицу с загруженными данными:", summaryHasTable ? "OK" : "FAIL");
     if (!summaryHasTable) ok = false;
 
+    // Борд A UI "Купившие vs контроль" (2026-09-17, фаза 2 часть 2) -- ПОСЛЕ rerenderAll()
+    // выше (уже с реальными данными), иначе виджет ещё в плейсхолдере "загрузи файл" (эта
+    // проверка изначально стояла ДО rerenderAll() -- поймано первым же прогоном: "строк
+    // бакетов: FAIL 0", не гипотеза). Клик по СТРОКЕ бакета (не по SVG-бару — barList не
+    // даёт отдельного хука на конкретный rect) должен раскрыть таблицу и включить «Скачать».
+    const portraitNode = win.document.querySelector('[data-widget-id="b8-1c-portrait-compare"]');
+    console.log("ofd1c: борд «Купившие vs контроль» на холсте:", portraitNode ? "OK" : "FAIL");
+    if (!portraitNode) ok = false;
+    if (portraitNode) {
+      const drillRows = portraitNode.querySelectorAll(".drill-row");
+      console.log("ofd1c: борд «Купившие vs контроль» показывает строки бакетов:", drillRows.length > 0 ? "OK" : "FAIL", drillRows.length);
+      if (!drillRows.length) ok = false;
+      if (drillRows.length) {
+        drillRows[0].dispatchEvent(new win.Event("click", { bubbles: true }));
+        const hasTable = portraitNode.querySelector("table") != null;
+        console.log("ofd1c: клик по строке бакета раскрывает таблицу:", hasTable ? "OK" : "FAIL");
+        if (!hasTable) ok = false;
+        const enabledDownloadBtns = Array.from(portraitNode.querySelectorAll(".refresh-chart-btn")).filter((b) => !b.disabled && b.textContent.indexOf("Скачать «") === 0);
+        console.log("ofd1c: клик по строке бакета включает кнопку «Скачать»:", enabledDownloadBtns.length > 0 ? "OK" : "FAIL");
+        if (!enabledDownloadBtns.length) ok = false;
+      }
+      console.log("ofd1c: борд «Купившие vs контроль» упоминает контрольную группу и отрасль-плейсхолдер:", /контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
+      if (!(/контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
+    }
+
     // "Прирост базы (Обмен с 1С)" -- per-gap модель (2026-09-10, см. HISTORY.md), та же
     // архитектура что и в b1-netgrowth/b2-netgrowth: computeGapFlow/computeGapActiveCount
     // из metrics.js переиспользуются напрямую (не дублированы для 1С). Внутренняя
