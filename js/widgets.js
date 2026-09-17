@@ -451,7 +451,13 @@
         tableHolder.appendChild(el('<div style="padding:6px 0;color:var(--muted)">нет данных</div>'));
         return;
       }
-      var headers = columns.map(function (c) { return { label: c.label, num: !!c.num }; });
+      // html: !!c.html -- БЕЗ этого makeSortableTable экранирует готовую разметку через
+      // esc() (не знало о c.html, тот флаг терялся при построении headers) -- найдено
+      // 2026-09-17 на цветной score-пилюле борда C: вместо <span class="status-pill">
+      // на экране был буквальный HTML-текст. Тот же класс бага, что гоча №10 в SKILL.md
+      // (statBlock()-строка через createTextNode вместо innerHTML), только здесь по цепочке
+      // renderDrillTable -> makeSortableTable, не в safeRenderBody.
+      var headers = columns.map(function (c) { return { label: c.label, num: !!c.num, html: !!c.html }; });
       var rows = top.map(function (item) {
         return columns.map(function (c) {
           var v = item[c.key];
@@ -4139,7 +4145,7 @@
       out.push({
         key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: c.tariff || "—",
         tenureNowMonths: tenureNowMonths == null ? null : Math.round(tenureNowMonths * 10) / 10,
-        score: score, reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
+        score: score, scoreHtml: ofd1cScorePill(score), reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
       });
     });
     out.sort(function (a, b) { return b.score - a.score; });
@@ -4703,10 +4709,20 @@
   function ofd1cSaveAllowedPartners(set) {
     try { localStorage.setItem(OFD1C_SCORING_PARTNERS_KEY, JSON.stringify(Array.from(set))); } catch (e) { /* приватный режим и т.п. -- не критично */ }
   }
+  // Score -- цветная пилюля (макет утверждён Димой как визуальный эталон, 2026-09-17:
+  // "цифра скора занесена в отдельную форму"), переиспользуем УЖЕ существующий
+  // .status-pill (good/warn/crit) -- тот же компонент, что overduePill() выше, не новый
+  // самодельный стиль. Сортировка по-прежнему работает: makeSortableTable сортирует по
+  // textContent ячейки, у пилюли это просто число.
+  function ofd1cScorePill(score) {
+    var cls = score >= 70 ? "good" : score >= 40 ? "warn" : "crit";
+    return '<span class="status-pill ' + cls + '" style="font-weight:700">' + score + '</span>';
+  }
   var OFD1C_SCORING_COLUMNS = [
     { label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" },
     { label: "Касс", key: "activeKassas", num: true }, { label: "Тариф ОФД", key: "tariff" },
-    { label: "Срок в ОФД, мес", key: "tenureNowMonths", num: true }, { label: "Score", key: "score", num: true },
+    { label: "Срок в ОФД, мес", key: "tenureNowMonths", num: true },
+    { label: "Score", key: "scoreHtml", num: true, html: true, exportKey: "score" },
     { label: "Причина", key: "reason" },
   ];
   var OFD1C_SCORING_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" }];
@@ -4738,13 +4754,28 @@
       pickerBox.appendChild(partnerListHolder);
       wrap.appendChild(pickerBox);
 
+      // Score от-до -- доп. фильтр поверх обычных текстовых (Дима, 2026-09-17). Отдельно
+      // от .drill-f/renderDrillTable (тот умеет только текстовый substring-фильтр) --
+      // фильтруем candidates ЗАРАНЕЕ, до передачи в таблицу, не трогая общий компонент.
+      var scoreFromInput = el('<input type="number" placeholder="Score от" min="0" max="100" style="width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:7px">');
+      var scoreToInput = el('<input type="number" placeholder="Score до" min="0" max="100" style="width:100px;padding:5px 8px;border:1px solid var(--line);border-radius:7px">');
+      var scoreFilterRow = el('<div style="margin-bottom:10px;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="color:var(--muted)">Score диапазон:</span></div>');
+      scoreFilterRow.appendChild(scoreFromInput);
+      scoreFilterRow.appendChild(scoreToInput);
+      wrap.appendChild(scoreFilterRow);
+
       var candidatesHolder = el('<div></div>');
       wrap.appendChild(candidatesHolder);
 
       function renderCandidates() {
         candidatesHolder.innerHTML = "";
-        var candidates = ofd1cScoringCandidates(model, buyerInns, ctx, allowed);
-        candidatesHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Кандидатов: ' + fmtNum(candidates.length) + (allowed.size ? ' · партнёров выбрано: ' + fmtNum(allowed.size) : ' · партнёры не выбраны — список пуст') + '</div>'));
+        var all = ofd1cScoringCandidates(model, buyerInns, ctx, allowed);
+        var from = scoreFromInput.value === "" ? null : parseFloat(scoreFromInput.value);
+        var to = scoreToInput.value === "" ? null : parseFloat(scoreToInput.value);
+        var candidates = all.filter(function (c) {
+          return (from == null || c.score >= from) && (to == null || c.score <= to);
+        });
+        candidatesHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Кандидатов: ' + fmtNum(candidates.length) + (candidates.length !== all.length ? " из " + fmtNum(all.length) + " (сужено фильтром Score)" : "") + (allowed.size ? ' · партнёров выбрано: ' + fmtNum(allowed.size) : ' · партнёры не выбраны — список пуст') + '</div>'));
         if (!candidates.length) return;
         var tableArea = el('<div></div>');
         candidatesHolder.appendChild(tableArea);
@@ -4753,7 +4784,11 @@
         downloadBtn.addEventListener("click", function () {
           var exportRows = candidates.map(function (item) {
             var out = {};
-            OFD1C_SCORING_COLUMNS.forEach(function (c) { out[c.label.replace(/\s+/g, "")] = item[c.key] == null ? "" : item[c.key]; });
+            OFD1C_SCORING_COLUMNS.forEach(function (c) {
+              // scoreHtml -- готовая разметка пилюли, в CSV нужно сырое число (c.exportKey).
+              var v = c.exportKey ? item[c.exportKey] : item[c.key];
+              out[c.label.replace(/\s+/g, "")] = v == null ? "" : v;
+            });
             return out;
           });
           if (root.OFDExport) root.OFDExport.downloadCSV("Скоринг для продавцов — Обмен с 1С", exportRows);
@@ -4791,6 +4826,8 @@
         };
       }
       searchInput.addEventListener("input", renderPartnerList);
+      scoreFromInput.addEventListener("input", renderCandidates);
+      scoreToInput.addEventListener("input", renderCandidates);
 
       renderPartnerList();
       renderCandidates();

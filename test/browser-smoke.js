@@ -1037,6 +1037,34 @@ async function main() {
         console.log("ofd1c: после выбора партнёра список кандидатов пересчитался:", hasSortableTable ? "OK" : "FAIL");
         if (!hasSortableTable) ok = false;
       }
+
+      // 2026-09-17 (правка после ревью Димы): Score -- цветная пилюля (.status-pill,
+      // переиспользован общий компонент, не новый стиль), плюс числовой фильтр "Score
+      // от-до". "Отметить все видимые" партнёров -- гарантирует непустой список кандидатов
+      // для теста (один случайный партнёр мог оказаться без совпадений по бакетам).
+      const selectAllBtn = scoringNode.querySelector("#ofd1cScoringSelectAll");
+      if (selectAllBtn) selectAllBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
+      const scorePills = scoringNode.querySelectorAll("table .status-pill");
+      console.log("ofd1c: скоринг -- колонка Score рендерится цветной пилюлей (.status-pill):", scorePills.length > 0 ? "OK" : "FAIL", scorePills.length);
+      if (!scorePills.length) ok = false;
+
+      const scoreFromInput = scoringNode.querySelector('input[placeholder="Score от"]');
+      const scoreToInput = scoringNode.querySelector('input[placeholder="Score до"]');
+      if (scoreFromInput && scoreToInput) {
+        const beforeMatch = scoringNode.innerHTML.match(/Кандидатов: ([\d\s]+)/);
+        scoreFromInput.value = "90";
+        scoreFromInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+        const afterMatch = scoringNode.innerHTML.match(/Кандидатов: ([\d\s]+)/);
+        const beforeCount = beforeMatch ? parseInt(beforeMatch[1].replace(/\s/g, ""), 10) : -1;
+        const afterCount = afterMatch ? parseInt(afterMatch[1].replace(/\s/g, ""), 10) : -1;
+        console.log("ofd1c: фильтр «Score от» сужает список кандидатов (не увеличивает):", afterCount <= beforeCount ? "OK" : "FAIL", beforeCount, "->", afterCount);
+        if (afterCount > beforeCount) ok = false;
+        scoreFromInput.value = "";
+        scoreFromInput.dispatchEvent(new win.Event("input", { bubbles: true }));
+      } else {
+        console.log("ofd1c: фильтр «Score от-до» найден в DOM:", "FAIL");
+        ok = false;
+      }
       win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1"); // не протекает в следующие тесты
     }
 
