@@ -42,6 +42,18 @@
     <input type="file" id="fileInput" accept=".xlsx" multiple style="display:none;">
   </label>
   <span class="filename" id="filenameLabel"></span>
+  <!-- Видна ВСЕМ (не hidden-1c, в отличие от самих B8-бордов) -- Дима, 2026-09-17: "кнопку
+       пусть видят, но функционально она им никак не поможет" -- сам раздел "Обмен с 1С" с
+       данными всё равно скрыт по /api/whoami (app.js), кнопка без него просто складывает
+       данные в состояние, которое некому показать. Другой цвет (var(--s2), не var(--brand))
+       -- визуально отличить от основной загрузки ОФД. Заменяет борд b8-1c-upload (убран из
+       библиотеки ниже, функция всё ещё в WIDGETS -- не ломаем чьи-то уже сохранённые
+       раскладки, если борд там был размещён раньше). -->
+  <label class="btn" style="cursor:pointer;background:var(--s2);border-color:var(--s2);color:#fff;" title="Файл(ы) сверки «Обмен с 1С» — можно выбрать сразу несколько (например, за разные периоды)">
+    Обмен с 1С
+    <input type="file" id="ofd1cFileInput" accept=".xlsx,.xls" multiple style="display:none;">
+  </label>
+  <span class="load-status" id="ofd1cLoadStatus"></span>
 </div>
 
 <div class="shell">
@@ -118,7 +130,6 @@
     <details class="board-group hidden-1c" id="board1cGroup">
       <summary><span class="code">B8</span>Обмен с 1С</summary>
       <div class="lib-item" data-widget="b8-1c-growth"><span class="grip">⋮⋮</span>Прирост базы (Обмен с 1С)<span class="lchip">период</span></div>
-      <div class="lib-item" data-widget="b8-1c-upload"><span class="grip">⋮⋮</span>Обмен с 1С — загрузка файла<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-dadata-upload"><span class="grip">⋮⋮</span>Обогащение DaData — загрузка<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-portrait-compare"><span class="grip">⋮⋮</span>Обмен с 1С — купившие vs контроль<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-summary"><span class="grip">⋮⋮</span>Обмен с 1С — портрет клиента<span class="lchip">as-of</span></div>

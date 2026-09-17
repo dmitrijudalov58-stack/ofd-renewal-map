@@ -81,6 +81,23 @@ async function main() {
 
   var ok = true;
 
+  // 0) кнопка "Обмен с 1С" в топбаре (2026-09-17, заменяет борд b8-1c-upload) -- видна
+  // ВСЕМ, не внутри hidden-1c (в отличие от самих B8-бордов), и библиотека больше не
+  // предлагает перетащить старый борд-загрузчик на холст.
+  const ofd1cTopbarInput = win.document.getElementById("ofd1cFileInput");
+  console.log("топбар: кнопка «Обмен с 1С» существует:", ofd1cTopbarInput ? "OK" : "FAIL");
+  if (!ofd1cTopbarInput) ok = false;
+  if (ofd1cTopbarInput) {
+    const insideHidden1c = ofd1cTopbarInput.closest(".hidden-1c") != null;
+    console.log("топбар: кнопка «Обмен с 1С» НЕ внутри hidden-1c (видна всем):", !insideHidden1c ? "OK" : "FAIL");
+    if (insideHidden1c) ok = false;
+  }
+  const oldUploadLibItem = win.document.querySelector('[data-widget="b8-1c-upload"]');
+  console.log("библиотека: старый борд-загрузчик b8-1c-upload убран:", !oldUploadLibItem ? "OK" : "FAIL");
+  if (oldUploadLibItem) ok = false;
+  console.log("api: ofd1cHandleFiles экспортирован:", typeof win.OFDWidgets.ofd1cHandleFiles === "function" ? "OK" : "FAIL");
+  if (typeof win.OFDWidgets.ofd1cHandleFiles !== "function") ok = false;
+
   // 1) все 25 виджетов рендерятся без ошибок
   const ids = Object.keys(win.OFDWidgets.WIDGETS);
   let failed = 0;

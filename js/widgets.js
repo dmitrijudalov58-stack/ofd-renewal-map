@@ -3820,6 +3820,37 @@
     });
   }
 
+  // Разбор + дедуп + запись в OFD1C_STATE + broadcast -- ОБЩАЯ логика, раньше жила только
+  // внутри WIDGETS["b8-1c-upload"].render (2026-09-17: кнопка загрузки перенесена в
+  // топбар, виджет убран из библиотеки, но функция здесь используется и топбаром, и
+  // оставленной ради обратной совместимости регистрацией WIDGETS["b8-1c-upload"] -- один
+  // код, не два разных парсера, которые могут разъехаться со временем). Возвращает Promise
+  // с итоговой сводкой для статус-строки вызывающей стороны.
+  function ofd1cHandleFiles(files) {
+    return ofd1cEnsureXLSX().then(function () {
+      return Promise.all(files.map(ofd1cReadFileAsWorkbook));
+    }).then(function (workbooks) {
+      // Дедуп составным ключом ИНН+заводской номер+начало тарифа -- см. HISTORY.md
+      // 2026-09-05, "Ключ доступа" для этого не годится (повторяется на разных записях).
+      var allRecords = [], headerMismatch = false, sheetsCount = 0;
+      var seenKeys = new Set();
+      workbooks.forEach(function (wb) {
+        var parsed = ofd1cParseWorkbook(wb);
+        if (parsed.headerMismatch) headerMismatch = true;
+        sheetsCount += wb.SheetNames.length;
+        parsed.records.forEach(function (r) {
+          var dedupKey = r.inn + "|" + r.kktSerial + "|" + (r.tariffStart ? r.tariffStart.getTime() : "");
+          if (seenKeys.has(dedupKey)) return;
+          seenKeys.add(dedupKey);
+          allRecords.push(r);
+        });
+      });
+      OFD1C_STATE = { records: allRecords, fileName: files.map(function (f) { return f.name; }).join(", "), sheetsCount: sheetsCount, headerMismatch: headerMismatch };
+      ofd1cBroadcast();
+      return { recordsCount: allRecords.length, sheetsCount: sheetsCount, headerMismatch: headerMismatch, fileNames: OFD1C_STATE.fileName };
+    });
+  }
+
   var OFD1C_DADATA_COLUMNS = [
     { label: "ИНН", key: "key" }, { label: "Организация (DaData)", key: "org" },
     { label: "ОКВЭД", key: "okved" }, { label: "Регион", key: "region" }, { label: "Статус", key: "status" },
@@ -3954,34 +3985,8 @@
         var files = Array.from(input.files || []);
         if (!files.length) return;
         status.textContent = "Загрузка библиотеки разбора…";
-        ofd1cEnsureXLSX().then(function () {
-          status.textContent = "Разбор " + files.length + " файл(ов)…";
-          return Promise.all(files.map(ofd1cReadFileAsWorkbook));
-        }).then(function (workbooks) {
-          // Несколько файлов (Дима, 2026-09-05) -- дедуп составным ключом ИНН+заводской
-          // номер+начало тарифа, на случай если периоды загруженных файлов пересекаются.
-          // "Ключ доступа" для этого НЕ годится (проверено на реальных данных, 2026-09-05):
-          // это ключ КЛИЕНТА у поставщика, повторяется на РАЗНЫХ записях одного ИНН (391 из
-          // 835 ключей встречаются больше 1 раза — разные кассы/периоды одного клиента);
-          // дедуп по нему схлопнул бы реальные разные покупки в одну и молча потерял бы
-          // данные (поймано тестом: 2124 строки схлопнулись бы до 835). Составной ключ
-          // уникален на всех 2124 реальных строках без единой коллизии.
-          var allRecords = [], headerMismatch = false, sheetsCount = 0;
-          var seenKeys = new Set();
-          workbooks.forEach(function (wb) {
-            var parsed = ofd1cParseWorkbook(wb);
-            if (parsed.headerMismatch) headerMismatch = true;
-            sheetsCount += wb.SheetNames.length;
-            parsed.records.forEach(function (r) {
-              var dedupKey = r.inn + "|" + r.kktSerial + "|" + (r.tariffStart ? r.tariffStart.getTime() : "");
-              if (seenKeys.has(dedupKey)) return;
-              seenKeys.add(dedupKey);
-              allRecords.push(r);
-            });
-          });
-          OFD1C_STATE = { records: allRecords, fileName: files.map(function (f) { return f.name; }).join(", "), sheetsCount: sheetsCount, headerMismatch: headerMismatch };
+        ofd1cHandleFiles(files).then(function () {
           renderPreview();
-          ofd1cBroadcast();
         }).catch(function (err) {
           status.textContent = "Ошибка разбора: " + err.message;
         });
@@ -6012,6 +6017,7 @@
     // Только для теста (test/browser-smoke.js) -- прогнать реальный файл "Обмен с 1С" через
     // тот же парсер/матчинг, что использует b8-1c-upload, без похода через <input type=file>.
     ofd1cParseWorkbook: ofd1cParseWorkbook,
+    ofd1cHandleFiles: ofd1cHandleFiles,
     ofd1cMatchClients: ofd1cMatchClients,
     ofd1cSetState: function (s) { OFD1C_STATE = s; },
     ofd1cDadataSetState: function (s) { OFD1C_DADATA_STATE = s; },

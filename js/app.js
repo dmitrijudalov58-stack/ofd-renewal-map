@@ -27,6 +27,8 @@
   var applyAsOfBtn = document.getElementById("applyAsOf");
   var strictToggle = document.getElementById("strictToggle");
   var saveLayoutBtn = document.getElementById("saveLayoutBtn");
+  var ofd1cFileInput = document.getElementById("ofd1cFileInput");
+  var ofd1cLoadStatus = document.getElementById("ofd1cLoadStatus");
 
   var xlsxLoadPromise = null;
   function ensureXLSX() {
@@ -279,6 +281,27 @@
         fileLoader.classList.remove("active");
       });
   });
+
+  // Кнопка "Обмен с 1С" в топбаре (2026-09-17, заменяет борд b8-1c-upload) -- видна ВСЕМ,
+  // но раздел B8 с данными по-прежнему скрыт классом hidden-1c для всех кроме u5yhjzlpy
+  // (см. /api/whoami ниже в этом файле) -- у остальных загрузка технически отработает
+  // (ofd1cHandleFiles ничего не знает про права доступа), просто показать результат негде.
+  if (ofd1cFileInput) {
+    ofd1cFileInput.addEventListener("change", function (e) {
+      var files = Array.prototype.slice.call(e.target.files);
+      if (!files.length) return;
+      ofd1cLoadStatus.textContent = "Разбор " + files.length + " файл(ов)…";
+      ofd1cLoadStatus.className = "load-status";
+      window.OFDWidgets.ofd1cHandleFiles(files).then(function (summary) {
+        ofd1cLoadStatus.textContent = summary.fileNames + " — записей: " + window.OFDWidgets.fmtNum(summary.recordsCount) +
+          (summary.headerMismatch ? " · ⚠ заголовки отличаются от ожидаемых" : "");
+      }).catch(function (err) {
+        console.error(err);
+        ofd1cLoadStatus.textContent = "Ошибка разбора: " + err.message;
+        ofd1cLoadStatus.className = "load-status error";
+      });
+    });
+  }
 
   // Конец периода двигает as-of вслед за собой — Дима хочет "выставил диапазон до 30
   // сентября -> вижу отток за август/июль", без ручной синхронизации двух разных полей.
