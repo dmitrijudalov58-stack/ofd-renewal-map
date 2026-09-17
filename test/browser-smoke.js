@@ -98,6 +98,39 @@ async function main() {
   console.log("api: ofd1cHandleFiles экспортирован:", typeof win.OFDWidgets.ofd1cHandleFiles === "function" ? "OK" : "FAIL");
   if (typeof win.OFDWidgets.ofd1cHandleFiles !== "function") ok = false;
 
+  // Топбар v2 (2026-09-17): три короткие кнопки + toggle-банер вместо построчной
+  // статистики. DaData-кнопка видна всем (не hidden-1c), баннер изначально скрыт,
+  // клик по "ⓘ" переключает видимость.
+  const dadataTopbarInput = win.document.getElementById("dadataFileInput");
+  console.log("топбар: кнопка «DaData» существует и не внутри hidden-1c:", dadataTopbarInput && dadataTopbarInput.closest(".hidden-1c") == null ? "OK" : "FAIL");
+  if (!(dadataTopbarInput && dadataTopbarInput.closest(".hidden-1c") == null)) ok = false;
+  const statsBannerEl = win.document.getElementById("statsBanner");
+  const dataInfoBtnEl = win.document.getElementById("dataInfoBtn");
+  console.log("топбар: statsBanner изначально скрыт:", statsBannerEl && statsBannerEl.classList.contains("hidden") ? "OK" : "FAIL");
+  if (!(statsBannerEl && statsBannerEl.classList.contains("hidden"))) ok = false;
+  if (dataInfoBtnEl && statsBannerEl) {
+    dataInfoBtnEl.dispatchEvent(new win.Event("click", { bubbles: true }));
+    console.log("топбар: клик по «ⓘ» раскрывает statsBanner:", !statsBannerEl.classList.contains("hidden") ? "OK" : "FAIL");
+    if (statsBannerEl.classList.contains("hidden")) ok = false;
+    dataInfoBtnEl.dispatchEvent(new win.Event("click", { bubbles: true }));
+    console.log("топбар: повторный клик по «ⓘ» снова скрывает statsBanner:", statsBannerEl.classList.contains("hidden") ? "OK" : "FAIL");
+    if (!statsBannerEl.classList.contains("hidden")) ok = false;
+  }
+
+  // ofd1cHandleDadataFile -- реальный вызов (не только synthetic setState ниже),
+  // через win.File, чтобы проверить сам путь чтения+разбора JSON, не только состояние.
+  try {
+    const dadataTestFile = new win.File([JSON.stringify({ "1234567890": { org: "Тест ООО", okved: "47.11", region: "Тест регион", status: "ACTIVE", director: "Петров Пётр Петрович", enrichedAt: "2026-09-17T00:00:00.000Z" } })], "test-dadata-cache.json", { type: "application/json" });
+    const dadataSummary = await win.OFDWidgets.ofd1cHandleDadataFile(dadataTestFile);
+    const dadataHandleOk = dadataSummary.count === 1 && dadataSummary.withDirector === 1 && win.OFDWidgets.ofd1cDadataInfo("1234567890") && win.OFDWidgets.ofd1cDadataInfo("1234567890").org === "Тест ООО";
+    console.log("ofd1cHandleDadataFile: разбирает файл и пишет в состояние:", dadataHandleOk ? "OK" : "FAIL", dadataSummary);
+    if (!dadataHandleOk) ok = false;
+  } catch (err) {
+    console.log("ofd1cHandleDadataFile: разбирает файл и пишет в состояние: FAIL", err.message);
+    ok = false;
+  }
+  win.OFDWidgets.ofd1cDadataSetState({ records: null, fileName: null }); // не протекает в остальные ofd1c-тесты ниже (используют свой OFD1C_TEST_FILE/synthetic state)
+
   // 1) все 25 виджетов рендерятся без ошибок
   const ids = Object.keys(win.OFDWidgets.WIDGETS);
   let failed = 0;

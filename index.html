@@ -34,26 +34,35 @@
   <button class="btn" id="strictToggle" disabled>Режим</button>
   <button class="btn" id="saveLayoutBtn" disabled title="Запомнить какие борды на холсте, где стоят и какого размера — при следующей загрузке файла расставятся сами">Сохранить расположение</button>
   <div class="spacer"></div>
-  <span class="file-loader" id="fileLoader" aria-hidden="true"></span>
-  <span class="load-status" id="loadStatus">Файл не загружен</span>
   <span class="asof" id="asofStamp" style="display:none;"></span>
-  <label class="btn primary" style="cursor:pointer;" title="Можно выбрать сразу несколько файлов — свод в одну модель, коды-дубли между файлами не задвоятся">
-    Загрузить XLSX
+  <!-- Три короткие кнопки загрузки (Дима, 2026-09-17: "три небольшие строчки... когда оно
+       всё в одну строку, оно не читается") -- длинная построчная статистика (строк/
+       клиентов/касс/дублей/имён файлов) убрана из топбара целиком, живёт в statsBanner
+       (toggle по кнопке "ⓘ" ниже), не занимает место, пока не нужна. У каждой кнопки свой
+       мини-спиннер СЛЕВА от неё (.file-loader, активируется на время разбора), не общий. -->
+  <span class="file-loader" id="fileLoader" aria-hidden="true"></span>
+  <label class="btn primary" style="cursor:pointer;" title="ОФД — выгрузка кодов. Можно выбрать сразу несколько файлов — свод в одну модель, коды-дубли между файлами не задвоятся">
+    ОФД
     <input type="file" id="fileInput" accept=".xlsx" multiple style="display:none;">
   </label>
-  <span class="filename" id="filenameLabel"></span>
   <!-- Видна ВСЕМ (не hidden-1c, в отличие от самих B8-бордов) -- Дима, 2026-09-17: "кнопку
        пусть видят, но функционально она им никак не поможет" -- сам раздел "Обмен с 1С" с
        данными всё равно скрыт по /api/whoami (app.js), кнопка без него просто складывает
        данные в состояние, которое некому показать. Другой цвет (var(--s2), не var(--brand))
-       -- визуально отличить от основной загрузки ОФД. Заменяет борд b8-1c-upload (убран из
-       библиотеки ниже, функция всё ещё в WIDGETS -- не ломаем чьи-то уже сохранённые
-       раскладки, если борд там был размещён раньше). -->
+       -- визуально отличить от загрузки ОФД. -->
+  <span class="file-loader" id="ofd1cFileLoader" aria-hidden="true"></span>
   <label class="btn" style="cursor:pointer;background:var(--s2);border-color:var(--s2);color:#fff;" title="Файл(ы) сверки «Обмен с 1С» — можно выбрать сразу несколько (например, за разные периоды)">
     Обмен с 1С
     <input type="file" id="ofd1cFileInput" accept=".xlsx,.xls" multiple style="display:none;">
   </label>
-  <span class="load-status" id="ofd1cLoadStatus"></span>
+  <!-- Тоже видна всем, по той же причине. dadata-cache.json генерируется офлайн-скриптом
+       scripts/dadata-enrich.js (не в браузере) -- см. reference/… в скилле репозитория. -->
+  <span class="file-loader" id="dadataFileLoader" aria-hidden="true"></span>
+  <label class="btn" style="cursor:pointer;background:var(--s3);border-color:var(--s3);color:#fff;" title="dadata-cache.json — результат офлайн-обогащения отраслью/регионом через DaData">
+    DaData
+    <input type="file" id="dadataFileInput" accept=".json" style="display:none;">
+  </label>
+  <button class="btn" id="dataInfoBtn" type="button" title="Подробности по загруженным данным (строки, клиенты, кассы, дубли, обогащение)">ⓘ</button>
 </div>
 
 <div class="shell">
@@ -130,7 +139,7 @@
     <details class="board-group hidden-1c" id="board1cGroup">
       <summary><span class="code">B8</span>Обмен с 1С</summary>
       <div class="lib-item" data-widget="b8-1c-growth"><span class="grip">⋮⋮</span>Прирост базы (Обмен с 1С)<span class="lchip">период</span></div>
-      <div class="lib-item" data-widget="b8-1c-dadata-upload"><span class="grip">⋮⋮</span>Обогащение DaData — загрузка<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b8-1c-dadata-upload"><span class="grip">⋮⋮</span>Обогащение DaData — данные<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-portrait-compare"><span class="grip">⋮⋮</span>Обмен с 1С — купившие vs контроль<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-summary"><span class="grip">⋮⋮</span>Обмен с 1С — портрет клиента<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-scoring"><span class="grip">⋮⋮</span>Обмен с 1С — скоринг для продавцов<span class="lchip">as-of</span></div>
@@ -148,6 +157,7 @@
   </aside>
 
   <div class="canvas-wrap">
+    <div class="demo-banner hidden" id="statsBanner"></div>
     <div class="demo-banner freshness-banner hidden" id="updateBanner"></div>
     <div class="demo-banner" id="demoBanner">Загрузи XLSX-выгрузку ОФД справа сверху — после разбора файла здесь появятся реальные цифры. Обработка идёт целиком в браузере, файл никуда не отправляется.</div>
     <div class="demo-banner freshness-banner hidden" id="freshnessBanner"></div>

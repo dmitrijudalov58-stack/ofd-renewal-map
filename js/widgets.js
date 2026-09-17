@@ -3741,6 +3741,32 @@
   var OFD1C_DADATA_STATE = { records: null, fileName: null };
   function ofd1cDadataInfo(inn) { return OFD1C_DADATA_STATE.records ? OFD1C_DADATA_STATE.records.get(inn) || null : null; }
 
+  // Чтение+разбор dadata-cache.json + запись в OFD1C_DADATA_STATE + broadcast -- ОБЩАЯ
+  // логика (2026-09-17, кнопка "DaData" переехала в топбар, борд b8-1c-dadata-upload
+  // больше не грузит файл сам, только показывает). Promise с итоговой сводкой для
+  // статус-строки вызывающей стороны (топбар).
+  function ofd1cHandleDadataFile(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        try {
+          var parsed = JSON.parse(e.target.result);
+          var map = new Map();
+          var withDirector = 0;
+          Object.keys(parsed).forEach(function (inn) {
+            map.set(inn, parsed[inn]);
+            if (parsed[inn] && parsed[inn].director) withDirector++;
+          });
+          OFD1C_DADATA_STATE = { records: map, fileName: file.name };
+          ofd1cBroadcast();
+          resolve({ fileName: file.name, count: map.size, withDirector: withDirector });
+        } catch (err) { reject(err); }
+      };
+      reader.onerror = function () { reject(new Error("Не удалось прочитать файл «" + file.name + "»")); };
+      reader.readAsText(file);
+    });
+  }
+
   function ofd1cEnsureXLSX() {
     if (root.XLSX) return Promise.resolve();
     if (ofd1cEnsureXLSX._p) return ofd1cEnsureXLSX._p;
@@ -3863,22 +3889,27 @@
   ];
 
   WIDGETS["b8-1c-dadata-upload"] = {
-    title: "Обогащение DaData — загрузка", type: "загрузка", scope: "as-of", span: true,
-    render: function (model) {
+    // Название без "загрузка" -- сама загрузка переехала в кнопку "DaData" в топбаре
+    // (2026-09-17), борд теперь ТОЛЬКО показывает данные. ID виджета НЕ трогаем (см. SKILL.md
+    // -- смена id ломает чьи-то уже сохранённые раскладки), меняем только заголовок.
+    title: "Обогащение DaData — данные", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
       var wrap = el('<div></div>');
-      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи <code>dadata-cache.json</code> (генерируется офлайн-скриптом <code>scripts/dadata-enrich.js</code>, обогащение идёт партиями по 9500 ИНН/день — файл на диске обновляется каждый день, перезагрузи, чтобы подтянуть свежие данные). Отрасль (борд «Купившие vs контроль») и скоринг для продавцов используют эти данные, если они загружены — без загрузки работают как раньше, просто без отраслевого сигнала.</div>'));
-      var input = el('<input type="file" accept=".json">');
-      var status = el('<div class="stat-label" style="margin-top:8px"></div>');
-      var tableHolder = el('<div style="margin-top:10px"></div>');
-      wrap.appendChild(input);
-      wrap.appendChild(status);
-      wrap.appendChild(tableHolder);
+      function renderBody() {
+        wrap.innerHTML = "";
+        wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузка — кнопка «DaData» в шапке (генерируется офлайн-скриптом <code>scripts/dadata-enrich.js</code>, обогащение идёт партиями по 9500 ИНН/день — файл на диске обновляется каждый день, загрузи заново кнопкой сверху, чтобы подтянуть свежие данные). Отрасль (борд «Купившие vs контроль») и скоринг для продавцов используют эти данные, если они загружены — без загрузки работают как раньше, просто без отраслевого сигнала.</div>'));
+        if (!OFD1C_DADATA_STATE.records || !OFD1C_DADATA_STATE.records.size) {
+          wrap.appendChild(el('<div class="placeholder-body">Файл не загружен — нажми «DaData» в шапке.</div>'));
+          return;
+        }
+        var withDirector = 0;
+        OFD1C_DADATA_STATE.records.forEach(function (r) { if (r.director) withDirector++; });
+        wrap.appendChild(el('<div class="stat-label" style="margin-bottom:8px">' + esc(OFD1C_DADATA_STATE.fileName) + ' — обогащено ИНН: ' + fmtNum(OFD1C_DADATA_STATE.records.size) + ' (с ФИО руководителя: ' + fmtNum(withDirector) + ')</div>'));
 
-      // Строки для таблицы -- ВСЯ информация, которую удалось получить от DaData на каждый
-      // ИНН (Дима, 2026-09-17: "табличный массив, вся информация... в полном разрезе"),
-      // не только счётчик. "Есть в базе ОФД" -- бонус-сопоставление с основной базой по
-      // ИНН (тот же клиент/партнёр, что видит остальной инструмент), не из DaData.
-      function buildRows() {
+        // Строки для таблицы -- ВСЯ информация, которую удалось получить от DaData на
+        // каждый ИНН (Дима, 2026-09-17: "табличный массив, вся информация... в полном
+        // разрезе"), не только счётчик. "Есть в базе ОФД" -- бонус-сопоставление с
+        // основной базой по ИНН (тот же клиент/партнёр, что видит остальной инструмент).
         var rows = [];
         OFD1C_DADATA_STATE.records.forEach(function (r, inn) {
           var client = model.clients.get(inn);
@@ -3889,13 +3920,8 @@
             ofdMatch: client ? (client.org || "да") : "—",
           });
         });
-        return rows;
-      }
-
-      function renderTable() {
-        tableHolder.innerHTML = "";
-        if (!OFD1C_DADATA_STATE.records || !OFD1C_DADATA_STATE.records.size) return;
-        var rows = buildRows();
+        var tableHolder = el('<div></div>');
+        wrap.appendChild(tableHolder);
         renderDrillTable(tableHolder, rows, OFD1C_DADATA_COLUMNS, OFD1C_DADATA_FILTERS, "записей", "Обогащённые ИНН", 300);
         var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">Скачать весь массив (' + fmtNum(rows.length) + ')</button>');
         downloadBtn.addEventListener("click", function () {
@@ -3906,41 +3932,13 @@
           });
           if (root.OFDExport) root.OFDExport.downloadCSV("Обогащение DaData", exportRows);
         });
-        tableHolder.appendChild(downloadBtn);
+        wrap.appendChild(downloadBtn);
       }
-
-      function renderStatus() {
-        if (!OFD1C_DADATA_STATE.records) { status.textContent = "Файл не загружен."; return; }
-        var withDirector = 0;
-        OFD1C_DADATA_STATE.records.forEach(function (r) { if (r.director) withDirector++; });
-        status.textContent = OFD1C_DADATA_STATE.fileName + " — обогащено ИНН: " + fmtNum(OFD1C_DADATA_STATE.records.size) + " (с ФИО руководителя: " + fmtNum(withDirector) + ")";
-        renderTable();
-      }
-      if (OFD1C_DADATA_STATE.records) renderStatus();
-
-      input.addEventListener("change", function () {
-        var file = input.files && input.files[0];
-        if (!file) return;
-        status.textContent = "Чтение файла…";
-        var reader = new FileReader();
-        reader.onload = function (e) {
-          try {
-            var parsed = JSON.parse(e.target.result);
-            var map = new Map();
-            Object.keys(parsed).forEach(function (inn) { map.set(inn, parsed[inn]); });
-            OFD1C_DADATA_STATE = { records: map, fileName: file.name };
-            renderStatus();
-            ofd1cBroadcast();
-          } catch (err) {
-            status.textContent = "Ошибка разбора JSON: " + err.message;
-          }
-        };
-        reader.onerror = function () { status.textContent = "Не удалось прочитать файл «" + file.name + "»"; };
-        reader.readAsText(file);
-      });
-
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody; // подписка на ofd1cBroadcast -- загрузка теперь СНАРУЖИ (топбар), борд сам не источник события
       return wrap;
     },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
   };
 
   WIDGETS["b8-1c-upload"] = {
@@ -6023,6 +6021,7 @@
     ofd1cDadataSetState: function (s) { OFD1C_DADATA_STATE = s; },
     ofd1cDadataGetState: function () { return OFD1C_DADATA_STATE; },
     ofd1cDadataInfo: ofd1cDadataInfo,
+    ofd1cHandleDadataFile: ofd1cHandleDadataFile,
     ofd1cGetState: function () { return OFD1C_STATE; },
     ofd1cMatchedEntries: ofd1cMatchedEntries,
     ofd1cComputeChurnGradient: ofd1cComputeChurnGradient,

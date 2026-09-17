@@ -11,8 +11,6 @@
   window.OFDState = { model: null, ctx: null, rows: null, strict: true, freshness: null, loadTimeAsOf: null };
 
   var fileInput = document.getElementById("fileInput");
-  var filenameLabel = document.getElementById("filenameLabel");
-  var loadStatus = document.getElementById("loadStatus");
   var fileLoader = document.getElementById("fileLoader");
   var asofStamp = document.getElementById("asofStamp");
   var demoBanner = document.getElementById("demoBanner");
@@ -28,7 +26,11 @@
   var strictToggle = document.getElementById("strictToggle");
   var saveLayoutBtn = document.getElementById("saveLayoutBtn");
   var ofd1cFileInput = document.getElementById("ofd1cFileInput");
-  var ofd1cLoadStatus = document.getElementById("ofd1cLoadStatus");
+  var ofd1cFileLoader = document.getElementById("ofd1cFileLoader");
+  var dadataFileInput = document.getElementById("dadataFileInput");
+  var dadataFileLoader = document.getElementById("dadataFileLoader");
+  var dataInfoBtn = document.getElementById("dataInfoBtn");
+  var statsBanner = document.getElementById("statsBanner");
 
   var xlsxLoadPromise = null;
   function ensureXLSX() {
@@ -44,9 +46,27 @@
     return xlsxLoadPromise;
   }
 
+  // Длинная построчная статистика (строк/клиентов/касс/дублей/имён файлов) больше не
+  // висит в топбаре постоянно (Дима, 2026-09-17: "три небольшие строчки... когда оно всё
+  // в одну строку, оно не читается") -- три источника (ОФД/Обмен с 1С/DaData) копятся
+  // здесь, рендерятся в statsBanner по клику на "ⓘ". Ошибка -- ИСКЛЮЧЕНИЕ: баннер
+  // раскрывается принудительно, ошибку нельзя спрятать за клик, который никто не сделает.
+  var topbarStats = { ofd: null, ofd1c: null, dadata: null };
+  var STATS_LABELS = { ofd: "ОФД", ofd1c: "Обмен с 1С", dadata: "DaData" };
+  function renderStatsBanner() {
+    var lines = ["ofd", "ofd1c", "dadata"].filter(function (k) { return topbarStats[k]; }).map(function (k) {
+      var s = topbarStats[k];
+      return "<div" + (s.isError ? ' style="color:var(--crit);font-weight:600"' : "") + "><b>" + STATS_LABELS[k] + ":</b> " + s.text + "</div>";
+    });
+    statsBanner.innerHTML = lines.length ? lines.join("") : "Пока ничего не загружено.";
+  }
   function setStatus(text, isError) {
-    loadStatus.textContent = text;
-    loadStatus.className = "load-status" + (isError ? " error" : "");
+    topbarStats.ofd = { text: text, isError: !!isError };
+    renderStatsBanner();
+    if (isError) statsBanner.classList.remove("hidden");
+  }
+  if (dataInfoBtn) {
+    dataInfoBtn.addEventListener("click", function () { statsBanner.classList.toggle("hidden"); });
   }
 
   function fmtInputDate(d) {
@@ -208,7 +228,6 @@
   fileInput.addEventListener("change", function (e) {
     var files = Array.prototype.slice.call(e.target.files);
     if (!files.length) return;
-    filenameLabel.textContent = files.length === 1 ? files[0].name : files.length + " файлов";
     fileLoader.classList.add("active");
     setStatus("Загружаю библиотеку разбора…");
 
@@ -249,7 +268,9 @@
         demoBanner.classList.add("hidden");
         if (!parsedFiles.headerIssues.length) {
           var statusParts = [];
-          if (files.length > 1) statusParts.push(files.length + " файлов");
+          // Имя файла -- раньше отдельный #filenameLabel в топбаре, теперь только здесь,
+          // в пояснении (Дима, 2026-09-17: "какой массив данных был обработан").
+          statusParts.push(files.length === 1 ? files[0].name : files.length + " файлов");
           statusParts.push(window.OFDWidgets.fmtNum(merged.rows.length) + " строк");
           statusParts.push(window.OFDWidgets.fmtNum(model.clients.size) + " клиентов");
           statusParts.push(window.OFDWidgets.fmtNum(model.kassas.size) + " касс");
@@ -290,15 +311,39 @@
     ofd1cFileInput.addEventListener("change", function (e) {
       var files = Array.prototype.slice.call(e.target.files);
       if (!files.length) return;
-      ofd1cLoadStatus.textContent = "Разбор " + files.length + " файл(ов)…";
-      ofd1cLoadStatus.className = "load-status";
+      ofd1cFileLoader.classList.add("active");
       window.OFDWidgets.ofd1cHandleFiles(files).then(function (summary) {
-        ofd1cLoadStatus.textContent = summary.fileNames + " — записей: " + window.OFDWidgets.fmtNum(summary.recordsCount) +
-          (summary.headerMismatch ? " · ⚠ заголовки отличаются от ожидаемых" : "");
+        ofd1cFileLoader.classList.remove("active");
+        topbarStats.ofd1c = { text: summary.fileNames + " — записей: " + window.OFDWidgets.fmtNum(summary.recordsCount) + (summary.headerMismatch ? " · ⚠ заголовки отличаются от ожидаемых" : ""), isError: false };
+        renderStatsBanner();
       }).catch(function (err) {
         console.error(err);
-        ofd1cLoadStatus.textContent = "Ошибка разбора: " + err.message;
-        ofd1cLoadStatus.className = "load-status error";
+        ofd1cFileLoader.classList.remove("active");
+        topbarStats.ofd1c = { text: "Ошибка разбора: " + err.message, isError: true };
+        renderStatsBanner();
+        statsBanner.classList.remove("hidden");
+      });
+    });
+  }
+
+  // Кнопка "DaData" в топбаре (2026-09-17) -- заменяет инпут, который раньше жил внутри
+  // борда "Обогащение DaData" (b8-1c-dadata-upload, теперь только показывает данные, см.
+  // widgets.js). Тоже видна всем -- та же логика, что "Обмен с 1С" выше.
+  if (dadataFileInput) {
+    dadataFileInput.addEventListener("change", function (e) {
+      var file = e.target.files && e.target.files[0];
+      if (!file) return;
+      dadataFileLoader.classList.add("active");
+      window.OFDWidgets.ofd1cHandleDadataFile(file).then(function (summary) {
+        dadataFileLoader.classList.remove("active");
+        topbarStats.dadata = { text: summary.fileName + " — обогащено ИНН: " + window.OFDWidgets.fmtNum(summary.count) + " (с ФИО руководителя: " + window.OFDWidgets.fmtNum(summary.withDirector) + ")", isError: false };
+        renderStatsBanner();
+      }).catch(function (err) {
+        console.error(err);
+        dadataFileLoader.classList.remove("active");
+        topbarStats.dadata = { text: "Ошибка разбора: " + err.message, isError: true };
+        renderStatsBanner();
+        statsBanner.classList.remove("hidden");
       });
     });
   }
