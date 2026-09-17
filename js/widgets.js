@@ -4552,10 +4552,13 @@
     var selected = null;
 
     buckets.forEach(function (b) {
+      // b.title (необязательно) -- полная детализация в hover-тултипе, когда b.label
+      // сознательно короткий (не переполняет SVG-график/строку, см. 2026-09-17: длинный
+      // составной label "партнёр — N клиентов (X% из Y)" ломал вёрстку barList/списка).
       var row = el(
-        '<div class="drill-row" style="cursor:pointer;padding:7px 2px;border-bottom:1px solid var(--line);' +
-        'display:flex;justify-content:space-between;font-size:13px"><span>' + esc(b.label) + '</span>' +
-        '<span style="font-family:var(--mono)">' + fmtNum(b.count) + '</span></div>'
+        '<div class="drill-row"' + (b.title ? ' title="' + esc(b.title) + '"' : '') + ' style="cursor:pointer;padding:7px 2px;border-bottom:1px solid var(--line);' +
+        'display:flex;justify-content:space-between;gap:10px;font-size:13px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(b.label) + '</span>' +
+        '<span style="font-family:var(--mono);flex-shrink:0">' + fmtNum(b.count) + '</span></div>'
       );
       row.addEventListener("click", function () {
         selected = b;
@@ -4681,8 +4684,15 @@
       var partnerRows = ofd1cPartnerConversion(model, entries).filter(function (r) { return r.total > 0; }).slice(0, 15);
       var partnerSection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
       partnerSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Купившие 1С по партнёру (топ-15 по количеству клиентов)</b></div>'));
+      // label -- короткий (только имя партнёра), иначе длинная составная строка ломала
+      // вёрстку SVG-графика (текст выходил за пределы viewBox barList, "уезжал" -- Дима,
+      // 2026-09-17). Полная детализация (доля/знаменатель) -- в title (hover), не в самом
+      // тексте; точные числа всегда доступны в раскрытой таблице по клику и в "Скачать".
       partnerSection.appendChild(ofd1cBucketDrillBoard(partnerRows.map(function (r) {
-        return { label: r.partner + " — " + fmtNum(r.buyers) + " клиент(ов) (" + fmtPct(r.rate) + " из " + fmtNum(r.total) + " всей базы партнёра)", count: r.buyers, rows: r.entries.map(ofd1cEntryRow) };
+        return {
+          label: r.partner, count: r.buyers, rows: r.entries.map(ofd1cEntryRow),
+          title: r.partner + ": " + fmtNum(r.buyers) + " клиент(ов) с 1С из " + fmtNum(r.total) + " всей базы партнёра (" + fmtPct(r.rate) + ")",
+        };
       }), { color: "var(--brand)", exportName: "Купившие 1С по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(partnerSection);
 
