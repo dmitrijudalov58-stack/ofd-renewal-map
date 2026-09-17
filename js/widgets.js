@@ -3912,6 +3912,22 @@
   function ofd1cMatchedEntries(model) {
     return ofd1cMatchClients(model).filter(function (m) { return m.client; }).map(ofd1cClientRecord);
   }
+
+  // "Портрет покупателя 1С" (Дима, 2026-09-17) -- две метрики для борда сравнения купивших
+  // vs контроль и карточки клиента. Касс на момент покупки 1С -- COUNT касс ОФД клиента с
+  // appearance <= первая покупка 1С (client.kassas -- та же коллекция, что уже использует
+  // b8-1c-summary для c.kassas.length "сейчас"). Продлений 1С -- COUNT тарифных интервалов
+  // в цепочке минус 1 (симметрично формуле "продлений кассы" в основной модели, SKILL.md) --
+  // берётся напрямую по m.records (все записи 1С клиента), НЕ по entry.intervals
+  // (ofd1cClientRecord отбрасывает записи без start -- здесь специально считаем ВСЕ строки
+  // выгрузки, включая с валидным ИНН, но битой датой, иначе продления недосчитываются).
+  function ofd1cKassasAtPurchase(client, firstPurchaseDate) {
+    if (!firstPurchaseDate) return null;
+    return client.kassas.filter(function (k) { return k.appearance && k.appearance <= firstPurchaseDate; }).length;
+  }
+  function ofd1cRenewalCount(records) {
+    return Math.max(0, records.length - 1);
+  }
   function ofd1cLapsedAt(entry, atDate) {
     if (!entry.appearance || atDate < entry.appearance) return false;
     for (var i = 0; i < entry.intervals.length; i++) {
@@ -5092,6 +5108,8 @@
     ofd1cComputeGapFlow: ofd1cComputeGapFlow,
     ofd1cComputeGapActiveCount: ofd1cComputeGapActiveCount,
     ofd1cClientsChurnedInMonthGap: ofd1cClientsChurnedInMonthGap,
+    ofd1cKassasAtPurchase: ofd1cKassasAtPurchase,
+    ofd1cRenewalCount: ofd1cRenewalCount,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
     // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
     // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без

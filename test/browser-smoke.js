@@ -849,6 +849,33 @@ async function main() {
     console.log("ofd1c: сопоставлено с клиентами ОФД по ИНН сходится с независимым пересчётом:", matchedClients === expectedMatchedClients ? "OK" : "FAIL", matchedClients, "vs", expectedMatchedClients, "(" + (matchedClients / matched.length * 100).toFixed(1) + "%)");
     if (matchedClients !== expectedMatchedClients) ok = false;
 
+    // "Портрет покупателя 1С" (2026-09-17, фаза 0) -- касс-на-покупке/продлений 1С.
+    // Инварианты, не просто "не упало": касс-на-покупке никогда не больше касс-сейчас
+    // (клиент не может терять кассы задним числом), продлений всегда >= 0, у клиента
+    // ровно с одной записью 1С продлений строго 0 -- всё проверено независимым
+    // пересчётом по m.records/client.kassas напрямую, не вызовом той же функции.
+    const entries = win.OFDWidgets.ofd1cMatchedEntries(model);
+    let atPurchaseExceedsNow = false, atPurchaseNegative = false, renewalNegative = false, singleRecordRenewalNonZero = false;
+    entries.forEach((entry) => {
+      const atPurchase = win.OFDWidgets.ofd1cKassasAtPurchase(entry.client, entry.appearance);
+      if (atPurchase == null) return;
+      const expectedAtPurchase = entry.client.kassas.filter((k) => k.appearance && k.appearance <= entry.appearance).length;
+      if (atPurchase !== expectedAtPurchase) atPurchaseExceedsNow = true; // независимый пересчёт разошёлся
+      if (atPurchase > entry.client.kassas.length) atPurchaseExceedsNow = true;
+      if (atPurchase < 0) atPurchaseNegative = true;
+      const renewals = win.OFDWidgets.ofd1cRenewalCount(entry.records);
+      if (renewals < 0) renewalNegative = true;
+      if (entry.records.length === 1 && renewals !== 0) singleRecordRenewalNonZero = true;
+    });
+    console.log("ofd1c: касс-на-покупке сходится с независимым пересчётом и не превышает касс-сейчас:", !atPurchaseExceedsNow ? "OK" : "FAIL");
+    if (atPurchaseExceedsNow) ok = false;
+    console.log("ofd1c: касс-на-покупке никогда не отрицательно:", !atPurchaseNegative ? "OK" : "FAIL");
+    if (atPurchaseNegative) ok = false;
+    console.log("ofd1c: продлений 1С никогда не отрицательно:", !renewalNegative ? "OK" : "FAIL");
+    if (renewalNegative) ok = false;
+    console.log("ofd1c: у клиента с одной записью 1С продлений строго 0:", !singleRecordRenewalNonZero ? "OK" : "FAIL");
+    if (singleRecordRenewalNonZero) ok = false;
+
     // Оба борда УЖЕ на холсте (общий цикл п.1 добавил каждый id из WIDGETS, включая эти),
     // но отрендерились ДО того, как появились данные -- ofd1cSetState выше не идёт через
     // ofd1cBroadcast (тот срабатывает только из обработчика файла в самом b8-1c-upload),
