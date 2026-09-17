@@ -3969,11 +3969,15 @@
   }
 
   // Бакеты числа касс -- те же границы, что в макете борда A (1 / 2-3 / 4-10 / 10+).
+  // Границы -- ТЕ ЖЕ, что уже использует основной инструмент (computeActiveSnapshot,
+  // b1-kassdist: "1"/"2-3"/"4-9"/"10+") -- унифицировано 2026-09-17 по просьбе Димы, чтобы
+  // "Число касс на дату сравнения" можно было напрямую сверять с готовой разбивкой
+  // b1-kassdist, не пересчитывать вручную с другими границами.
   var OFD1C_KASSA_BUCKETS = [
     { label: "1", test: function (n) { return n === 1; } },
     { label: "2–3", test: function (n) { return n >= 2 && n <= 3; } },
-    { label: "4–10", test: function (n) { return n >= 4 && n <= 10; } },
-    { label: "10+", test: function (n) { return n > 10; } },
+    { label: "4–9", test: function (n) { return n >= 4 && n <= 9; } },
+    { label: "10+", test: function (n) { return n > 9; } },
   ];
   function ofd1cKassaBucketLabel(count) {
     for (var i = 0; i < OFD1C_KASSA_BUCKETS.length; i++) if (OFD1C_KASSA_BUCKETS[i].test(count)) return OFD1C_KASSA_BUCKETS[i].label;
@@ -3992,6 +3996,29 @@
     });
     var buckets = OFD1C_KASSA_BUCKETS.map(function (b) { return { label: b.label, clients: byLabel.get(b.label), count: byLabel.get(b.label).length }; });
     return { buckets: buckets, total: clients.length };
+  }
+
+  // Вся ДЕЙСТВУЮЩАЯ база ОФД (не выборка) -- Дима, 2026-09-17: "для контрольной группы
+  // подхватить непосредственно данные из другого инструмента", вместо случайной выборки
+  // того же размера. Тот же критерий "действующий", что уже использует b1-kassdist
+  // (computeActiveSnapshot): не физлицо-резерв (c.phys), не в оттоке (M.clientLapsedAt) --
+  // НЕ через саму computeActiveSnapshot (та отдаёт только counts, не объекты клиентов,
+  // а здесь нужны объекты для drilldown-таблицы по клику).
+  function ofd1cActiveOfdClients(model, ctx) {
+    var out = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      if (ctx.M.clientLapsedAt(c, ctx.asOf)) return;
+      out.push(c);
+    });
+    return out;
+  }
+
+  function ofd1cMedian(numbers) {
+    var arr = numbers.filter(function (n) { return n != null && !isNaN(n); }).slice().sort(function (a, b) { return a - b; });
+    if (!arr.length) return null;
+    var mid = Math.floor(arr.length / 2);
+    return arr.length % 2 ? arr[mid] : (arr[mid - 1] + arr[mid]) / 2;
   }
 
   // Срок в ОФД до покупки 1С, в месяцах (дробное число). entry -- из ofd1cMatchedEntries
@@ -4044,7 +4071,10 @@
       var total = totalByPartner.get(p) || 0;
       return { partner: p, buyers: entries.length, total: total, rate: total > 0 ? entries.length / total : 0, entries: entries };
     });
-    rows.sort(function (a, b) { return b.rate - a.rate; });
+    // Сортировка по КОЛИЧЕСТВУ купивших клиентов, не по доле (Дима, 2026-09-17) -- доля
+    // легко фаворизирует крошечных партнёров (1 из 1 клиента = 100%), количество честнее
+    // отражает "кто из партнёров реально продаёт 1С больше всех".
+    rows.sort(function (a, b) { return b.buyers - a.buyers; });
     return rows;
   }
 
@@ -4563,12 +4593,11 @@
         return wrap;
       }
       var buyerInns = entries.map(function (e) { return e.inn; });
-      var control = ofd1cControlGroup(model, buyerInns);
 
       // Клик по ИНН в любой drilldown-таблице ниже -- universal-карточка клиента
       // (ofd1cRenderClientCard), не отдельный борд (решение из беседы 2026-09-17, см.
       // tmp/plans). У купивших есть реальная запись 1С (m.records непустой); у клиента из
-      // контрольной группы обмена 1С нет вообще -- карточка всё равно открывается (честно
+      // остальной базы ОФД обмена 1С нет вообще -- карточка всё равно открывается (честно
       // показывает "Обмен с 1С (0 записей)"), просто m синтетический, не из ofd1cMatchClients.
       function openCard(inn, cardHolder) {
         if (!cardHolder) return;
@@ -4578,44 +4607,57 @@
         var m = matched || { inn: inn, client: client, records: [] };
         ofd1cRenderClientCard(cardHolder, m, ctx);
       }
-      wrap.appendChild(el(
-        '<div class="stat-label" style="margin-bottom:10px">Купивших 1С: ' + fmtNum(entries.length) +
-        ' · контрольная группа (случайная выборка не-купивших того же размера): ' + fmtNum(control.length) +
-        ' · распределение по кассам ниже — доля, НЕ подогнанная под купивших, разница в форме графиков и есть сигнал.</div>'
-      ));
 
       var buyerClients = entries.map(function (e) { return e.client; });
+      var tenureDist = ofd1cTenureDistribution(entries);
+      var medianTenure = ofd1cMedian(tenureDist.buckets.reduce(function (acc, b) { return acc.concat(b.entries.map(ofd1cTenureMonths)); }, []));
+      var medianRenewals = ofd1cMedian(entries.map(function (e) { return ofd1cRenewalCount(e.records); }));
 
-      function twoSeriesSection(title, buyerDist, controlDist) {
+      // Сводные плитки (были в утверждённом макете, выпали при первой реализации -- Дима,
+      // 2026-09-17, вернул как обязательные).
+      wrap.appendChild(el(
+        '<div class="stat-row" style="margin-bottom:16px">' +
+        '<div>' + statBlock(fmtNum(entries.length), "купивших 1С", true) + '</div>' +
+        '<div>' + statBlock(medianTenure == null ? "—" : medianTenure.toFixed(1) + " мес", "медианный срок до покупки", true) + '</div>' +
+        '<div>' + statBlock(medianRenewals == null ? "—" : fmtNum(medianRenewals), "медиана продлений 1С", true) + '</div>' +
+        '</div>'
+      ));
+
+      // Общая база для сравнения -- ВСЯ действующая база ОФД (не случайная выборка,
+      // 2026-09-17 -- Дима: "подхватить непосредственно данные из другого инструмента"),
+      // тот же критерий "действующий", что у b1-kassdist.
+      function twoSeriesSection(title, buyerDist, baseDist, baseLabel) {
         var section = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
         section.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>' + esc(title) + '</b></div>'));
         var cols = el('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"></div>');
         var buyerCol = el('<div></div>');
         buyerCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Купившие 1С</div>'));
         buyerCol.appendChild(ofd1cBucketDrillBoard(buyerDist.buckets.map(function (b) {
-          return { label: b.label, count: b.count, rows: b.clients ? b.clients.map(ofd1cClientRow) : b.entries.map(ofd1cEntryRow) };
+          return { label: b.label + " (" + fmtPct(buyerDist.total ? b.count / buyerDist.total : 0) + ")", count: b.count, rows: b.clients ? b.clients.map(ofd1cClientRow) : b.entries.map(ofd1cEntryRow) };
         }), { color: "var(--s1)", exportName: title + " — купившие 1С", onRowClick: openCard, columns: buyerDist.buckets[0] && buyerDist.buckets[0].entries ? OFD1C_PORTRAIT_TENURE_COLUMNS : OFD1C_PORTRAIT_COLUMNS }));
-        var controlCol = el('<div></div>');
-        controlCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Контрольная группа</div>'));
-        controlCol.appendChild(ofd1cBucketDrillBoard(controlDist.buckets.map(function (b) {
-          return { label: b.label, count: b.count, rows: b.clients.map(ofd1cClientRow) };
-        }), { color: "var(--s2)", exportName: title + " — контроль", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
+        var baseCol = el('<div></div>');
+        baseCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">' + esc(baseLabel) + '</div>'));
+        baseCol.appendChild(ofd1cBucketDrillBoard(baseDist.buckets.map(function (b) {
+          return { label: b.label + " (" + fmtPct(baseDist.total ? b.count / baseDist.total : 0) + ")", count: b.count, rows: b.clients.map(ofd1cClientRow) };
+        }), { color: "var(--s2)", exportName: title + " — " + baseLabel, onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
         cols.appendChild(buyerCol);
-        cols.appendChild(controlCol);
+        cols.appendChild(baseCol);
         section.appendChild(cols);
         return section;
       }
 
-      // График 1 — распределение по кассам, купившие vs контроль (обе стороны сопоставимы).
+      // График 1 — распределение по кассам, купившие vs вся действующая база ОФД.
+      var wholeBase = ofd1cActiveOfdClients(model, ctx);
       wrap.appendChild(twoSeriesSection(
         "Число касс на дату сравнения",
         ofd1cKassaDistribution(buyerClients),
-        ofd1cKassaDistribution(control)
+        ofd1cKassaDistribution(wholeBase),
+        "Вся действующая база ОФД (" + fmtNum(wholeBase.length) + ")"
       ));
 
-      // График 2 — срок в ОФД до покупки 1С. У контроля нет даты покупки 1С (её не
+      // График 2 — срок в ОФД до покупки 1С. У остальной базы нет даты покупки 1С (её не
       // существует) -- эта секция ТОЛЬКО у купивших, одна колонка, не двухколоночная форма.
-      var tenureDist = ofd1cTenureDistribution(entries);
+      // tenureDist уже посчитан выше для медианы в сводных плитках, не пересчитываем.
       var tenureSection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
       tenureSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Срок в ОФД до покупки 1С</b></div>'));
       if (tenureDist.excluded.length) {
@@ -4626,15 +4668,16 @@
       }), { color: "var(--s1)", exportName: "Срок до покупки 1С", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(tenureSection);
 
-      // График 3 — конверсия в 1С по партнёру (топ-15, иначе список на несколько тысяч
-      // партнёров нечитаем — тот же урок, что и с плоским списком партнёров в B5,
-      // HISTORY.md 2026-08-19: "плохо, максимально плохо").
+      // График 3 — купившие 1С по партнёру (топ-15 по КОЛИЧЕСТВУ клиентов, не по доле --
+      // Дима, 2026-09-17: "на первом месте ИП Остапенко и далее" -- полный список без
+      // обрезки доступен через "Скачать"; топ-15 в самом графике -- та же причина, что и
+      // с плоским списком партнёров в B5, HISTORY.md 2026-08-19: "плохо, максимально плохо").
       var partnerRows = ofd1cPartnerConversion(model, entries).filter(function (r) { return r.total > 0; }).slice(0, 15);
       var partnerSection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
-      partnerSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Конверсия в 1С по партнёру (топ-15 по доле)</b></div>'));
+      partnerSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Купившие 1С по партнёру (топ-15 по количеству клиентов)</b></div>'));
       partnerSection.appendChild(ofd1cBucketDrillBoard(partnerRows.map(function (r) {
-        return { label: r.partner + " (" + fmtPct(r.rate) + " из " + fmtNum(r.total) + ")", count: r.buyers, rows: r.entries.map(ofd1cEntryRow) };
-      }), { color: "var(--brand)", exportName: "Конверсия по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
+        return { label: r.partner + " — " + fmtNum(r.buyers) + " клиент(ов) (" + fmtPct(r.rate) + " из " + fmtNum(r.total) + " всей базы партнёра)", count: r.buyers, rows: r.entries.map(ofd1cEntryRow) };
+      }), { color: "var(--brand)", exportName: "Купившие 1С по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(partnerSection);
 
       // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) сознательно отложена
@@ -5616,6 +5659,8 @@
     ofd1cTenureDistribution: ofd1cTenureDistribution,
     ofd1cPartnerConversion: ofd1cPartnerConversion,
     ofd1cScoringCandidates: ofd1cScoringCandidates,
+    ofd1cActiveOfdClients: ofd1cActiveOfdClients,
+    ofd1cMedian: ofd1cMedian,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
     // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
     // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без

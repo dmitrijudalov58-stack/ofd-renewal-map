@@ -890,6 +890,18 @@ async function main() {
     console.log("ofd1c: контрольная группа НЕ пересекается с купившими по ИНН:", !controlOverlap ? "OK" : "FAIL");
     if (controlOverlap) ok = false;
 
+    // "Вся действующая база ОФД" (2026-09-17, заменила выборку в UI борда A) -- ДОЛЖНА 1:1
+    // совпасть числом с уже существующей computeActiveSnapshot (b1-kassdist) -- иначе
+    // сравнение в борде A будет нечестным относительно остального инструмента, а в этом и
+    // был весь смысл правки (Дима: "подхватить непосредственно данные из другого инструмента").
+    const wholeBaseClients = win.OFDWidgets.ofd1cActiveOfdClients(model, { M: win.OFDMetrics, asOf: win.OFDState.asOf });
+    const activeSnap = win.OFDMetrics.computeActiveSnapshot(model, win.OFDState.asOf);
+    console.log("ofd1c: «вся действующая база ОФД» сходится числом с computeActiveSnapshot (b1-kassdist):", wholeBaseClients.length === activeSnap.activeClients ? "OK" : "FAIL", wholeBaseClients.length, "vs", activeSnap.activeClients);
+    if (wholeBaseClients.length !== activeSnap.activeClients) ok = false;
+    const medianCheck = win.OFDWidgets.ofd1cMedian([1, 2, 3, 4]) === 2.5 && win.OFDWidgets.ofd1cMedian([5]) === 5 && win.OFDWidgets.ofd1cMedian([]) === null;
+    console.log("ofd1c: ofd1cMedian считает медиану корректно (чётный/нечётный/пустой массив):", medianCheck ? "OK" : "FAIL");
+    if (!medianCheck) ok = false;
+
     var buyerClients = entries.map(function (e) { return e.client; });
     var kassaDistBuyers = win.OFDWidgets.ofd1cKassaDistribution(buyerClients);
     var kassaDistControl = win.OFDWidgets.ofd1cKassaDistribution(control);
@@ -977,8 +989,10 @@ async function main() {
           }
         }
       }
-      console.log("ofd1c: борд «Купившие vs контроль» упоминает контрольную группу и отрасль-плейсхолдер:", /контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
-      if (!(/контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
+      // 2026-09-17 (правка после ревью Димы): контроль-группа (случайная выборка) в UI
+      // борда A заменена на "вся действующая база ОФД" -- см. ofd1cActiveOfdClients.
+      console.log("ofd1c: борд «Купившие vs контроль» упоминает всю действующую базу ОФД и отрасль-плейсхолдер:", /действующая база ОФД/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
+      if (!(/действующая база ОФД/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
     }
 
     // Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Инварианты на данных (через API,
