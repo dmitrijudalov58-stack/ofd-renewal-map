@@ -3820,21 +3820,70 @@
     });
   }
 
+  var OFD1C_DADATA_COLUMNS = [
+    { label: "ИНН", key: "key" }, { label: "Организация (DaData)", key: "org" },
+    { label: "ОКВЭД", key: "okved" }, { label: "Регион", key: "region" }, { label: "Статус", key: "status" },
+    { label: "Директор", key: "director" }, { label: "Обогащён", key: "enrichedAtLabel" },
+    { label: "Есть в базе ОФД", key: "ofdMatch" },
+  ];
+  var OFD1C_DADATA_FILTERS = [
+    { label: "ИНН", key: "key" }, { label: "Организация", key: "org" },
+    { label: "ОКВЭД", key: "okved" }, { label: "Регион", key: "region" },
+  ];
+
   WIDGETS["b8-1c-dadata-upload"] = {
     title: "Обогащение DaData — загрузка", type: "загрузка", scope: "as-of", span: true,
-    render: function () {
+    render: function (model) {
       var wrap = el('<div></div>');
       wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи <code>dadata-cache.json</code> (генерируется офлайн-скриптом <code>scripts/dadata-enrich.js</code>, обогащение идёт партиями по 9500 ИНН/день — файл на диске обновляется каждый день, перезагрузи, чтобы подтянуть свежие данные). Отрасль (борд «Купившие vs контроль») и скоринг для продавцов используют эти данные, если они загружены — без загрузки работают как раньше, просто без отраслевого сигнала.</div>'));
       var input = el('<input type="file" accept=".json">');
       var status = el('<div class="stat-label" style="margin-top:8px"></div>');
+      var tableHolder = el('<div style="margin-top:10px"></div>');
       wrap.appendChild(input);
       wrap.appendChild(status);
+      wrap.appendChild(tableHolder);
+
+      // Строки для таблицы -- ВСЯ информация, которую удалось получить от DaData на каждый
+      // ИНН (Дима, 2026-09-17: "табличный массив, вся информация... в полном разрезе"),
+      // не только счётчик. "Есть в базе ОФД" -- бонус-сопоставление с основной базой по
+      // ИНН (тот же клиент/партнёр, что видит остальной инструмент), не из DaData.
+      function buildRows() {
+        var rows = [];
+        OFD1C_DADATA_STATE.records.forEach(function (r, inn) {
+          var client = model.clients.get(inn);
+          rows.push({
+            key: inn, org: r.org || "—", okved: r.okved || "—", region: r.region || "—",
+            status: r.status || "—", director: r.director || "—",
+            enrichedAtLabel: r.enrichedAt ? String(r.enrichedAt).slice(0, 10) : "—",
+            ofdMatch: client ? (client.org || "да") : "—",
+          });
+        });
+        return rows;
+      }
+
+      function renderTable() {
+        tableHolder.innerHTML = "";
+        if (!OFD1C_DADATA_STATE.records || !OFD1C_DADATA_STATE.records.size) return;
+        var rows = buildRows();
+        renderDrillTable(tableHolder, rows, OFD1C_DADATA_COLUMNS, OFD1C_DADATA_FILTERS, "записей", "Обогащённые ИНН", 300);
+        var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">Скачать весь массив (' + fmtNum(rows.length) + ')</button>');
+        downloadBtn.addEventListener("click", function () {
+          var exportRows = rows.map(function (item) {
+            var out = {};
+            OFD1C_DADATA_COLUMNS.forEach(function (c) { out[c.label.replace(/\s+/g, "")] = item[c.key]; });
+            return out;
+          });
+          if (root.OFDExport) root.OFDExport.downloadCSV("Обогащение DaData", exportRows);
+        });
+        tableHolder.appendChild(downloadBtn);
+      }
 
       function renderStatus() {
         if (!OFD1C_DADATA_STATE.records) { status.textContent = "Файл не загружен."; return; }
         var withDirector = 0;
         OFD1C_DADATA_STATE.records.forEach(function (r) { if (r.director) withDirector++; });
         status.textContent = OFD1C_DADATA_STATE.fileName + " — обогащено ИНН: " + fmtNum(OFD1C_DADATA_STATE.records.size) + " (с ФИО руководителя: " + fmtNum(withDirector) + ")";
+        renderTable();
       }
       if (OFD1C_DADATA_STATE.records) renderStatus();
 

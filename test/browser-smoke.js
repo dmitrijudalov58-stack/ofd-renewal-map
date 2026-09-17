@@ -1063,6 +1063,25 @@ async function main() {
       const affiliationDetected = affiliatedRow && affiliatedRow.affiliated && affiliatedRow.reason.indexOf("тот же директор") !== -1;
       console.log("ofd1c: точки соприкосновения -- общий директор с купившим определяется:", affiliationDetected ? "OK" : "FAIL", affiliatedRow && affiliatedRow.affiliated);
       if (!affiliationDetected) ok = false;
+
+      // Борд "Обогащение DaData — загрузка" (2026-09-17, Дима: "табличный массив, вся
+      // информация, которую удалось получить от DaData" -- раньше виджет показывал только
+      // строку-счётчик, без таблицы). syntheticMap уже установлен выше (2 записи).
+      win.OFDCanvas.rerenderAll();
+      const dadataUploadNode = win.document.querySelector('[data-widget-id="b8-1c-dadata-upload"]');
+      console.log("ofd1c: борд «Обогащение DaData — загрузка» на холсте:", dadataUploadNode ? "OK" : "FAIL");
+      if (!dadataUploadNode) ok = false;
+      if (dadataUploadNode) {
+        const dadataTableRows = dadataUploadNode.querySelectorAll("table tbody tr");
+        console.log("ofd1c: борд «Обогащение DaData» рендерит таблицу с загруженными записями:", dadataTableRows.length === syntheticMap.size ? "OK" : "FAIL", dadataTableRows.length, "vs", syntheticMap.size);
+        if (dadataTableRows.length !== syntheticMap.size) ok = false;
+        const hasDirectorColumn = /Директор/.test(dadataUploadNode.innerHTML) && dadataUploadNode.innerHTML.indexOf("Иванов Иван Иванович") !== -1;
+        console.log("ofd1c: борд «Обогащение DaData» показывает ФИО директора в таблице:", hasDirectorColumn ? "OK" : "FAIL");
+        if (!hasDirectorColumn) ok = false;
+        const hasDadataDownload = Array.from(dadataUploadNode.querySelectorAll("button")).some((b) => b.textContent.indexOf("Скачать весь массив") !== -1);
+        console.log("ofd1c: борд «Обогащение DaData» показывает кнопку «Скачать весь массив»:", hasDadataDownload ? "OK" : "FAIL");
+        if (!hasDadataDownload) ok = false;
+      }
     } else {
       console.log("ofd1c: точки соприкосновения -- пропущено (нет кандидатов/купивших для синтетического теста)");
     }
