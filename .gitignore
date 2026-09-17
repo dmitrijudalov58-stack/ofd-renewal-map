@@ -7,4 +7,6 @@ cloudflare/public/
 # защита от случайного коммита реальной выгрузки с данными клиентов
 *.xlsx
 *.xls
+dadata-cache.json
+dadata-raw.ndjson
 .gstack/
