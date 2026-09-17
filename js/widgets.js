@@ -3933,25 +3933,39 @@
   // UI). Контрольная группа -- СЛУЧАЙНАЯ выборка не-купивших ТОГО ЖЕ РАЗМЕРА, что и
   // купившие, НЕ того же распределения по кассам (см. tmp/plans/2026-09-17 -- если
   // подгонять распределение, график "касс на дату сравнения" обнулится по построению,
-  // сама разница в распределении и есть искомый сигнал). Выборка детерминированная
-  // (систематическая -- сортировка по ИНН + шаг N/размер), не Math.random(): воспроизводимо
-  // между прогонами теста и между загрузками одного файла, а не "другая случайная группа
-  // при каждом клике".
+  // сама разница в распределении и есть искомый сигнал).
+  //
+  // Выборка -- Fisher-Yates shuffle на seeded PRNG (mulberry32), НЕ систематическая
+  // сортировка по ИНН + шаг (первая версия, снята 2026-09-17 по требованию Димы -- первые
+  // цифры ИНН юрлица кодируют регион налоговой, номер выдаётся последовательно, поэтому
+  // "каждый N-й по возрастанию ИНН" рискует систематическим перекосом по региону/дате
+  // регистрации, не той случайностью, которая нужна для честного сравнения). Seeded, не
+  // Math.random() -- тот же seed даёт ту же выборку при повторном прогоне (тест/повторная
+  // загрузка того же файла воспроизводимы), просто без всякой связи с порядком ИНН.
+  var OFD1C_CONTROL_SEED = 1758066000; // фиксированная дата решения (2026-09-17), не меняем -- смена seed меняет ВСЮ контрольную группу задним числом
+  function ofd1cMulberry32(seed) {
+    var t = seed >>> 0;
+    return function () {
+      t = (t + 0x6D2B79F5) | 0;
+      var r = Math.imul(t ^ (t >>> 15), 1 | t);
+      r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
+      return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    };
+  }
   function ofd1cControlGroup(model, buyerInns) {
     var buyerSet = new Set(buyerInns);
-    var pool = Array.from(model.clients.keys()).filter(function (inn) { return !buyerSet.has(inn); }).sort();
+    var pool = Array.from(model.clients.keys()).filter(function (inn) { return !buyerSet.has(inn); });
     var targetSize = Math.min(buyerInns.length, pool.length);
-    if (targetSize <= 0 || pool.length === 0) return [];
-    var step = pool.length / targetSize;
-    var picked = [];
-    var seen = new Set();
+    if (targetSize <= 0) return [];
+    var rand = ofd1cMulberry32(OFD1C_CONTROL_SEED);
+    // Fisher-Yates, частичный -- перемешиваем только столько элементов, сколько нужно взять
+    // (targetSize свопов с хвоста), не весь pool целиком -- эквивалентно полному shuffle по
+    // распределению, но O(targetSize), не O(pool.length) на больших базах.
     for (var i = 0; i < targetSize; i++) {
-      var idx = Math.min(pool.length - 1, Math.floor(i * step));
-      while (seen.has(idx) && idx < pool.length - 1) idx++; // защита от коллизий на маленьком pool
-      seen.add(idx);
-      picked.push(model.clients.get(pool[idx]));
+      var j = i + Math.floor(rand() * (pool.length - i));
+      var tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
     }
-    return picked;
+    return pool.slice(0, targetSize).map(function (inn) { return model.clients.get(inn); });
   }
 
   // Бакеты числа касс -- те же границы, что в макете борда A (1 / 2-3 / 4-10 / 10+).
