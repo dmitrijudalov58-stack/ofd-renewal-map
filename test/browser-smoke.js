@@ -1001,7 +1001,8 @@ async function main() {
     // партнёры разрешены" (используется тут только для инвариант-проверки данных, UI по
     // умолчанию opt-in с пустым списком -- см. отдельную UI-проверку ниже).
     win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1");
-    const scoringAll = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, { asOf: win.OFDState.asOf }, null);
+    const scoringCtx = { asOf: win.OFDState.asOf, M: win.OFDMetrics };
+    const scoringAll = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
     const scoreOutOfRange = scoringAll.some((r) => r.score < 0 || r.score > 100);
     console.log("ofd1c: скоринг -- score всех кандидатов в диапазоне [0,100]:", !scoreOutOfRange ? "OK" : "FAIL");
     if (scoreOutOfRange) ok = false;
@@ -1012,9 +1013,60 @@ async function main() {
     const buyerInScoring = scoringAll.some((r) => buyerInns.indexOf(r.key) !== -1);
     console.log("ofd1c: скоринг -- ни один купивший НЕ попадает в кандидаты:", !buyerInScoring ? "OK" : "FAIL");
     if (buyerInScoring) ok = false;
-    const scoringEmptySetSize = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, { asOf: win.OFDState.asOf }, new Set()).length;
+    const scoringEmptySetSize = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, new Set()).length;
     console.log("ofd1c: скоринг -- пустой набор разрешённых партнёров даёт 0 кандидатов (opt-in):", scoringEmptySetSize === 0 ? "OK" : "FAIL", scoringEmptySetSize);
     if (scoringEmptySetSize !== 0) ok = false;
+
+    // Формула v2 (2026-09-17, после ревью PO/CPO/PMM) -- TVD-эмпирические веса, гейт по
+    // оттоку, выручка, точки соприкосновения. Независимые проверки, не "не упало".
+    const tvdIdentical = win.OFDWidgets.ofd1cTVDFromShares(new Map([["a", 0.5], ["b", 0.5]]), new Map([["a", 0.5], ["b", 0.5]]));
+    const tvdDisjoint = win.OFDWidgets.ofd1cTVDFromShares(new Map([["a", 1]]), new Map([["b", 1]]));
+    console.log("ofd1c: TVD одинаковых распределений = 0, полностью разных = 1:", tvdIdentical === 0 && tvdDisjoint === 1 ? "OK" : "FAIL", tvdIdentical, tvdDisjoint);
+    if (!(tvdIdentical === 0 && tvdDisjoint === 1)) ok = false;
+
+    console.log("ofd1c: ofd1cIndustryBucketLabel вырезает раздел ОКВЭД:", win.OFDWidgets.ofd1cIndustryBucketLabel("47.25.1") === "47" && win.OFDWidgets.ofd1cIndustryBucketLabel(null) === null ? "OK" : "FAIL");
+    if (!(win.OFDWidgets.ofd1cIndustryBucketLabel("47.25.1") === "47" && win.OFDWidgets.ofd1cIndustryBucketLabel(null) === null)) ok = false;
+
+    const tenureNowDist = win.OFDWidgets.ofd1cTenureNowDistribution(win.OFDWidgets.ofd1cActiveOfdClients(model, scoringCtx), win.OFDState.asOf);
+    const tenureNowSumMismatch = tenureNowDist.buckets.reduce((s, b) => s + b.count, 0) + tenureNowDist.excluded.length !== tenureNowDist.total + tenureNowDist.excluded.length;
+    console.log("ofd1c: ofd1cTenureNowDistribution -- сумма бакетов + исключённых = все клиенты:", !tenureNowSumMismatch ? "OK" : "FAIL");
+    if (tenureNowSumMismatch) ok = false;
+
+    // Гейт по оттоку -- правильная проверка через clientsAtRisk (тот же механизм, что
+    // b1-risk), НЕ через clientChurnStatus (та функция классифицирует уже случившийся
+    // разрыв -- для клиента с currentEnd в будущем возвращает "pending" всегда, что почти
+    // обнулило список кандидатов при первой реализации гейта, см. комментарий в widgets.js).
+    const riskyInnsCheck = new Set(win.OFDMetrics.clientsAtRisk(model, win.OFDState.asOf, win.OFDMetrics.daysThresholdFn(win.OFDState.asOf, 30)).map((r) => r.key));
+    const riskyInScoring = scoringAll.some((r) => riskyInnsCheck.has(r.key));
+    console.log("ofd1c: скоринг -- гейт по оттоку -- ни один кандидат не под риском (30д):", !riskyInScoring ? "OK" : "FAIL");
+    if (riskyInScoring) ok = false;
+    const notActiveInScoring = scoringAll.some((r) => { const c = model.clients.get(r.key); return c.phys || win.OFDMetrics.clientLapsedAt(c, win.OFDState.asOf); });
+    console.log("ofd1c: скоринг -- все кандидаты из действующей базы (не в оттоке, не физлица):", !notActiveInScoring ? "OK" : "FAIL");
+    if (notActiveInScoring) ok = false;
+
+    const revenueInvalid = scoringAll.some((r) => r.revenuePotential != null && r.revenuePotential < 0);
+    console.log("ofd1c: скоринг -- потенциальная выручка никогда не отрицательна:", !revenueInvalid ? "OK" : "FAIL");
+    if (revenueInvalid) ok = false;
+
+    // Точки соприкосновения -- синтетический тест (реальные совпадения директоров в
+    // тестовых данных не гарантированы, поэтому подставляем контролируемое состояние
+    // DaData вместо того, чтобы полагаться на случайное совпадение).
+    const savedDadataState = win.OFDWidgets.ofd1cDadataGetState();
+    const syntheticInn = scoringAll.length ? scoringAll[0].key : null;
+    if (syntheticInn && buyerInns.length) {
+      const syntheticMap = new Map();
+      syntheticMap.set(buyerInns[0], { org: "Тест-Донор", okved: null, region: null, status: "ACTIVE", director: "Иванов Иван Иванович", enrichedAt: new Date().toISOString() });
+      syntheticMap.set(syntheticInn, { org: "Тест-Кандидат", okved: null, region: null, status: "ACTIVE", director: "Иванов Иван Иванович", enrichedAt: new Date().toISOString() });
+      win.OFDWidgets.ofd1cDadataSetState({ records: syntheticMap, fileName: "synthetic-test.json" });
+      const scoringWithAffiliation = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+      const affiliatedRow = scoringWithAffiliation.find((r) => r.key === syntheticInn);
+      const affiliationDetected = affiliatedRow && affiliatedRow.affiliated && affiliatedRow.reason.indexOf("тот же директор") !== -1;
+      console.log("ofd1c: точки соприкосновения -- общий директор с купившим определяется:", affiliationDetected ? "OK" : "FAIL", affiliatedRow && affiliatedRow.affiliated);
+      if (!affiliationDetected) ok = false;
+    } else {
+      console.log("ofd1c: точки соприкосновения -- пропущено (нет кандидатов/купивших для синтетического теста)");
+    }
+    win.OFDWidgets.ofd1cDadataSetState(savedDadataState); // не протекает в следующие тесты
 
     // UI борда C -- на холсте (opt-in по умолчанию, значит сразу "0 кандидатов" видно в
     // тексте), выбор партнёра через чекбокс наполняет список и пишет в localStorage.

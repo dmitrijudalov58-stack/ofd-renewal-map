@@ -3732,6 +3732,15 @@
   var OFD1C_REFRESHERS = {}; // instanceId -> function() -- живой пересчёт остальных B8-бордов после загрузки файла (тот же приём, что ccActiveRefreshers у B5)
   function ofd1cBroadcast() { Object.keys(OFD1C_REFRESHERS).forEach(function (k) { OFD1C_REFRESHERS[k](); }); }
 
+  // Результат офлайн-обогащения DaData (scripts/dadata-enrich.js) -- отдельный upload,
+  // ТА ЖЕ схема, что "Обмен с 1С": грузится вручную как файл (не автоматически, инструмент
+  // zero-backend). records -- Map<ИНН, {org,okved,region,status,director,enrichedAt}>,
+  // Map не {} -- 185к+ ключей, Map быстрее на точечных lookup при скоринге по каждому
+  // кандидату. Только часть базы обогащена на любой момент времени (обогащение идёт
+  // партиями по 9500/день) -- отсутствие записи для ИНН means "ещё не обогащён", не ошибка.
+  var OFD1C_DADATA_STATE = { records: null, fileName: null };
+  function ofd1cDadataInfo(inn) { return OFD1C_DADATA_STATE.records ? OFD1C_DADATA_STATE.records.get(inn) || null : null; }
+
   function ofd1cEnsureXLSX() {
     if (root.XLSX) return Promise.resolve();
     if (ofd1cEnsureXLSX._p) return ofd1cEnsureXLSX._p;
@@ -3810,6 +3819,49 @@
       reader.readAsArrayBuffer(file);
     });
   }
+
+  WIDGETS["b8-1c-dadata-upload"] = {
+    title: "Обогащение DaData — загрузка", type: "загрузка", scope: "as-of", span: true,
+    render: function () {
+      var wrap = el('<div></div>');
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:10px">Загрузи <code>dadata-cache.json</code> (генерируется офлайн-скриптом <code>scripts/dadata-enrich.js</code>, обогащение идёт партиями по 9500 ИНН/день — файл на диске обновляется каждый день, перезагрузи, чтобы подтянуть свежие данные). Отрасль (борд «Купившие vs контроль») и скоринг для продавцов используют эти данные, если они загружены — без загрузки работают как раньше, просто без отраслевого сигнала.</div>'));
+      var input = el('<input type="file" accept=".json">');
+      var status = el('<div class="stat-label" style="margin-top:8px"></div>');
+      wrap.appendChild(input);
+      wrap.appendChild(status);
+
+      function renderStatus() {
+        if (!OFD1C_DADATA_STATE.records) { status.textContent = "Файл не загружен."; return; }
+        var withDirector = 0;
+        OFD1C_DADATA_STATE.records.forEach(function (r) { if (r.director) withDirector++; });
+        status.textContent = OFD1C_DADATA_STATE.fileName + " — обогащено ИНН: " + fmtNum(OFD1C_DADATA_STATE.records.size) + " (с ФИО руководителя: " + fmtNum(withDirector) + ")";
+      }
+      if (OFD1C_DADATA_STATE.records) renderStatus();
+
+      input.addEventListener("change", function () {
+        var file = input.files && input.files[0];
+        if (!file) return;
+        status.textContent = "Чтение файла…";
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          try {
+            var parsed = JSON.parse(e.target.result);
+            var map = new Map();
+            Object.keys(parsed).forEach(function (inn) { map.set(inn, parsed[inn]); });
+            OFD1C_DADATA_STATE = { records: map, fileName: file.name };
+            renderStatus();
+            ofd1cBroadcast();
+          } catch (err) {
+            status.textContent = "Ошибка разбора JSON: " + err.message;
+          }
+        };
+        reader.onerror = function () { status.textContent = "Не удалось прочитать файл «" + file.name + "»"; };
+        reader.readAsText(file);
+      });
+
+      return wrap;
+    },
+  };
 
   WIDGETS["b8-1c-upload"] = {
     title: "Обмен с 1С — загрузка файла", type: "загрузка", scope: "as-of", span: true,
@@ -4072,9 +4124,14 @@
       if (!buyersByPartner.has(p)) buyersByPartner.set(p, []);
       buyersByPartner.get(p).push(entry);
     });
-    var rows = Array.from(buyersByPartner.keys()).map(function (p) {
-      var entries = buyersByPartner.get(p);
-      var total = totalByPartner.get(p) || 0;
+    // Проходим по ВСЕМ партнёрам из totalByPartner (не только тем, у кого buyers>0) -- иначе
+    // партнёры без единого купившего 1С выпадают из результата целиком, что искажает TVD
+    // (2026-09-17, формула эмпирических весов ниже): TVD партнёра как признака требует ПОЛНОЕ
+    // распределение по всем партнёрам с обеих сторон, не только "ненулевую" часть. UI (топ-15
+    // по buyers) это не ломает -- нулевые естественно уходят в хвост после сортировки.
+    var rows = Array.from(totalByPartner.keys()).map(function (p) {
+      var entries = buyersByPartner.get(p) || [];
+      var total = totalByPartner.get(p);
       return { partner: p, buyers: entries.length, total: total, rate: total > 0 ? entries.length / total : 0, entries: entries };
     });
     // Сортировка по КОЛИЧЕСТВУ купивших клиентов, не по доле (Дима, 2026-09-17) -- доля
@@ -4084,17 +4141,19 @@
     return rows;
   }
 
-  // ---------- Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Веса -- РУЧНЫЕ и
-  // ПРЕДВАРИТЕЛЬНЫЕ (см. tmp/plans/2026-09-17: "не гадаются заранее, выставляются по факту
-  // того, что покажет борд A на реальных данных"). Дима реальные данные ещё не смотрел
-  // (все прогоны пока на тестовых файлах) -- эти веса НЕ финальное решение, подлежат
-  // пересмотру после первого реального обзора борда A. Срок-до-покупки НЕ используется как
-  // сигнал (у кандидатов на скоринг 1С ещё нет -- этой даты физически не существует, сам
-  // Дима поймал ту же ошибку про дату в борде C, 2026-09-17); вместо него -- ТЕКУЩИЙ срок
-  // в ОФД (appearance..asOf), сравнённый с модальным бакетом "срок ДО покупки" у купивших
-  // -- валидный прокси ("кандидат сейчас в том же окне жизненного цикла, где покупали
-  // другие"), не тот же самый показатель.
-  var OFD1C_SCORE_WEIGHTS = { kassaFit: 0.40, partnerFit: 0.35, tenureFit: 0.25 };
+  // ---------- Борд C "Скоринг для продавцов" -- формула v2 (2026-09-17, переписана по
+  // итогам ревью с тремя ролями PO/CPO/PMM + доп. взгляды Data Scientist/юрист, см.
+  // разговор в чате в этот день). ЗАМЕНЯЕТ ручные веса 40/35/25 (v1, тот же день чуть
+  // раньше) -- решили НЕ гадать веса, а считать их ЭМПИРИЧЕСКИ из уже собранных данных
+  // борда A (TVD -- Total Variation Distance между распределением купивших и всей базы
+  // по каждому признаку), т.к. живой обратной связи от прозвона пока нет и не предвидится
+  // ("людей на прозвон пока никто не даст"). Добавлены: гейт по оттоку (не скорим
+  // уходящих клиентов), отрасль (ОКВЭД, когда обогащён кандидат), потенциальная выручка
+  // (отдельно от score, не вес), точки соприкосновения через общего директора (отдельная
+  // пометка, не вес -- см. пометку юриста: ФИО физлица, 152-ФЗ, публичные данные ЕГРЮЛ,
+  // но использование для таргетинга продаж заслуживает отдельного взгляда юриста компании
+  // прежде чем расширять использование этого конкретного признака).
+
   function ofd1cModalBucketLabel(distribution) {
     var best = null;
     distribution.buckets.forEach(function (b) {
@@ -4110,24 +4169,183 @@
     if (ci < 0 || mi < 0) return 0;
     return Math.abs(ci - mi) === 1 ? 0.5 : 0;
   }
+
+  // TVD = 0.5 * Σ|доля_A(категория) - доля_B(категория)| по ОБЪЕДИНЕНИЮ категорий обеих
+  // сторон (не только общих) -- 0 = распределения идентичны (признак не различает купивших
+  // и базу, слабый сигнал), ближе к 1 = сильно отличаются (сильный сигнал). Стандартная
+  // мера "расстояния" между двумя распределениями, не наша выдумка -- выбрана как самая
+  // простая объяснимая формула, не ML.
+  function ofd1cTVDFromShares(shareA, shareB) {
+    var cats = new Set(Array.from(shareA.keys()).concat(Array.from(shareB.keys())));
+    var sum = 0;
+    cats.forEach(function (c) { sum += Math.abs((shareA.get(c) || 0) - (shareB.get(c) || 0)); });
+    return sum / 2;
+  }
+  function ofd1cDistributionShares(dist) {
+    var m = new Map();
+    if (!dist.total) return m;
+    dist.buckets.forEach(function (b) { m.set(b.label, b.count / dist.total); });
+    return m;
+  }
+  // Текущий срок в ОФД (appearance..asOf) для ПРОИЗВОЛЬНОГО списка клиентов -- те же
+  // бакеты, что "срок ДО покупки" у купивших (OFD1C_TENURE_BUCKETS), нужно для честного
+  // TVD (сравнение одного и того же признака с обеих сторон) и для tenureFit кандидата.
+  function ofd1cTenureNowDistribution(clients, asOf) {
+    var byLabel = new Map(OFD1C_TENURE_BUCKETS.map(function (b) { return [b.label, []]; }));
+    var excluded = [];
+    clients.forEach(function (c) {
+      if (!c.appearance) { excluded.push(c); return; }
+      var months = (asOf.getTime() - c.appearance.getTime()) / (30.4368 * 86400000);
+      var label = months < 0 ? null : ofd1cTenureBucketLabel(months);
+      if (label === null) { excluded.push(c); return; }
+      byLabel.get(label).push(c);
+    });
+    var buckets = OFD1C_TENURE_BUCKETS.map(function (b) { return { label: b.label, clients: byLabel.get(b.label), count: byLabel.get(b.label).length }; });
+    return { buckets: buckets, excluded: excluded, total: clients.length - excluded.length };
+  }
+  // Раздел ОКВЭД -- первые 2 цифры кода ("47.25.1" -> "47", розничная торговля) -- полный
+  // код слишком гранулярен (тысячи уникальных значений, каждый бакет из 1-2 клиентов),
+  // раздел даёт содержательные группы, сопоставимые по размеру с кассовыми/срок-бакетами.
+  function ofd1cIndustryBucketLabel(okved) {
+    if (!okved) return null;
+    var m = String(okved).match(/^(\d{1,2})/);
+    return m ? m[1] : null;
+  }
+  var OFD1C_INDUSTRY_MIN_SAMPLE = 20; // меньше -- TVD/вес отрасли ненадёжны, признак целиком исключается
+
+  // Распределение по разделам ОКВЭД -- ДИНАМИЧЕСКИЕ бакеты (не фиксированный список, как
+  // OFD1C_KASSA_BUCKETS -- разделов ОКВЭД много, заранее неизвестно, какие встретятся).
+  // clients -- уже отфильтрованы на "есть обогащение" вызывающей стороной (см. борд A
+  // график 4/ofd1cScoringCandidates) -- эта функция сама не проверяет наличие данных.
+  function ofd1cIndustryDistribution(clients) {
+    var byLabel = new Map();
+    clients.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      var label = info && info.okved ? ofd1cIndustryBucketLabel(info.okved) : null;
+      if (label == null) return;
+      if (!byLabel.has(label)) byLabel.set(label, []);
+      byLabel.get(label).push(c);
+    });
+    var buckets = Array.from(byLabel.keys()).sort().map(function (label) { return { label: label, clients: byLabel.get(label), count: byLabel.get(label).length }; });
+    return { buckets: buckets, total: clients.length };
+  }
+
   // model/ctx -- для tenureNow (ctx.asOf) и client.appearance/kassas/partner/tariff.
   // buyerInns -- исключаются из кандидатов (уже купили, скорить нечего). allowedPartners --
   // Set имён партнёров (null = все партнёры разрешены, пустой Set = ни одного -- см. пикер).
   function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners) {
     var buyerSet = new Set(buyerInns);
     var entries = ofd1cMatchedEntries(model);
-    var kassaModal = ofd1cModalBucketLabel(ofd1cKassaDistribution(entries.map(function (e) { return e.client; })));
-    var tenureDistBuyers = ofd1cTenureDistribution(entries);
+    var buyerClients = entries.map(function (e) { return e.client; });
+    var wholeBase = ofd1cActiveOfdClients(model, ctx);
+
+    // ---- шаг 1: эмпирические веса (TVD купивших vs вся действующая база), тот же
+    // baseline, что уже использует борд A (ofd1cActiveOfdClients). ----
+    var kassaDistBuyers = ofd1cKassaDistribution(buyerClients);
+    var kassaDistBase = ofd1cKassaDistribution(wholeBase);
+    var tvdKassa = ofd1cTVDFromShares(ofd1cDistributionShares(kassaDistBuyers), ofd1cDistributionShares(kassaDistBase));
+    var kassaModal = ofd1cModalBucketLabel(kassaDistBuyers);
+
+    var tenureDistBuyers = ofd1cTenureDistribution(entries); // срок ДО покупки, у купивших
+    var tenureDistBase = ofd1cTenureNowDistribution(wholeBase, ctx.asOf); // срок СЕЙЧАС, у всей базы -- тот же набор бакетов
+    var tvdTenure = ofd1cTVDFromShares(ofd1cDistributionShares(tenureDistBuyers), ofd1cDistributionShares(tenureDistBase));
     var tenureModal = tenureDistBuyers.buckets.length ? ofd1cModalBucketLabel(tenureDistBuyers) : null;
-    var partnerRows = ofd1cPartnerConversion(model, entries);
+
+    var partnerRows = ofd1cPartnerConversion(model, entries); // теперь включает партнёров с buyers=0 (нужно для честного TVD)
+    var totalBuyers = entries.length, totalClients = model.clients.size;
+    var partnerBuyerShare = new Map(), partnerBaseShare = new Map(), rateByPartner = new Map();
+    partnerRows.forEach(function (r) {
+      if (totalBuyers > 0) partnerBuyerShare.set(r.partner, r.buyers / totalBuyers);
+      if (totalClients > 0) partnerBaseShare.set(r.partner, r.total / totalClients);
+      rateByPartner.set(r.partner, r.rate);
+    });
+    var tvdPartner = ofd1cTVDFromShares(partnerBuyerShare, partnerBaseShare);
     var maxRate = partnerRows.reduce(function (m, r) { return Math.max(m, r.rate); }, 0);
-    var rateByPartner = new Map(partnerRows.map(function (r) { return [r.partner, r.rate]; }));
+
+    // Отрасль -- ТОЛЬКО если обогащения достаточно с обеих сторон (иначе TVD посчитан бы
+    // по горстке случайных ИНН и был бы шумом, не сигналом). OFD1C_DADATA_STATE может
+    // вообще не быть загружен -- тогда buyersWithIndustry/baseWithIndustry = 0, отрасль
+    // целиком выключается, остальные веса просто перенормируются (шаг 2).
+    var buyersWithIndustry = [], baseWithIndustry = [];
+    buyerClients.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      if (info && info.okved) buyersWithIndustry.push(ofd1cIndustryBucketLabel(info.okved));
+    });
+    wholeBase.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      if (info && info.okved) baseWithIndustry.push(ofd1cIndustryBucketLabel(info.okved));
+    });
+    var industryEnabled = buyersWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE && baseWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE;
+    var tvdIndustry = 0, industryModal = null;
+    if (industryEnabled) {
+      function countsToShare(arr) {
+        var counts = new Map();
+        arr.forEach(function (v) { counts.set(v, (counts.get(v) || 0) + 1); });
+        var share = new Map();
+        counts.forEach(function (n, k) { share.set(k, n / arr.length); });
+        return { share: share, counts: counts };
+      }
+      var buyerInd = countsToShare(buyersWithIndustry), baseInd = countsToShare(baseWithIndustry);
+      tvdIndustry = ofd1cTVDFromShares(buyerInd.share, baseInd.share);
+      var bestCount = -1;
+      buyerInd.counts.forEach(function (n, k) { if (n > bestCount) { bestCount = n; industryModal = k; } });
+    }
+
+    var tvdSum = tvdKassa + tvdPartner + tvdTenure + tvdIndustry;
+    var baseWeights = tvdSum > 0
+      ? { kassa: tvdKassa / tvdSum, partner: tvdPartner / tvdSum, tenure: tvdTenure / tvdSum, industry: tvdIndustry / tvdSum }
+      : { kassa: industryEnabled ? 0.25 : 1 / 3, partner: industryEnabled ? 0.25 : 1 / 3, tenure: industryEnabled ? 0.25 : 1 / 3, industry: industryEnabled ? 0.25 : 0 }; // вырожденный случай (все TVD=0) -- равные веса, не деление на 0
+    // Без отрасли для КОНКРЕТНОГО кандидата (нет данных обогащения) -- перенормируем 3
+    // оставшихся веса на сумму 1, не теряем "вес отрасли в никуда".
+    var sumWithoutIndustry = baseWeights.kassa + baseWeights.partner + baseWeights.tenure;
+    var weightsWithoutIndustry = sumWithoutIndustry > 0
+      ? { kassa: baseWeights.kassa / sumWithoutIndustry, partner: baseWeights.partner / sumWithoutIndustry, tenure: baseWeights.tenure / sumWithoutIndustry }
+      : { kassa: 1 / 3, partner: 1 / 3, tenure: 1 / 3 };
+
+    // ---- шаг 2: потенциальная выручка -- НЕ часть score, отдельная колонка. Медиана
+    // реальной выручки на кассу среди уже купивших (из m.records.totalSum -- настоящие
+    // суммы из файла сверки 1С, не гадаем), делённая на касс-на-момент-покупки (не
+    // касс-сейчас -- прокси размера бизнеса В МОМЕНТ решения о покупке). ----
+    var revenuePerKassaSamples = [];
+    entries.forEach(function (e) {
+      var sum = e.records.reduce(function (s, r) { return s + (r.totalSum || 0); }, 0);
+      var atPurchase = ofd1cKassasAtPurchase(e.client, e.appearance);
+      if (sum > 0 && atPurchase) revenuePerKassaSamples.push(sum / atPurchase);
+    });
+    var medianRevenuePerKassa = ofd1cMedian(revenuePerKassaSamples);
+
+    // ---- шаг 3: точки соприкосновения -- общий директор с уже купившим (dadata.director).
+    // Map(ФИО -> Set(ИНН купивших с этим директором)) -- строим один раз, не на каждого
+    // кандидата. ФИО физлица (152-ФЗ), публичные данные ЕГРЮЛ -- см. пометку юриста выше. ----
+    var buyerDirectorMap = new Map();
+    buyerClients.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      if (info && info.director) {
+        if (!buyerDirectorMap.has(info.director)) buyerDirectorMap.set(info.director, new Set());
+        buyerDirectorMap.get(info.director).add(c.key);
+      }
+    });
+
+    // Гейт по оттоку (PO, ревью 2026-09-17) -- не скорим клиента, который уходит/на грани
+    // ухода. ПЕРВАЯ версия гейта (снята в этом же заходе, не гипотеза -- поймано первым
+    // же прогоном теста: "Кандидатов: 0") ошибочно использовала clientChurnStatus как
+    // "активен ли клиент прямо сейчас" -- эта функция классифицирует УЖЕ СЛУЧИВШИЙСЯ разрыв
+    // (нужен clientChurnStatus только для клиентов, чей currentEnd уже в прошлом), для
+    // действующего клиента с currentEnd в будущем она возвращает "pending" ВСЕГДА -- гейт
+    // отсекал практически всю базу. Верно: (1) кандидат берётся из wholeBase (уже
+    // отфильтрован "действующий сейчас", та же логика, что борд A), (2) ДОПОЛНИТЕЛЬНО
+    // исключаем тех, кто под риском в ближайшие 30 дней -- тот же `clientsAtRisk`, что уже
+    // использует борд "Клиенты под риском" (b1-risk), не самодельная интерпретация.
+    var riskyInns = new Set(ctx.M.clientsAtRisk(model, ctx.asOf, ctx.M.daysThresholdFn(ctx.asOf, 30)).map(function (r) { return r.key; }));
 
     var out = [];
-    model.clients.forEach(function (c, inn) {
+    wholeBase.forEach(function (c) {
+      var inn = c.key;
       if (buyerSet.has(inn)) return;
       var partner = c.partner || "—";
       if (allowedPartners && !allowedPartners.has(partner)) return;
+      if (riskyInns.has(inn)) return;
+
       var kassaLabel = ofd1cKassaBucketLabel(c.kassas.length);
       var kassaFit = ofd1cBucketFit(OFD1C_KASSA_BUCKETS, kassaLabel, kassaModal);
       var rate = rateByPartner.has(partner) ? rateByPartner.get(partner) : 0;
@@ -4135,17 +4353,40 @@
       var tenureNowMonths = c.appearance ? (ctx.asOf.getTime() - c.appearance.getTime()) / (30.4368 * 86400000) : null;
       var tenureLabel = tenureNowMonths == null ? null : ofd1cTenureBucketLabel(tenureNowMonths);
       var tenureFit = ofd1cBucketFit(OFD1C_TENURE_BUCKETS, tenureLabel, tenureModal);
+
+      var dadataInfo = ofd1cDadataInfo(inn);
+      var industryLabel = industryEnabled && dadataInfo && dadataInfo.okved ? ofd1cIndustryBucketLabel(dadataInfo.okved) : null;
+      var industryFit = industryLabel != null ? (industryLabel === industryModal ? 1 : 0) : null;
+      var w = industryFit != null ? baseWeights : weightsWithoutIndustry;
+
       var score = Math.round(100 * (
-        OFD1C_SCORE_WEIGHTS.kassaFit * kassaFit + OFD1C_SCORE_WEIGHTS.partnerFit * partnerFit + OFD1C_SCORE_WEIGHTS.tenureFit * tenureFit
+        w.kassa * kassaFit + w.partner * partnerFit + w.tenure * tenureFit + (industryFit != null ? w.industry * industryFit : 0)
       ));
+
       var reasons = [];
       if (kassaFit > 0) reasons.push(fmtNum(c.kassas.length) + " касс (бакет " + kassaLabel + (kassaFit === 1 ? ", как у большинства купивших" : ", рядом с типичным") + ")");
       if (partnerFit > 0) reasons.push("партнёр «" + partner + "» с конверсией " + fmtPct(rate));
       if (tenureFit > 0) reasons.push("срок в ОФД " + tenureNowMonths.toFixed(1) + " мес (окно " + tenureLabel + (tenureFit === 1 ? ", то же, где чаще покупают" : ", рядом") + ")");
+      if (industryFit === 1) reasons.push("отрасль ОКВЭД " + industryLabel + ", как у большинства купивших");
+
+      var affiliated = null;
+      if (dadataInfo && dadataInfo.director && buyerDirectorMap.has(dadataInfo.director)) {
+        var withThisDirector = buyerDirectorMap.get(dadataInfo.director);
+        if (!(withThisDirector.size === 1 && withThisDirector.has(inn))) {
+          affiliated = Array.from(withThisDirector).join(", ");
+          reasons.unshift("⚡ тот же директор (" + dadataInfo.director + "), что у уже купившего 1С: " + affiliated);
+        }
+      }
+
+      var revenuePotential = medianRevenuePerKassa != null ? Math.round(c.kassas.length * medianRevenuePerKassa) : null;
+
       out.push({
         key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: c.tariff || "—",
         tenureNowMonths: tenureNowMonths == null ? null : Math.round(tenureNowMonths * 10) / 10,
-        score: score, scoreHtml: ofd1cScorePill(score), reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
+        score: score, scoreHtml: ofd1cScorePill(score),
+        revenuePotential: revenuePotential,
+        affiliated: affiliated,
+        reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
       });
     });
     out.sort(function (a, b) { return b.score - a.score; });
@@ -4696,10 +4937,42 @@
       }), { color: "var(--brand)", exportName: "Купившие 1С по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(partnerSection);
 
-      // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) сознательно отложена
-      // (Дима, 2026-09-17: "начинай без отрасли, будем обогащать постепенно") -- плейсхолдер
-      // до появления dadata-cache.json, тот же паттерн, что у остальных "загрузи файл" бордов.
-      wrap.appendChild(el('<div class="placeholder-body">Отрасль (ОКВЭД) — появится после подключения обогащения DaData (фаза 1, отложена по решению Димы 2026-09-17).</div>'));
+      // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) шла отдельным треком
+      // (обогащение идёт партиями по 9500 ИНН/день) -- график живёт на данных, которые
+      // УЖЕ загружены борду "Обогащение DaData — загрузка" (b8-1c-dadata-upload), не на
+      // всей базе (та обогащена лишь частично на любой момент времени).
+      var industrySection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
+      industrySection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Отрасль (ОКВЭД, раздел)</b></div>'));
+      if (!OFD1C_DADATA_STATE.records) {
+        industrySection.appendChild(el('<div class="placeholder-body">Загрузи <code>dadata-cache.json</code> в борде «Обогащение DaData — загрузка» — здесь появится распределение по отраслям.</div>'));
+      } else {
+        var buyersInd = buyerClients.filter(function (c) { var i = ofd1cDadataInfo(c.key); return i && i.okved; });
+        var baseInd = wholeBase.filter(function (c) { var i = ofd1cDadataInfo(c.key); return i && i.okved; });
+        if (buyersInd.length < OFD1C_INDUSTRY_MIN_SAMPLE || baseInd.length < OFD1C_INDUSTRY_MIN_SAMPLE) {
+          industrySection.appendChild(el('<div class="placeholder-body">Обогащено пока ' + fmtNum(buyersInd.length) + ' из ' + fmtNum(entries.length) + ' купивших 1С и ' + fmtNum(baseInd.length) + ' клиентов базы — обогащение идёт партиями по дням, недостаточно данных для надёжного графика (нужно от ' + OFD1C_INDUSTRY_MIN_SAMPLE + ' с каждой стороны). Загляни через несколько дней.</div>'));
+        } else {
+          var industryDistBuyers = ofd1cIndustryDistribution(buyersInd);
+          var industryDistBase = ofd1cIndustryDistribution(baseInd);
+          industrySection.appendChild(el(
+            '<div class="stat-label" style="margin-bottom:6px;color:var(--muted)">Обогащено: ' + fmtNum(buyersInd.length) + ' из ' + fmtNum(entries.length) + ' купивших, ' + fmtNum(baseInd.length) + ' из ' + fmtNum(wholeBase.length) + ' действующей базы — график по мере обогащения будет точнее.</div>'
+          ));
+          var indCols = el('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"></div>');
+          var indBuyerCol = el('<div></div>');
+          indBuyerCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Купившие 1С</div>'));
+          indBuyerCol.appendChild(ofd1cBucketDrillBoard(industryDistBuyers.buckets.filter(function (b) { return b.count > 0; }).map(function (b) {
+            return { label: "ОКВЭД " + b.label + " (" + fmtPct(industryDistBuyers.total ? b.count / industryDistBuyers.total : 0) + ")", count: b.count, rows: b.clients.map(ofd1cClientRow) };
+          }), { color: "var(--s1)", exportName: "Отрасль — купившие 1С", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
+          var indBaseCol = el('<div></div>');
+          indBaseCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Вся действующая база (обогащённая часть)</div>'));
+          indBaseCol.appendChild(ofd1cBucketDrillBoard(industryDistBase.buckets.filter(function (b) { return b.count > 0; }).map(function (b) {
+            return { label: "ОКВЭД " + b.label + " (" + fmtPct(industryDistBase.total ? b.count / industryDistBase.total : 0) + ")", count: b.count, rows: b.clients.map(ofd1cClientRow) };
+          }), { color: "var(--s2)", exportName: "Отрасль — база", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
+          indCols.appendChild(indBuyerCol);
+          indCols.appendChild(indBaseCol);
+          industrySection.appendChild(indCols);
+        }
+      }
+      wrap.appendChild(industrySection);
 
       return wrap;
     },
@@ -4733,6 +5006,9 @@
     { label: "Касс", key: "activeKassas", num: true }, { label: "Тариф ОФД", key: "tariff" },
     { label: "Срок в ОФД, мес", key: "tenureNowMonths", num: true },
     { label: "Score", key: "scoreHtml", num: true, html: true, exportKey: "score" },
+    // Потенциальная выручка -- НЕ часть score (формула v2, 2026-09-17), отдельная колонка
+    // для сортировки продавцом по ценности, не только по похожести профиля.
+    { label: "Потенц. выручка", key: "revenuePotential", num: true },
     { label: "Причина", key: "reason" },
   ];
   var OFD1C_SCORING_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" }];
@@ -5689,6 +5965,9 @@
     ofd1cParseWorkbook: ofd1cParseWorkbook,
     ofd1cMatchClients: ofd1cMatchClients,
     ofd1cSetState: function (s) { OFD1C_STATE = s; },
+    ofd1cDadataSetState: function (s) { OFD1C_DADATA_STATE = s; },
+    ofd1cDadataGetState: function () { return OFD1C_DADATA_STATE; },
+    ofd1cDadataInfo: ofd1cDadataInfo,
     ofd1cGetState: function () { return OFD1C_STATE; },
     ofd1cMatchedEntries: ofd1cMatchedEntries,
     ofd1cComputeChurnGradient: ofd1cComputeChurnGradient,
@@ -5706,6 +5985,11 @@
     ofd1cTenureDistribution: ofd1cTenureDistribution,
     ofd1cPartnerConversion: ofd1cPartnerConversion,
     ofd1cScoringCandidates: ofd1cScoringCandidates,
+    ofd1cTVDFromShares: ofd1cTVDFromShares,
+    ofd1cDistributionShares: ofd1cDistributionShares,
+    ofd1cTenureNowDistribution: ofd1cTenureNowDistribution,
+    ofd1cIndustryBucketLabel: ofd1cIndustryBucketLabel,
+    ofd1cIndustryDistribution: ofd1cIndustryDistribution,
     ofd1cActiveOfdClients: ofd1cActiveOfdClients,
     ofd1cMedian: ofd1cMedian,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
