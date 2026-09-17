@@ -981,6 +981,51 @@ async function main() {
       if (!(/контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
     }
 
+    // Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Инварианты на данных (через API,
+    // не UI): score в [0,100], список отсортирован по убыванию score, ни один купивший НЕ
+    // попадает в кандидаты (уже купили -- скорить нечего). allowedPartners=null -- "все
+    // партнёры разрешены" (используется тут только для инвариант-проверки данных, UI по
+    // умолчанию opt-in с пустым списком -- см. отдельную UI-проверку ниже).
+    win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1");
+    const scoringAll = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, { asOf: win.OFDState.asOf }, null);
+    const scoreOutOfRange = scoringAll.some((r) => r.score < 0 || r.score > 100);
+    console.log("ofd1c: скоринг -- score всех кандидатов в диапазоне [0,100]:", !scoreOutOfRange ? "OK" : "FAIL");
+    if (scoreOutOfRange) ok = false;
+    let scoringSortMismatch = false;
+    for (let i = 1; i < scoringAll.length; i++) if (scoringAll[i].score > scoringAll[i - 1].score) scoringSortMismatch = true;
+    console.log("ofd1c: скоринг -- отсортирован по убыванию score:", !scoringSortMismatch ? "OK" : "FAIL");
+    if (scoringSortMismatch) ok = false;
+    const buyerInScoring = scoringAll.some((r) => buyerInns.indexOf(r.key) !== -1);
+    console.log("ofd1c: скоринг -- ни один купивший НЕ попадает в кандидаты:", !buyerInScoring ? "OK" : "FAIL");
+    if (buyerInScoring) ok = false;
+    const scoringEmptySetSize = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, { asOf: win.OFDState.asOf }, new Set()).length;
+    console.log("ofd1c: скоринг -- пустой набор разрешённых партнёров даёт 0 кандидатов (opt-in):", scoringEmptySetSize === 0 ? "OK" : "FAIL", scoringEmptySetSize);
+    if (scoringEmptySetSize !== 0) ok = false;
+
+    // UI борда C -- на холсте (opt-in по умолчанию, значит сразу "0 кандидатов" видно в
+    // тексте), выбор партнёра через чекбокс наполняет список и пишет в localStorage.
+    win.OFDCanvas.rerenderAll();
+    const scoringNode = win.document.querySelector('[data-widget-id="b8-1c-scoring"]');
+    console.log("ofd1c: борд «Скоринг для продавцов» на холсте:", scoringNode ? "OK" : "FAIL");
+    if (!scoringNode) ok = false;
+    if (scoringNode) {
+      const zeroByDefault = /партнёры не выбраны/.test(scoringNode.innerHTML);
+      console.log("ofd1c: скоринг по умолчанию пуст (ни один партнёр не выбран):", zeroByDefault ? "OK" : "FAIL");
+      if (!zeroByDefault) ok = false;
+      const firstPartnerCb = scoringNode.querySelector(".ofd1c-partner-cb");
+      if (firstPartnerCb) {
+        firstPartnerCb.checked = true;
+        firstPartnerCb.dispatchEvent(new win.Event("change", { bubbles: true }));
+        const storedAllowed = JSON.parse(win.localStorage.getItem("ofd1c-scoring-allowed-partners-v1") || "[]");
+        console.log("ofd1c: отметка партнёра в скоринге пишет его в localStorage:", storedAllowed.length === 1 ? "OK" : "FAIL", storedAllowed);
+        if (storedAllowed.length !== 1) ok = false;
+        const hasSortableTable = scoringNode.querySelector("table") != null || /Кандидатов: 0/.test(scoringNode.innerHTML) === false;
+        console.log("ofd1c: после выбора партнёра список кандидатов пересчитался:", hasSortableTable ? "OK" : "FAIL");
+        if (!hasSortableTable) ok = false;
+      }
+      win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1"); // не протекает в следующие тесты
+    }
+
     // "Прирост базы (Обмен с 1С)" -- per-gap модель (2026-09-10, см. HISTORY.md), та же
     // архитектура что и в b1-netgrowth/b2-netgrowth: computeGapFlow/computeGapActiveCount
     // из metrics.js переиспользуются напрямую (не дублированы для 1С). Внутренняя

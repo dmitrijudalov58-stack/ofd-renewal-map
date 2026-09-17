@@ -4047,6 +4047,75 @@
     rows.sort(function (a, b) { return b.rate - a.rate; });
     return rows;
   }
+
+  // ---------- Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Веса -- РУЧНЫЕ и
+  // ПРЕДВАРИТЕЛЬНЫЕ (см. tmp/plans/2026-09-17: "не гадаются заранее, выставляются по факту
+  // того, что покажет борд A на реальных данных"). Дима реальные данные ещё не смотрел
+  // (все прогоны пока на тестовых файлах) -- эти веса НЕ финальное решение, подлежат
+  // пересмотру после первого реального обзора борда A. Срок-до-покупки НЕ используется как
+  // сигнал (у кандидатов на скоринг 1С ещё нет -- этой даты физически не существует, сам
+  // Дима поймал ту же ошибку про дату в борде C, 2026-09-17); вместо него -- ТЕКУЩИЙ срок
+  // в ОФД (appearance..asOf), сравнённый с модальным бакетом "срок ДО покупки" у купивших
+  // -- валидный прокси ("кандидат сейчас в том же окне жизненного цикла, где покупали
+  // другие"), не тот же самый показатель.
+  var OFD1C_SCORE_WEIGHTS = { kassaFit: 0.40, partnerFit: 0.35, tenureFit: 0.25 };
+  function ofd1cModalBucketLabel(distribution) {
+    var best = null;
+    distribution.buckets.forEach(function (b) {
+      if (!best || b.count > best.count) best = b;
+    });
+    return best ? best.label : null;
+  }
+  function ofd1cBucketFit(bucketsDef, candidateLabel, modalLabel) {
+    if (!modalLabel || !candidateLabel) return 0;
+    if (candidateLabel === modalLabel) return 1;
+    var ci = bucketsDef.findIndex(function (b) { return b.label === candidateLabel; });
+    var mi = bucketsDef.findIndex(function (b) { return b.label === modalLabel; });
+    if (ci < 0 || mi < 0) return 0;
+    return Math.abs(ci - mi) === 1 ? 0.5 : 0;
+  }
+  // model/ctx -- для tenureNow (ctx.asOf) и client.appearance/kassas/partner/tariff.
+  // buyerInns -- исключаются из кандидатов (уже купили, скорить нечего). allowedPartners --
+  // Set имён партнёров (null = все партнёры разрешены, пустой Set = ни одного -- см. пикер).
+  function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners) {
+    var buyerSet = new Set(buyerInns);
+    var entries = ofd1cMatchedEntries(model);
+    var kassaModal = ofd1cModalBucketLabel(ofd1cKassaDistribution(entries.map(function (e) { return e.client; })));
+    var tenureDistBuyers = ofd1cTenureDistribution(entries);
+    var tenureModal = tenureDistBuyers.buckets.length ? ofd1cModalBucketLabel(tenureDistBuyers) : null;
+    var partnerRows = ofd1cPartnerConversion(model, entries);
+    var maxRate = partnerRows.reduce(function (m, r) { return Math.max(m, r.rate); }, 0);
+    var rateByPartner = new Map(partnerRows.map(function (r) { return [r.partner, r.rate]; }));
+
+    var out = [];
+    model.clients.forEach(function (c, inn) {
+      if (buyerSet.has(inn)) return;
+      var partner = c.partner || "—";
+      if (allowedPartners && !allowedPartners.has(partner)) return;
+      var kassaLabel = ofd1cKassaBucketLabel(c.kassas.length);
+      var kassaFit = ofd1cBucketFit(OFD1C_KASSA_BUCKETS, kassaLabel, kassaModal);
+      var rate = rateByPartner.has(partner) ? rateByPartner.get(partner) : 0;
+      var partnerFit = maxRate > 0 ? rate / maxRate : 0;
+      var tenureNowMonths = c.appearance ? (ctx.asOf.getTime() - c.appearance.getTime()) / (30.4368 * 86400000) : null;
+      var tenureLabel = tenureNowMonths == null ? null : ofd1cTenureBucketLabel(tenureNowMonths);
+      var tenureFit = ofd1cBucketFit(OFD1C_TENURE_BUCKETS, tenureLabel, tenureModal);
+      var score = Math.round(100 * (
+        OFD1C_SCORE_WEIGHTS.kassaFit * kassaFit + OFD1C_SCORE_WEIGHTS.partnerFit * partnerFit + OFD1C_SCORE_WEIGHTS.tenureFit * tenureFit
+      ));
+      var reasons = [];
+      if (kassaFit > 0) reasons.push(fmtNum(c.kassas.length) + " касс (бакет " + kassaLabel + (kassaFit === 1 ? ", как у большинства купивших" : ", рядом с типичным") + ")");
+      if (partnerFit > 0) reasons.push("партнёр «" + partner + "» с конверсией " + fmtPct(rate));
+      if (tenureFit > 0) reasons.push("срок в ОФД " + tenureNowMonths.toFixed(1) + " мес (окно " + tenureLabel + (tenureFit === 1 ? ", то же, где чаще покупают" : ", рядом") + ")");
+      out.push({
+        key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: c.tariff || "—",
+        tenureNowMonths: tenureNowMonths == null ? null : Math.round(tenureNowMonths * 10) / 10,
+        score: score, reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
+      });
+    });
+    out.sort(function (a, b) { return b.score - a.score; });
+    return out;
+  }
+
   function ofd1cLapsedAt(entry, atDate) {
     if (!entry.appearance || atDate < entry.appearance) return false;
     for (var i = 0; i < entry.intervals.length; i++) {
@@ -4573,6 +4642,115 @@
       // до появления dadata-cache.json, тот же паттерн, что у остальных "загрузи файл" бордов.
       wrap.appendChild(el('<div class="placeholder-body">Отрасль (ОКВЭД) — появится после подключения обогащения DaData (фаза 1, отложена по решению Димы 2026-09-17).</div>'));
 
+      return wrap;
+    },
+  };
+
+  // ---------- Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Партнёр-пикер --
+  // поиск+чекбоксы (НЕ плоский список ~тысяч партнёров -- тот же урок B5, HISTORY.md
+  // 2026-08-19: "плохо, максимально плохо"). Opt-in по умолчанию (пусто -- ни один партнёр
+  // не выбран, список кандидатов пуст, пока Дима явно не отметит партнёров) -- Дима,
+  // 2026-09-17: "не от всех партнёров можем передавать на прозвон". Persist в localStorage
+  // ПО ИМЕНИ партнёра (тот же приём, что CC_OVERRIDE_KEY выше -- переживает новую загрузку
+  // файла, пока имя партнёра не меняется).
+  var OFD1C_SCORING_PARTNERS_KEY = "ofd1c-scoring-allowed-partners-v1";
+  function ofd1cLoadAllowedPartners() {
+    try { return new Set(JSON.parse(localStorage.getItem(OFD1C_SCORING_PARTNERS_KEY) || "[]")); } catch (e) { return new Set(); }
+  }
+  function ofd1cSaveAllowedPartners(set) {
+    try { localStorage.setItem(OFD1C_SCORING_PARTNERS_KEY, JSON.stringify(Array.from(set))); } catch (e) { /* приватный режим и т.п. -- не критично */ }
+  }
+  var OFD1C_SCORING_COLUMNS = [
+    { label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" },
+    { label: "Касс", key: "activeKassas", num: true }, { label: "Тариф ОФД", key: "tariff" },
+    { label: "Срок в ОФД, мес", key: "tenureNowMonths", num: true }, { label: "Score", key: "score", num: true },
+    { label: "Причина", key: "reason" },
+  ];
+  var OFD1C_SCORING_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" }];
+
+  WIDGETS["b8-1c-scoring"] = {
+    title: "Обмен с 1С — скоринг для продавцов", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      var wrap = el('<div></div>');
+      if (!OFD1C_STATE.records) {
+        wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится список НЕ-купивших клиентов, похожих по профилю на тех, кто уже купил.</div>'));
+        return wrap;
+      }
+      var entries = ofd1cMatchedEntries(model);
+      if (!entries.length) {
+        wrap.appendChild(el('<div class="placeholder-body">Ни один клиент не сопоставлен с обменом 1С — не с кем сравнивать профиль.</div>'));
+        return wrap;
+      }
+      var buyerInns = entries.map(function (e) { return e.inn; });
+      var allPartners = Array.from(new Set(Array.from(model.clients.values()).map(function (c) { return c.partner || "—"; }))).sort();
+      var allowed = ofd1cLoadAllowedPartners();
+
+      var pickerBox = el('<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px"></div>');
+      pickerBox.appendChild(el('<div class="stat-label" style="margin-bottom:6px"><b>Партнёры, чьих клиентов можно передавать на прозвон</b> — по умолчанию не выбран ни один, список кандидатов ниже пуст, пока не отметишь партнёров.</div>'));
+      var searchInput = el('<input type="text" placeholder="поиск партнёра" style="width:220px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;margin-bottom:8px">');
+      pickerBox.appendChild(searchInput);
+      var bulkRow = el('<div style="margin:4px 0 8px"><button class="refresh-chart-btn" id="ofd1cScoringSelectAll">Отметить все видимые</button> <button class="refresh-chart-btn" id="ofd1cScoringClearAll">Снять все видимые</button></div>');
+      pickerBox.appendChild(bulkRow);
+      var partnerListHolder = el('<div style="max-height:180px;overflow-y:auto;border-top:1px solid var(--line);padding-top:6px"></div>');
+      pickerBox.appendChild(partnerListHolder);
+      wrap.appendChild(pickerBox);
+
+      var candidatesHolder = el('<div></div>');
+      wrap.appendChild(candidatesHolder);
+
+      function renderCandidates() {
+        candidatesHolder.innerHTML = "";
+        var candidates = ofd1cScoringCandidates(model, buyerInns, ctx, allowed);
+        candidatesHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Кандидатов: ' + fmtNum(candidates.length) + (allowed.size ? ' · партнёров выбрано: ' + fmtNum(allowed.size) : ' · партнёры не выбраны — список пуст') + '</div>'));
+        if (!candidates.length) return;
+        var tableArea = el('<div></div>');
+        candidatesHolder.appendChild(tableArea);
+        renderDrillTable(tableArea, candidates, OFD1C_SCORING_COLUMNS, OFD1C_SCORING_FILTERS, "клиентов", "Кандидаты на допродажу 1С", 500);
+        var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">Скачать список (' + fmtNum(candidates.length) + ')</button>');
+        downloadBtn.addEventListener("click", function () {
+          var exportRows = candidates.map(function (item) {
+            var out = {};
+            OFD1C_SCORING_COLUMNS.forEach(function (c) { out[c.label.replace(/\s+/g, "")] = item[c.key] == null ? "" : item[c.key]; });
+            return out;
+          });
+          if (root.OFDExport) root.OFDExport.downloadCSV("Скоринг для продавцов — Обмен с 1С", exportRows);
+        });
+        candidatesHolder.appendChild(downloadBtn);
+      }
+
+      function renderPartnerList() {
+        var term = searchInput.value.trim().toLowerCase();
+        var visible = term ? allPartners.filter(function (p) { return p.toLowerCase().indexOf(term) !== -1; }) : allPartners;
+        partnerListHolder.innerHTML = "";
+        visible.forEach(function (p) {
+          var row = el(
+            '<label style="display:flex;align-items:center;gap:6px;padding:4px 2px;font-size:12.5px;cursor:pointer">' +
+            '<input type="checkbox" class="ofd1c-partner-cb"' + (allowed.has(p) ? " checked" : "") + '><span>' + esc(p) + '</span></label>'
+          );
+          row.querySelector("input").addEventListener("change", function (e) {
+            if (e.target.checked) allowed.add(p); else allowed.delete(p);
+            ofd1cSaveAllowedPartners(allowed);
+            renderCandidates();
+          });
+          partnerListHolder.appendChild(row);
+        });
+        bulkRow.querySelector("#ofd1cScoringSelectAll").onclick = function () {
+          visible.forEach(function (p) { allowed.add(p); });
+          ofd1cSaveAllowedPartners(allowed);
+          renderPartnerList();
+          renderCandidates();
+        };
+        bulkRow.querySelector("#ofd1cScoringClearAll").onclick = function () {
+          visible.forEach(function (p) { allowed.delete(p); });
+          ofd1cSaveAllowedPartners(allowed);
+          renderPartnerList();
+          renderCandidates();
+        };
+      }
+      searchInput.addEventListener("input", renderPartnerList);
+
+      renderPartnerList();
+      renderCandidates();
       return wrap;
     },
   };
@@ -5437,6 +5615,7 @@
     ofd1cKassaDistribution: ofd1cKassaDistribution,
     ofd1cTenureDistribution: ofd1cTenureDistribution,
     ofd1cPartnerConversion: ofd1cPartnerConversion,
+    ofd1cScoringCandidates: ofd1cScoringCandidates,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
     // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
     // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без
