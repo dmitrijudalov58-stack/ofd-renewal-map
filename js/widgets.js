@@ -3928,6 +3928,110 @@
   function ofd1cRenewalCount(records) {
     return Math.max(0, records.length - 1);
   }
+
+  // ---------- Борд A "Купившие 1С vs контроль" (2026-09-17, фаза 2, часть 1 — данные без
+  // UI). Контрольная группа -- СЛУЧАЙНАЯ выборка не-купивших ТОГО ЖЕ РАЗМЕРА, что и
+  // купившие, НЕ того же распределения по кассам (см. tmp/plans/2026-09-17 -- если
+  // подгонять распределение, график "касс на дату сравнения" обнулится по построению,
+  // сама разница в распределении и есть искомый сигнал). Выборка детерминированная
+  // (систематическая -- сортировка по ИНН + шаг N/размер), не Math.random(): воспроизводимо
+  // между прогонами теста и между загрузками одного файла, а не "другая случайная группа
+  // при каждом клике".
+  function ofd1cControlGroup(model, buyerInns) {
+    var buyerSet = new Set(buyerInns);
+    var pool = Array.from(model.clients.keys()).filter(function (inn) { return !buyerSet.has(inn); }).sort();
+    var targetSize = Math.min(buyerInns.length, pool.length);
+    if (targetSize <= 0 || pool.length === 0) return [];
+    var step = pool.length / targetSize;
+    var picked = [];
+    var seen = new Set();
+    for (var i = 0; i < targetSize; i++) {
+      var idx = Math.min(pool.length - 1, Math.floor(i * step));
+      while (seen.has(idx) && idx < pool.length - 1) idx++; // защита от коллизий на маленьком pool
+      seen.add(idx);
+      picked.push(model.clients.get(pool[idx]));
+    }
+    return picked;
+  }
+
+  // Бакеты числа касс -- те же границы, что в макете борда A (1 / 2-3 / 4-10 / 10+).
+  var OFD1C_KASSA_BUCKETS = [
+    { label: "1", test: function (n) { return n === 1; } },
+    { label: "2–3", test: function (n) { return n >= 2 && n <= 3; } },
+    { label: "4–10", test: function (n) { return n >= 4 && n <= 10; } },
+    { label: "10+", test: function (n) { return n > 10; } },
+  ];
+  function ofd1cKassaBucketLabel(count) {
+    for (var i = 0; i < OFD1C_KASSA_BUCKETS.length; i++) if (OFD1C_KASSA_BUCKETS[i].test(count)) return OFD1C_KASSA_BUCKETS[i].label;
+    return "0";
+  }
+  // clients -- массив объектов клиента основной модели (c.kassas.length = "сейчас", та же
+  // цифра, что уже показывает b8-1c-summary в колонке "Касс на ОФД" -- НЕ own as-of фильтр,
+  // единообразно с существующим виджетом). Возвращает { buckets: [{label,count,clients}],
+  // total }.
+  function ofd1cKassaDistribution(clients) {
+    var byLabel = new Map(OFD1C_KASSA_BUCKETS.map(function (b) { return [b.label, []]; }));
+    clients.forEach(function (c) {
+      var label = ofd1cKassaBucketLabel(c.kassas.length);
+      if (!byLabel.has(label)) byLabel.set(label, []); // "0" -- клиент без касс, крайний случай
+      byLabel.get(label).push(c);
+    });
+    var buckets = OFD1C_KASSA_BUCKETS.map(function (b) { return { label: b.label, clients: byLabel.get(b.label), count: byLabel.get(b.label).length }; });
+    return { buckets: buckets, total: clients.length };
+  }
+
+  // Срок в ОФД до покупки 1С, в месяцах (дробное число). entry -- из ofd1cMatchedEntries
+  // (entry.client.appearance = приход в ОФД, entry.appearance = первая покупка 1С).
+  function ofd1cTenureMonths(entry) {
+    if (!entry.client || !entry.client.appearance || !entry.appearance) return null;
+    return (entry.appearance.getTime() - entry.client.appearance.getTime()) / (30.4368 * 86400000);
+  }
+  var OFD1C_TENURE_BUCKETS = [
+    { label: "0–3м", test: function (m) { return m >= 0 && m < 3; } },
+    { label: "3–6м", test: function (m) { return m >= 3 && m < 6; } },
+    { label: "6–12м", test: function (m) { return m >= 6 && m < 12; } },
+    { label: "12м+", test: function (m) { return m >= 12; } },
+  ];
+  function ofd1cTenureBucketLabel(months) {
+    for (var i = 0; i < OFD1C_TENURE_BUCKETS.length; i++) if (OFD1C_TENURE_BUCKETS[i].test(months)) return OFD1C_TENURE_BUCKETS[i].label;
+    return null; // отрицательный срок (покупка 1С раньше появления в ОФД -- данные врут) не бакетируется
+  }
+  function ofd1cTenureDistribution(entries) {
+    var byLabel = new Map(OFD1C_TENURE_BUCKETS.map(function (b) { return [b.label, []]; }));
+    var excluded = [];
+    entries.forEach(function (entry) {
+      var months = ofd1cTenureMonths(entry);
+      var label = months === null ? null : ofd1cTenureBucketLabel(months);
+      if (label === null) { excluded.push(entry); return; }
+      byLabel.get(label).push(entry);
+    });
+    var buckets = OFD1C_TENURE_BUCKETS.map(function (b) { return { label: b.label, entries: byLabel.get(b.label), count: byLabel.get(b.label).length }; });
+    return { buckets: buckets, excluded: excluded, total: entries.length - excluded.length };
+  }
+
+  // Конверсия в 1С по партнёру -- среди купивших (buyerEntries), группировка по c.partner
+  // (партнёр КЛИЕНТА-владельца, та же семантика, что везде в инструменте -- см. SKILL.md
+  // "партнёр привязан к кассе ТОЛЬКО через клиента"), знаменатель -- ВСЕ клиенты этого
+  // партнёра в основной базе (model.clients), не только сопоставленные с 1С.
+  function ofd1cPartnerConversion(model, buyerEntries) {
+    var totalByPartner = new Map();
+    model.clients.forEach(function (c) {
+      var p = c.partner || "—";
+      totalByPartner.set(p, (totalByPartner.get(p) || 0) + 1);
+    });
+    var buyersByPartner = new Map();
+    buyerEntries.forEach(function (entry) {
+      var p = (entry.client && entry.client.partner) || "—";
+      buyersByPartner.set(p, (buyersByPartner.get(p) || 0) + 1);
+    });
+    var rows = Array.from(buyersByPartner.keys()).map(function (p) {
+      var buyers = buyersByPartner.get(p);
+      var total = totalByPartner.get(p) || 0;
+      return { partner: p, buyers: buyers, total: total, rate: total > 0 ? buyers / total : 0 };
+    });
+    rows.sort(function (a, b) { return b.rate - a.rate; });
+    return rows;
+  }
   function ofd1cLapsedAt(entry, atDate) {
     if (!entry.appearance || atDate < entry.appearance) return false;
     for (var i = 0; i < entry.intervals.length; i++) {
@@ -5110,6 +5214,10 @@
     ofd1cClientsChurnedInMonthGap: ofd1cClientsChurnedInMonthGap,
     ofd1cKassasAtPurchase: ofd1cKassasAtPurchase,
     ofd1cRenewalCount: ofd1cRenewalCount,
+    ofd1cControlGroup: ofd1cControlGroup,
+    ofd1cKassaDistribution: ofd1cKassaDistribution,
+    ofd1cTenureDistribution: ofd1cTenureDistribution,
+    ofd1cPartnerConversion: ofd1cPartnerConversion,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
     // Только для теста (test/browser-smoke.js) -- честное состояние custom-каналов на холсте
     // (то же, что видит hasLocalCustom внутри ccBootstrapCustomChannelsFromServer), без

@@ -876,6 +876,41 @@ async function main() {
     console.log("ofd1c: у клиента с одной записью 1С продлений строго 0:", !singleRecordRenewalNonZero ? "OK" : "FAIL");
     if (singleRecordRenewalNonZero) ok = false;
 
+    // Борд A "Купившие 1С vs контроль" (2026-09-17, фаза 2 часть 1) -- контрольная группа,
+    // распределения по кассам/сроку, конверсия по партнёру. Инварианты, не "не упало":
+    // размер контроля = размер купивших (или весь pool, если он меньше), контроль НЕ
+    // пересекается с купившими по ИНН, сумма по бакетам = total (никто не теряется/не
+    // дублируется), конверсия по партнёру: числитель никогда не больше знаменателя.
+    var buyerInns = entries.map(function (e) { return e.inn; });
+    var control = win.OFDWidgets.ofd1cControlGroup(model, buyerInns);
+    var expectedControlSize = Math.min(buyerInns.length, model.clients.size - buyerInns.length);
+    var controlOverlap = control.some(function (c) { return buyerInns.indexOf(c.inn) !== -1; });
+    console.log("ofd1c: размер контрольной группы совпадает с ожидаемым (min(купивших, доступного pool)):", control.length === expectedControlSize ? "OK" : "FAIL", control.length, "vs", expectedControlSize);
+    if (control.length !== expectedControlSize) ok = false;
+    console.log("ofd1c: контрольная группа НЕ пересекается с купившими по ИНН:", !controlOverlap ? "OK" : "FAIL");
+    if (controlOverlap) ok = false;
+
+    var buyerClients = entries.map(function (e) { return e.client; });
+    var kassaDistBuyers = win.OFDWidgets.ofd1cKassaDistribution(buyerClients);
+    var kassaDistControl = win.OFDWidgets.ofd1cKassaDistribution(control);
+    var kassaSumMismatch = kassaDistBuyers.buckets.reduce(function (s, b) { return s + b.count; }, 0) !== kassaDistBuyers.total
+      || kassaDistControl.buckets.reduce(function (s, b) { return s + b.count; }, 0) !== kassaDistControl.total;
+    console.log("ofd1c: распределение по кассам -- сумма бакетов сходится с total (купившие и контроль):", !kassaSumMismatch ? "OK" : "FAIL");
+    if (kassaSumMismatch) ok = false;
+
+    var tenureDist = win.OFDWidgets.ofd1cTenureDistribution(entries);
+    var tenureSumMismatch = tenureDist.buckets.reduce(function (s, b) { return s + b.count; }, 0) + tenureDist.excluded.length !== entries.length;
+    console.log("ofd1c: распределение по сроку до покупки -- сумма бакетов + исключённых = все купившие:", !tenureSumMismatch ? "OK" : "FAIL", tenureDist.buckets.reduce(function (s, b) { return s + b.count; }, 0), "+", tenureDist.excluded.length, "vs", entries.length);
+    if (tenureSumMismatch) ok = false;
+
+    var partnerConv = win.OFDWidgets.ofd1cPartnerConversion(model, entries);
+    var conversionOverflow = partnerConv.some(function (r) { return r.buyers > r.total; });
+    console.log("ofd1c: конверсия по партнёру -- числитель никогда не больше знаменателя:", !conversionOverflow ? "OK" : "FAIL");
+    if (conversionOverflow) ok = false;
+    var partnerBuyersSum = partnerConv.reduce(function (s, r) { return s + r.buyers; }, 0);
+    console.log("ofd1c: сумма купивших по всем партнёрам сходится с числом купивших:", partnerBuyersSum === entries.length ? "OK" : "FAIL", partnerBuyersSum, "vs", entries.length);
+    if (partnerBuyersSum !== entries.length) ok = false;
+
     // Оба борда УЖЕ на холсте (общий цикл п.1 добавил каждый id из WIDGETS, включая эти),
     // но отрендерились ДО того, как появились данные -- ofd1cSetState выше не идёт через
     // ofd1cBroadcast (тот срабатывает только из обработчика файла в самом b8-1c-upload),
