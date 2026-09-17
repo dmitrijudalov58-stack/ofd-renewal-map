@@ -4266,6 +4266,21 @@
     container.innerHTML = "";
     container.appendChild(el('<div style="font-size:13px;border-top:2px solid var(--ink);padding-top:10px;margin-top:4px"><b>' + esc(c.org || m.inn) + '</b> · ИНН ' + esc(m.inn) + (c.partner ? ' · партнёр ' + esc(c.partner) : '') + '</div>'));
 
+    // "Портрет покупателя 1С" (2026-09-17, фаза 3) -- 3 поля из борда A/ofd1cKassasAtPurchase/
+    // ofd1cRenewalCount. entry -- та же обёртка (ofd1cClientRecord), что использует борд A,
+    // считаем здесь заново (дёшево, m -- сырой matched-объект без .appearance).
+    var entry = ofd1cClientRecord(m);
+    var kassasAtPurchase = ofd1cKassasAtPurchase(c, entry.appearance);
+    var renewals = ofd1cRenewalCount(m.records);
+    var tenureMonths = ofd1cTenureMonths(entry);
+    container.appendChild(el(
+      '<div class="kv-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px 18px;margin:10px 0 4px;font-size:12.5px">' +
+      '<div><div style="color:var(--muted);font-size:11px">Касс на момент покупки 1С</div><div style="font-family:var(--mono)">' + (kassasAtPurchase == null ? "—" : fmtNum(kassasAtPurchase)) + '</div></div>' +
+      '<div><div style="color:var(--muted);font-size:11px">Продлений 1С</div><div style="font-family:var(--mono)">' + fmtNum(renewals) + '</div></div>' +
+      '<div><div style="color:var(--muted);font-size:11px">Срок до покупки</div><div style="font-family:var(--mono)">' + (tenureMonths == null ? "—" : tenureMonths.toFixed(1) + " мес") + '</div></div>' +
+      '</div>'
+    ));
+
     var kassaHeaders = [{ label: "РНМ" }, { label: "Тариф ОФД" }, { label: "Окончание кода ОФД" }, { label: "Статус" }];
     var kassaRows = c.kassas.map(function (k) {
       var alive = ctx.M.isKassaAlive(k, ctx.asOf, ctx.strict);
@@ -4423,6 +4438,11 @@
 
     var listWrap = el('<div style="margin-top:8px"></div>');
     var expandArea = el('<div style="margin-top:10px"></div>');
+    // cardHolder -- ТОЛЬКО когда задан opts.onRowClick (та же схема, что у monthlyCountBoard/
+    // "Прирост базы Обмен с 1С" -- см. комментарий там): отдельная область ПОД раскрытой
+    // таблицей для карточки конкретного клиента по клику на ИНН, universal-панель, не
+    // отдельный борд (см. tmp/plans/2026-09-17, решение по борду B).
+    var cardHolder = opts.onRowClick ? el('<div style="margin-top:10px"></div>') : null;
     var downloadBtn = el('<button class="refresh-chart-btn" style="margin-top:8px" disabled>Скачать (выбери строку ниже)</button>');
     var selected = null;
 
@@ -4434,7 +4454,8 @@
       );
       row.addEventListener("click", function () {
         selected = b;
-        renderDrillTable(expandArea, b.rows, columns, OFD1C_PORTRAIT_FILTERS, entityLabel, b.label, 300);
+        if (cardHolder) cardHolder.innerHTML = "";
+        renderDrillTable(expandArea, b.rows, columns, OFD1C_PORTRAIT_FILTERS, entityLabel, b.label, 300, opts.onRowClick ? function (inn) { opts.onRowClick(inn, cardHolder); } : undefined);
         downloadBtn.disabled = !b.rows.length;
         downloadBtn.textContent = "Скачать «" + b.label + "» (" + fmtNum(b.rows.length) + ")";
       });
@@ -4442,6 +4463,7 @@
     });
     wrap.appendChild(listWrap);
     wrap.appendChild(expandArea);
+    if (cardHolder) wrap.appendChild(cardHolder);
     downloadBtn.addEventListener("click", function () {
       if (!selected) return;
       var exportRows = selected.rows.map(function (item) {
@@ -4460,7 +4482,7 @@
 
   WIDGETS["b8-1c-portrait-compare"] = {
     title: "Обмен с 1С — купившие vs контроль", type: "график + таблица", scope: "as-of", span: true,
-    render: function (model) {
+    render: function (model, ctx) {
       var wrap = el('<div></div>');
       if (!OFD1C_STATE.records) {
         wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится сравнение купивших 1С с контрольной группой не-купивших.</div>'));
@@ -4473,6 +4495,20 @@
       }
       var buyerInns = entries.map(function (e) { return e.inn; });
       var control = ofd1cControlGroup(model, buyerInns);
+
+      // Клик по ИНН в любой drilldown-таблице ниже -- universal-карточка клиента
+      // (ofd1cRenderClientCard), не отдельный борд (решение из беседы 2026-09-17, см.
+      // tmp/plans). У купивших есть реальная запись 1С (m.records непустой); у клиента из
+      // контрольной группы обмена 1С нет вообще -- карточка всё равно открывается (честно
+      // показывает "Обмен с 1С (0 записей)"), просто m синтетический, не из ofd1cMatchClients.
+      function openCard(inn, cardHolder) {
+        if (!cardHolder) return;
+        var client = model.clients.get(inn);
+        if (!client) return;
+        var matched = ofd1cMatchClients(model).find(function (x) { return x.inn === inn; });
+        var m = matched || { inn: inn, client: client, records: [] };
+        ofd1cRenderClientCard(cardHolder, m, ctx);
+      }
       wrap.appendChild(el(
         '<div class="stat-label" style="margin-bottom:10px">Купивших 1С: ' + fmtNum(entries.length) +
         ' · контрольная группа (случайная выборка не-купивших того же размера): ' + fmtNum(control.length) +
@@ -4489,12 +4525,12 @@
         buyerCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Купившие 1С</div>'));
         buyerCol.appendChild(ofd1cBucketDrillBoard(buyerDist.buckets.map(function (b) {
           return { label: b.label, count: b.count, rows: b.clients ? b.clients.map(ofd1cClientRow) : b.entries.map(ofd1cEntryRow) };
-        }), { color: "var(--s1)", exportName: title + " — купившие 1С", columns: buyerDist.buckets[0] && buyerDist.buckets[0].entries ? OFD1C_PORTRAIT_TENURE_COLUMNS : OFD1C_PORTRAIT_COLUMNS }));
+        }), { color: "var(--s1)", exportName: title + " — купившие 1С", onRowClick: openCard, columns: buyerDist.buckets[0] && buyerDist.buckets[0].entries ? OFD1C_PORTRAIT_TENURE_COLUMNS : OFD1C_PORTRAIT_COLUMNS }));
         var controlCol = el('<div></div>');
         controlCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Контрольная группа</div>'));
         controlCol.appendChild(ofd1cBucketDrillBoard(controlDist.buckets.map(function (b) {
           return { label: b.label, count: b.count, rows: b.clients.map(ofd1cClientRow) };
-        }), { color: "var(--s2)", exportName: title + " — контроль", columns: OFD1C_PORTRAIT_COLUMNS }));
+        }), { color: "var(--s2)", exportName: title + " — контроль", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
         cols.appendChild(buyerCol);
         cols.appendChild(controlCol);
         section.appendChild(cols);
@@ -4518,7 +4554,7 @@
       }
       tenureSection.appendChild(ofd1cBucketDrillBoard(tenureDist.buckets.map(function (b) {
         return { label: b.label, count: b.count, rows: b.entries.map(ofd1cEntryRow) };
-      }), { color: "var(--s1)", exportName: "Срок до покупки 1С", columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
+      }), { color: "var(--s1)", exportName: "Срок до покупки 1С", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(tenureSection);
 
       // График 3 — конверсия в 1С по партнёру (топ-15, иначе список на несколько тысяч
@@ -4529,7 +4565,7 @@
       partnerSection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Конверсия в 1С по партнёру (топ-15 по доле)</b></div>'));
       partnerSection.appendChild(ofd1cBucketDrillBoard(partnerRows.map(function (r) {
         return { label: r.partner + " (" + fmtPct(r.rate) + " из " + fmtNum(r.total) + ")", count: r.buyers, rows: r.entries.map(ofd1cEntryRow) };
-      }), { color: "var(--brand)", exportName: "Конверсия по партнёру", columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
+      }), { color: "var(--brand)", exportName: "Конверсия по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(partnerSection);
 
       // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) сознательно отложена

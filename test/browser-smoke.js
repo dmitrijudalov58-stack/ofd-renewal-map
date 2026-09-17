@@ -939,13 +939,43 @@ async function main() {
       console.log("ofd1c: борд «Купившие vs контроль» показывает строки бакетов:", drillRows.length > 0 ? "OK" : "FAIL", drillRows.length);
       if (!drillRows.length) ok = false;
       if (drillRows.length) {
-        drillRows[0].dispatchEvent(new win.Event("click", { bubbles: true }));
+        // Ищем НЕПУСТОЙ бакет (drillRows[0] может оказаться бакетом с 0 клиентов на
+        // конкретном тестовом файле -- клик по нему не даст строк для карточки ниже).
+        const nonEmptyRow = Array.from(drillRows).find((dr) => {
+          const countText = dr.querySelector("span:last-child").textContent.replace(/\s/g, "");
+          return countText && countText !== "0";
+        }) || drillRows[0];
+        nonEmptyRow.dispatchEvent(new win.Event("click", { bubbles: true }));
         const hasTable = portraitNode.querySelector("table") != null;
         console.log("ofd1c: клик по строке бакета раскрывает таблицу:", hasTable ? "OK" : "FAIL");
         if (!hasTable) ok = false;
         const enabledDownloadBtns = Array.from(portraitNode.querySelectorAll(".refresh-chart-btn")).filter((b) => !b.disabled && b.textContent.indexOf("Скачать «") === 0);
         console.log("ofd1c: клик по строке бакета включает кнопку «Скачать»:", enabledDownloadBtns.length > 0 ? "OK" : "FAIL");
         if (!enabledDownloadBtns.length) ok = false;
+
+        // Фаза 3 (2026-09-17) -- клик по строке КЛИЕНТА внутри раскрытой drilldown-таблицы
+        // должна открыть universal-карточку (ofd1cRenderClientCard) с 3 новыми полями,
+        // значения сверены НЕЗАВИСИМЫМ пересчётом по этому же ИНН, не просто "не упало".
+        const clientRow = portraitNode.querySelector("table tbody tr");
+        if (clientRow) {
+          const inn = clientRow.children[0].textContent;
+          clientRow.dispatchEvent(new win.Event("click", { bubbles: true }));
+          const cardHtml = portraitNode.innerHTML;
+          const hasCardFields = /Касс на момент покупки 1С/.test(cardHtml) && /Продлений 1С/.test(cardHtml) && /Срок до покупки/.test(cardHtml);
+          console.log("ofd1c: клик по клиенту в drilldown-таблице раскрывает карточку с 3 новыми полями:", hasCardFields ? "OK" : "FAIL", inn);
+          if (!hasCardFields) ok = false;
+          if (hasCardFields) {
+            const entryForCard = win.OFDWidgets.ofd1cMatchClients(model).find((x) => x.inn === inn);
+            if (entryForCard) {
+              const clientForCard = model.clients.get(inn);
+              const expectedAtPurchase = win.OFDWidgets.ofd1cKassasAtPurchase(clientForCard, win.OFDWidgets.ofd1cMatchedEntries(model).find((x) => x.inn === inn).appearance);
+              const expectedRenewals = win.OFDWidgets.ofd1cRenewalCount(entryForCard.records);
+              const cardMatchesIndependentCalc = cardHtml.indexOf(">" + win.OFDWidgets.fmtNum(expectedAtPurchase) + "<") !== -1 && cardHtml.indexOf(">" + win.OFDWidgets.fmtNum(expectedRenewals) + "<") !== -1;
+              console.log("ofd1c: значения в карточке сходятся с независимым пересчётом (касс-на-покупке/продлений):", cardMatchesIndependentCalc ? "OK" : "FAIL", expectedAtPurchase, expectedRenewals);
+              if (!cardMatchesIndependentCalc) ok = false;
+            }
+          }
+        }
       }
       console.log("ofd1c: борд «Купившие vs контроль» упоминает контрольную группу и отрасль-плейсхолдер:", /контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
       if (!(/контрольн/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
