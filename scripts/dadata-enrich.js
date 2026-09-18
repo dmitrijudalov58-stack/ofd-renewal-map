@@ -27,7 +27,11 @@ const KEY_FILE = path.join(CONFIG_DIR, "key");
 const SOURCE_POINTER = path.join(CONFIG_DIR, "source-file.txt");
 const STATE_FILE = path.join(CONFIG_DIR, "daily-state.json");
 const LOG_FILE = path.join(CONFIG_DIR, "enrich.log");
-const CACHE_FILE = path.join(__dirname, "..", "dadata-cache.json");
+// На рабочем столе, НЕ в папке репозитория (Дима, 2026-09-18: "рокировка" -- чтобы не
+// искать по папкам, готовый файл для drag-and-drop в браузер каждый день сам обновляется
+// на месте). Раньше жил в репо + вручную копировался на стол -- копия расходилась
+// (см. HISTORY.md 2026-09-18). Один физический файл, не symlink.
+const CACHE_FILE = path.join(os.homedir(), "Desktop", "dadata-cache.json");
 // Полный сырой ответ DaData на каждый ИНН -- Дима, 2026-09-17: "меня интересует вся
 // возможная информация... не только я грил, все данные и строки". НЕ в dadata-cache.json
 // (тот грузит браузер как файл -- полный ответ на 185к клиентов ~900МБ, браузер такое не
