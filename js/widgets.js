@@ -4264,6 +4264,7 @@
     return m ? m[1] : null;
   }
   var OFD1C_INDUSTRY_MIN_SAMPLE = 20; // меньше -- TVD/вес отрасли ненадёжны, признак целиком исключается
+  var OFD1C_OPF_MIN_SAMPLE = 20; // тот же гейт, для ОПФ (юр.форма) -- признак добавлен 2026-09-18
 
   // Распределение по разделам ОКВЭД -- ДИНАМИЧЕСКИЕ бакеты (не фиксированный список, как
   // OFD1C_KASSA_BUCKETS -- разделов ОКВЭД много, заранее неизвестно, какие встретятся).
@@ -4282,10 +4283,27 @@
     return { buckets: buckets, total: clients.length };
   }
 
+  // Перенормировка весов на подмножество ключей (сумма присутствующих = 1). Используется и
+  // для авто-весов конкретного кандидата (нет данных по признаку -- перенормировать
+  // остальные), и для ручных весов панели развесовки (гейт по выборке может выключить
+  // признак уже ПОСЛЕ того, как ручные веса сохранены без учёта этого).
+  function ofd1cNormalizeWeights(weights, keys) {
+    var sum = 0;
+    keys.forEach(function (k) { sum += weights[k] || 0; });
+    var out = {};
+    if (sum > 0) { keys.forEach(function (k) { out[k] = (weights[k] || 0) / sum; }); }
+    else { var eq = 1 / keys.length; keys.forEach(function (k) { out[k] = eq; }); }
+    return out;
+  }
+
   // model/ctx -- для tenureNow (ctx.asOf) и client.appearance/kassas/partner/tariff.
   // buyerInns -- исключаются из кандидатов (уже купили, скорить нечего). allowedPartners --
   // Set имён партнёров (null = все партнёры разрешены, пустой Set = ни одного -- см. пикер).
-  function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners) {
+  // manualWeights -- ручные веса панели развесовки (Дима, 2026-09-18): {kassa,partner,
+  // tenure,industry?,opf?} в долях (сумма провалидирована на UI = 1), null/undefined -- авто
+  // (TVD). Возвращает {list, autoWeights, enabledFeatures} -- autoWeights нужен панели
+  // развесовки для подсветки отклонения ручного значения от TVD-обоснованного.
+  function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners, manualWeights) {
     var buyerSet = new Set(buyerInns);
     var entries = ofd1cMatchedEntries(model);
     var buyerClients = entries.map(function (e) { return e.client; });
@@ -4314,10 +4332,18 @@
     var tvdPartner = ofd1cTVDFromShares(partnerBuyerShare, partnerBaseShare);
     var maxRate = partnerRows.reduce(function (m, r) { return Math.max(m, r.rate); }, 0);
 
+    function countsToShare(arr) {
+      var counts = new Map();
+      arr.forEach(function (v) { counts.set(v, (counts.get(v) || 0) + 1); });
+      var share = new Map();
+      counts.forEach(function (n, k) { share.set(k, n / arr.length); });
+      return { share: share, counts: counts };
+    }
+
     // Отрасль -- ТОЛЬКО если обогащения достаточно с обеих сторон (иначе TVD посчитан бы
     // по горстке случайных ИНН и был бы шумом, не сигналом). OFD1C_DADATA_STATE может
     // вообще не быть загружен -- тогда buyersWithIndustry/baseWithIndustry = 0, отрасль
-    // целиком выключается, остальные веса просто перенормируются (шаг 2).
+    // целиком выключается, остальные веса просто перенормируются.
     var buyersWithIndustry = [], baseWithIndustry = [];
     buyerClients.forEach(function (c) {
       var info = ofd1cDadataInfo(c.key);
@@ -4330,31 +4356,59 @@
     var industryEnabled = buyersWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE && baseWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE;
     var tvdIndustry = 0, industryModal = null;
     if (industryEnabled) {
-      function countsToShare(arr) {
-        var counts = new Map();
-        arr.forEach(function (v) { counts.set(v, (counts.get(v) || 0) + 1); });
-        var share = new Map();
-        counts.forEach(function (n, k) { share.set(k, n / arr.length); });
-        return { share: share, counts: counts };
-      }
       var buyerInd = countsToShare(buyersWithIndustry), baseInd = countsToShare(baseWithIndustry);
       tvdIndustry = ofd1cTVDFromShares(buyerInd.share, baseInd.share);
-      var bestCount = -1;
-      buyerInd.counts.forEach(function (n, k) { if (n > bestCount) { bestCount = n; industryModal = k; } });
+      var bestIndCount = -1;
+      buyerInd.counts.forEach(function (n, k) { if (n > bestIndCount) { bestIndCount = n; industryModal = k; } });
     }
 
-    var tvdSum = tvdKassa + tvdPartner + tvdTenure + tvdIndustry;
-    var baseWeights = tvdSum > 0
-      ? { kassa: tvdKassa / tvdSum, partner: tvdPartner / tvdSum, tenure: tvdTenure / tvdSum, industry: tvdIndustry / tvdSum }
-      : { kassa: industryEnabled ? 0.25 : 1 / 3, partner: industryEnabled ? 0.25 : 1 / 3, tenure: industryEnabled ? 0.25 : 1 / 3, industry: industryEnabled ? 0.25 : 0 }; // вырожденный случай (все TVD=0) -- равные веса, не деление на 0
-    // Без отрасли для КОНКРЕТНОГО кандидата (нет данных обогащения) -- перенормируем 3
-    // оставшихся веса на сумму 1, не теряем "вес отрасли в никуда".
-    var sumWithoutIndustry = baseWeights.kassa + baseWeights.partner + baseWeights.tenure;
-    var weightsWithoutIndustry = sumWithoutIndustry > 0
-      ? { kassa: baseWeights.kassa / sumWithoutIndustry, partner: baseWeights.partner / sumWithoutIndustry, tenure: baseWeights.tenure / sumWithoutIndustry }
-      : { kassa: 1 / 3, partner: 1 / 3, tenure: 1 / 3 };
+    // ОПФ (юр.форма) -- 5-й признак (Дима, 2026-09-18: TVD=0.30 на реальных данных 2025 года,
+    // сильнее уже используемых "касс" 0.23 -- см. tmp/plans/2026-09-18). Тот же гейт по
+    // минимальной выборке и та же механика, что у отрасли -- намеренно не общий код (разные
+    // источники модальности), проще две параллельные копии, чем общий интерфейс.
+    var buyersWithOpf = [], baseWithOpf = [];
+    buyerClients.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      if (info && info.opf) buyersWithOpf.push(info.opf);
+    });
+    wholeBase.forEach(function (c) {
+      var info = ofd1cDadataInfo(c.key);
+      if (info && info.opf) baseWithOpf.push(info.opf);
+    });
+    var opfEnabled = buyersWithOpf.length >= OFD1C_OPF_MIN_SAMPLE && baseWithOpf.length >= OFD1C_OPF_MIN_SAMPLE;
+    var tvdOpf = 0, opfModal = null;
+    if (opfEnabled) {
+      var buyerOpf = countsToShare(buyersWithOpf), baseOpf = countsToShare(baseWithOpf);
+      tvdOpf = ofd1cTVDFromShares(buyerOpf.share, baseOpf.share);
+      var bestOpfCount = -1;
+      buyerOpf.counts.forEach(function (n, k) { if (n > bestOpfCount) { bestOpfCount = n; opfModal = k; } });
+    }
 
-    // ---- шаг 2: потенциальная выручка -- НЕ часть score, отдельная колонка. Медиана
+    // ---- веса -- по ВСЕМ включённым признакам. kassa/partner/tenure включены всегда,
+    // industry/opf -- только если гейт по выборке (>=20 с каждой стороны) пройден.
+    var featureTvd = { kassa: tvdKassa, partner: tvdPartner, tenure: tvdTenure, industry: tvdIndustry, opf: tvdOpf };
+    var enabledFeatures = ["kassa", "partner", "tenure"].concat(industryEnabled ? ["industry"] : []).concat(opfEnabled ? ["opf"] : []);
+    var tvdSum = enabledFeatures.reduce(function (s, k) { return s + featureTvd[k]; }, 0);
+    var autoWeights = { kassa: 0, partner: 0, tenure: 0, industry: 0, opf: 0 };
+    if (tvdSum > 0) {
+      enabledFeatures.forEach(function (k) { autoWeights[k] = featureTvd[k] / tvdSum; });
+    } else {
+      var eqShare = 1 / enabledFeatures.length; // вырожденный случай (все TVD=0) -- равные веса, не деление на 0
+      enabledFeatures.forEach(function (k) { autoWeights[k] = eqShare; });
+    }
+    // Ручной режим (панель развесовки, Дима, 2026-09-18) -- веса берутся из manualWeights
+    // (уже провалидированы на UI: сумма=1, каждый >=0), но ТОЛЬКО для признаков, реально
+    // включённых сейчас -- гейт по выборке не обходится ручным вводом, иначе можно накрутить
+    // вес статистически ненадёжному признаку. Перенормировка на случай, если manualWeights
+    // не содержит какой-то из enabledFeatures (сохранили веса ДО того, как признак включился).
+    var activeWeights = autoWeights;
+    if (manualWeights) {
+      var manualSubset = {};
+      enabledFeatures.forEach(function (k) { manualSubset[k] = manualWeights[k] || 0; });
+      activeWeights = ofd1cNormalizeWeights(manualSubset, enabledFeatures);
+    }
+
+    // ---- потенциальная выручка -- НЕ часть score, отдельная колонка. Медиана
     // реальной выручки на кассу среди уже купивших (из m.records.totalSum -- настоящие
     // суммы из файла сверки 1С, не гадаем), делённая на касс-на-момент-покупки (не
     // касс-сейчас -- прокси размера бизнеса В МОМЕНТ решения о покупке). ----
@@ -4397,6 +4451,13 @@
       var partner = c.partner || "—";
       if (allowedPartners && !allowedPartners.has(partner)) return;
       if (riskyInns.has(inn)) return;
+      // Без реального совпадения DaData кандидата не рассматриваем ВООБЩЕ (Дима,
+      // 2026-09-18: "без полного сопоставления просто не рассматриваем, чтобы не создавать
+      // шум") -- ни "ещё не обогащён" (нет записи в кэше), ни "DaData не нашла" (notFound).
+      // Раньше отсутствие данных просто перераспределяло вес между остальными признаками --
+      // теперь кандидат целиком выпадает из списка.
+      var dadataInfo = ofd1cDadataInfo(inn);
+      if (!dadataInfo || dadataInfo.notFound) return;
 
       var kassaLabel = ofd1cKassaBucketLabel(c.kassas.length);
       var kassaFit = ofd1cBucketFit(OFD1C_KASSA_BUCKETS, kassaLabel, kassaModal);
@@ -4406,13 +4467,22 @@
       var tenureLabel = tenureNowMonths == null ? null : ofd1cTenureBucketLabel(tenureNowMonths);
       var tenureFit = ofd1cBucketFit(OFD1C_TENURE_BUCKETS, tenureLabel, tenureModal);
 
-      var dadataInfo = ofd1cDadataInfo(inn);
-      var industryLabel = industryEnabled && dadataInfo && dadataInfo.okved ? ofd1cIndustryBucketLabel(dadataInfo.okved) : null;
+      var industryLabel = industryEnabled && dadataInfo.okved ? ofd1cIndustryBucketLabel(dadataInfo.okved) : null;
       var industryFit = industryLabel != null ? (industryLabel === industryModal ? 1 : 0) : null;
-      var w = industryFit != null ? baseWeights : weightsWithoutIndustry;
+      var opfLabel = opfEnabled && dadataInfo.opf ? dadataInfo.opf : null;
+      var opfFit = opfLabel != null ? (opfLabel === opfModal ? 1 : 0) : null;
+
+      // Веса для ЭТОГО конкретного кандидата -- перенормируем на признаки, у которых
+      // реально есть значение (industryFit/opfFit могут быть null для отдельного кандидата,
+      // даже если признак глобально включён -- редкий случай "DaData нашла компанию, но без
+      // ОКВЭД/ОПФ в ответе"). kassa/partner/tenure есть всегда, не бывают null.
+      var presentKeys = ["kassa", "partner", "tenure"].concat(industryFit != null ? ["industry"] : []).concat(opfFit != null ? ["opf"] : []);
+      var w = ofd1cNormalizeWeights(activeWeights, presentKeys);
 
       var score = Math.round(100 * (
-        w.kassa * kassaFit + w.partner * partnerFit + w.tenure * tenureFit + (industryFit != null ? w.industry * industryFit : 0)
+        w.kassa * kassaFit + w.partner * partnerFit + w.tenure * tenureFit
+        + (industryFit != null ? w.industry * industryFit : 0)
+        + (opfFit != null ? w.opf * opfFit : 0)
       ));
 
       var reasons = [];
@@ -4420,9 +4490,10 @@
       if (partnerFit > 0) reasons.push("партнёр «" + partner + "» с конверсией " + fmtPct(rate));
       if (tenureFit > 0) reasons.push("срок в ОФД " + tenureNowMonths.toFixed(1) + " мес (окно " + tenureLabel + (tenureFit === 1 ? ", то же, где чаще покупают" : ", рядом") + ")");
       if (industryFit === 1) reasons.push("отрасль ОКВЭД " + industryLabel + ", как у большинства купивших");
+      if (opfFit === 1) reasons.push("организационно-правовая форма «" + opfLabel + "», как у большинства купивших");
 
       var affiliated = null;
-      if (dadataInfo && dadataInfo.director && buyerDirectorMap.has(dadataInfo.director)) {
+      if (dadataInfo.director && buyerDirectorMap.has(dadataInfo.director)) {
         var withThisDirector = buyerDirectorMap.get(dadataInfo.director);
         if (!(withThisDirector.size === 1 && withThisDirector.has(inn))) {
           affiliated = Array.from(withThisDirector).join(", ");
@@ -4442,7 +4513,7 @@
       });
     });
     out.sort(function (a, b) { return b.score - a.score; });
-    return out;
+    return { list: out, autoWeights: autoWeights, enabledFeatures: enabledFeatures };
   }
 
   function ofd1cLapsedAt(entry, atDate) {
@@ -4989,11 +5060,40 @@
       }), { color: "var(--brand)", exportName: "Купившие 1С по партнёру", onRowClick: openCard, columns: OFD1C_PORTRAIT_TENURE_COLUMNS }));
       wrap.appendChild(partnerSection);
 
-      // График 4 — отрасль (ОКВЭД). Фаза 1 (обогащение DaData) шла отдельным треком
-      // (обогащение идёт партиями по 9500 ИНН/день) -- график живёт на данных, которые
-      // УЖЕ загружены борду "Обогащение DaData — загрузка" (b8-1c-dadata-upload), не на
-      // всей базе (та обогащена лишь частично на любой момент времени).
-      var industrySection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px"></div>');
+      return wrap;
+    },
+  };
+
+  // ---------- Борд "Отрасль (ОКВЭД)" -- вынесен из b8-1c-portrait-compare отдельным
+  // бордом (Дима, 2026-09-18: борд "купившие vs контроль" стал перенасыщенным, 4 графика
+  // на одном холсте неудобны). Логика 1:1 та же, что была графиком 4 борда A -- своя копия
+  // entries/buyerClients/wholeBase/openCard (тот же паттерн setup, что у самого борда A),
+  // не общий импорт state -- виджеты рендерятся независимо друг от друга.
+  WIDGETS["b8-1c-industry"] = {
+    title: "Обмен с 1С — отрасль (ОКВЭД)", type: "график", scope: "as-of", span: true,
+    render: function (model, ctx) {
+      var wrap = el('<div></div>');
+      if (!OFD1C_STATE.records) {
+        wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится распределение купивших 1С по отраслям.</div>'));
+        return wrap;
+      }
+      var entries = ofd1cMatchedEntries(model);
+      if (!entries.length) {
+        wrap.appendChild(el('<div class="placeholder-body">Ни один клиент из файла обмена 1С не сопоставился с базой ОФД по ИНН — сравнивать не с чем.</div>'));
+        return wrap;
+      }
+      function openCard(inn, cardHolder) {
+        if (!cardHolder) return;
+        var client = model.clients.get(inn);
+        if (!client) return;
+        var matched = ofd1cMatchClients(model).find(function (x) { return x.inn === inn; });
+        var m = matched || { inn: inn, client: client, records: [] };
+        ofd1cRenderClientCard(cardHolder, m, ctx);
+      }
+      var buyerClients = entries.map(function (e) { return e.client; });
+      var wholeBase = ofd1cActiveOfdClients(model, ctx);
+
+      var industrySection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px"></div>');
       industrySection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Отрасль (ОКВЭД, раздел)</b></div>'));
       if (!OFD1C_DADATA_STATE.records) {
         industrySection.appendChild(el('<div class="placeholder-body">Загрузи <code>dadata-cache.json</code> в борде «Обогащение DaData — загрузка» — здесь появится распределение по отраслям.</div>'));
@@ -5025,7 +5125,6 @@
         }
       }
       wrap.appendChild(industrySection);
-
       return wrap;
     },
   };
@@ -5065,6 +5164,45 @@
   ];
   var OFD1C_SCORING_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" }];
 
+  // Панель развесовки скоринга (Дима, 2026-09-18): переключатель Авто/Ручной ("Авто" =
+  // сброс к TVD-расчёту), список весов с кратким пояснением + цветная рамка по отклонению
+  // от TVD-обоснованного значения (стиль — те же токены, что status-pill/score-пилюля).
+  // Персистентность -- localStorage, тот же приём, что уже хранит выбор партнёров на этом
+  // борде (переживает reload/новую загрузку файла).
+  var OFD1C_WEIGHT_MODE_KEY = "ofd1c-scoring-weight-mode-v1"; // "auto" | "manual"
+  var OFD1C_MANUAL_WEIGHTS_KEY = "ofd1c-scoring-manual-weights-v1"; // {kassa,partner,tenure,industry,opf} в процентах 0-100
+  var OFD1C_WEIGHT_DEVIATION_WARN = 5; // п.п. -- порог жёлтого (Дима, 2026-09-18)
+  var OFD1C_WEIGHT_DEVIATION_CRIT = 15; // п.п. -- порог красного
+  var OFD1C_WEIGHT_LABELS = {
+    kassa: "Число касс", partner: "Партнёр", tenure: "Срок в ОФД",
+    industry: "Отрасль (ОКВЭД)", opf: "Организационно-правовая форма",
+  };
+  var OFD1C_WEIGHT_DESCRIPTIONS = {
+    kassa: "похожесть числа касс на типичное у уже купивших 1С",
+    partner: "конверсия партнёра — доля его клиентов, купивших 1С",
+    tenure: "срок в ОФД до сейчас попадает в типичное окно покупки у купивших",
+    industry: "отрасль (ОКВЭД, раздел) совпадает с типичной у купивших",
+    opf: "юр.форма (ООО/ИП/...) совпадает с типичной у купивших",
+  };
+  function ofd1cLoadWeightMode() {
+    try { return localStorage.getItem(OFD1C_WEIGHT_MODE_KEY) === "manual" ? "manual" : "auto"; } catch (e) { return "auto"; }
+  }
+  function ofd1cSaveWeightMode(mode) {
+    try { localStorage.setItem(OFD1C_WEIGHT_MODE_KEY, mode); } catch (e) { /* приватный режим и т.п. -- не критично */ }
+  }
+  function ofd1cLoadManualWeights() {
+    try { var v = JSON.parse(localStorage.getItem(OFD1C_MANUAL_WEIGHTS_KEY) || "null"); return v && typeof v === "object" ? v : null; } catch (e) { return null; }
+  }
+  function ofd1cSaveManualWeights(weightsPct) {
+    try { localStorage.setItem(OFD1C_MANUAL_WEIGHTS_KEY, JSON.stringify(weightsPct)); } catch (e) { /* не критично */ }
+  }
+  function ofd1cWeightDeviationClass(manualPct, autoPct) {
+    var diff = Math.abs(manualPct - autoPct);
+    if (diff <= OFD1C_WEIGHT_DEVIATION_WARN) return "good";
+    if (diff <= OFD1C_WEIGHT_DEVIATION_CRIT) return "warn";
+    return "crit";
+  }
+
   WIDGETS["b8-1c-scoring"] = {
     title: "Обмен с 1С — скоринг для продавцов", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
@@ -5082,6 +5220,15 @@
       var allPartners = Array.from(new Set(Array.from(model.clients.values()).map(function (c) { return c.partner || "—"; }))).sort();
       var allowed = ofd1cLoadAllowedPartners();
 
+      // Индикатор прогресса обогащения (Дима, 2026-09-18) -- кандидаты теперь ТОЛЬКО из
+      // обогащённой DaData части базы (фильтр в ofd1cScoringCandidates), список растёт по
+      // мере обогащения -- явно не финальный список.
+      var enrichedCount = OFD1C_DADATA_STATE.records ? OFD1C_DADATA_STATE.records.size : 0;
+      var totalClientsCount = model.clients.size;
+      wrap.appendChild(el(
+        '<div class="stat-label" style="margin-bottom:10px;color:var(--muted)">Обогащено DaData: ' + fmtNum(enrichedCount) + ' из ' + fmtNum(totalClientsCount) + ' (' + fmtPct(totalClientsCount ? enrichedCount / totalClientsCount : 0) + ') — список кандидатов пополняется ежедневно, без полного совпадения DaData клиент в список не попадает.</div>'
+      ));
+
       var pickerBox = el('<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px"></div>');
       pickerBox.appendChild(el('<div class="stat-label" style="margin-bottom:6px"><b>Партнёры, чьих клиентов можно передавать на прозвон</b> — по умолчанию не выбран ни один, список кандидатов ниже пуст, пока не отметишь партнёров.</div>'));
       var searchInput = el('<input type="text" placeholder="поиск партнёра" style="width:220px;padding:5px 8px;border:1px solid var(--line);border-radius:7px;margin-bottom:8px">');
@@ -5091,6 +5238,23 @@
       var partnerListHolder = el('<div style="max-height:180px;overflow-y:auto;border-top:1px solid var(--line);padding-top:6px"></div>');
       pickerBox.appendChild(partnerListHolder);
       wrap.appendChild(pickerBox);
+
+      // ---- Панель развесовки ----
+      var weightBox = el('<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px"></div>');
+      weightBox.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Развесовка признаков скоринга</b></div>'));
+      var modeRow = el('<div style="margin-bottom:10px;display:flex;gap:8px"></div>');
+      var autoBtn = el('<button class="refresh-chart-btn" id="ofd1cWeightModeAuto">Авто</button>');
+      var manualBtn = el('<button class="refresh-chart-btn" id="ofd1cWeightModeManual">Ручной</button>');
+      modeRow.appendChild(autoBtn);
+      modeRow.appendChild(manualBtn);
+      weightBox.appendChild(modeRow);
+      var weightRowsHolder = el('<div></div>');
+      weightBox.appendChild(weightRowsHolder);
+      var weightSumRow = el('<div class="stat-label" style="margin-top:8px"></div>');
+      weightBox.appendChild(weightSumRow);
+      var applyWeightsBtn = el('<button class="refresh-chart-btn" style="margin-top:8px">Применить</button>');
+      weightBox.appendChild(applyWeightsBtn);
+      wrap.appendChild(weightBox);
 
       // Score от-до -- доп. фильтр поверх обычных текстовых (Дима, 2026-09-17). Отдельно
       // от .drill-f/renderDrillTable (тот умеет только текстовый substring-фильтр) --
@@ -5105,9 +5269,26 @@
       var candidatesHolder = el('<div></div>');
       wrap.appendChild(candidatesHolder);
 
+      var lastAutoWeights = { kassa: 0, partner: 0, tenure: 0, industry: 0, opf: 0 };
+      var lastEnabledFeatures = ["kassa", "partner", "tenure"];
+
+      // Панель хранит проценты (0-100, то, что видит Дима); ofd1cScoringCandidates ждёт
+      // доли (сумма=1) -- конвертация только в этой точке.
+      function currentManualWeightsFraction() {
+        var saved = ofd1cLoadManualWeights();
+        if (!saved) return null;
+        var out = {};
+        Object.keys(saved).forEach(function (k) { out[k] = (saved[k] || 0) / 100; });
+        return out;
+      }
+
       function renderCandidates() {
         candidatesHolder.innerHTML = "";
-        var all = ofd1cScoringCandidates(model, buyerInns, ctx, allowed);
+        var manualActive = ofd1cLoadWeightMode() === "manual" ? currentManualWeightsFraction() : null;
+        var result = ofd1cScoringCandidates(model, buyerInns, ctx, allowed, manualActive);
+        lastAutoWeights = result.autoWeights;
+        lastEnabledFeatures = result.enabledFeatures;
+        var all = result.list;
         var from = scoreFromInput.value === "" ? null : parseFloat(scoreFromInput.value);
         var to = scoreToInput.value === "" ? null : parseFloat(scoreToInput.value);
         var candidates = all.filter(function (c) {
@@ -5133,6 +5314,80 @@
         });
         candidatesHolder.appendChild(downloadBtn);
       }
+
+      // В "Авто" поля readonly, значения = текущие TVD-веса (%, округлено). В "Ручной" --
+      // редактируемые, изначально = сохранённые ручные значения, а при первом заходе (нет
+      // сохранённых) = текущие авто-веса, чтобы стартовать от осмысленной точки.
+      function renderWeightRows() {
+        var mode = ofd1cLoadWeightMode();
+        autoBtn.style.cssText = mode === "auto" ? "font-weight:700;border-color:var(--brand)" : "";
+        manualBtn.style.cssText = mode === "manual" ? "font-weight:700;border-color:var(--brand)" : "";
+        weightRowsHolder.innerHTML = "";
+        var autoPct = {};
+        lastEnabledFeatures.forEach(function (k) { autoPct[k] = Math.round((lastAutoWeights[k] || 0) * 100); });
+        var manualSaved = ofd1cLoadManualWeights();
+        var inputs = {};
+        lastEnabledFeatures.forEach(function (k) {
+          var startVal = mode === "manual" && manualSaved && manualSaved[k] != null ? manualSaved[k] : autoPct[k];
+          var row = el(
+            '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;font-size:12.5px">' +
+            '<div style="flex:1"><b>' + esc(OFD1C_WEIGHT_LABELS[k]) + '</b><div style="color:var(--muted)">' + esc(OFD1C_WEIGHT_DESCRIPTIONS[k]) + '</div></div>' +
+            '<input type="number" min="0" max="100" step="1" style="width:70px;padding:5px 6px;border-radius:8px;font-weight:700;text-align:center" value="' + startVal + '"' + (mode === "auto" ? " disabled" : "") + '>' +
+            '<span>%</span></div>'
+          );
+          var input = row.querySelector("input");
+          inputs[k] = input;
+          function paintDeviation() {
+            if (mode !== "manual") { input.style.border = "1px solid var(--line)"; input.style.background = ""; return; }
+            var v = parseFloat(input.value) || 0;
+            var cls = ofd1cWeightDeviationClass(v, autoPct[k]);
+            var color = cls === "good" ? "var(--good)" : cls === "warn" ? "var(--warn)" : "var(--crit)";
+            input.style.border = "2px solid " + color;
+            input.style.background = "color-mix(in oklab, " + color + " 14%, transparent)";
+          }
+          paintDeviation();
+          input.addEventListener("input", function () { paintDeviation(); updateSumRow(); });
+          weightRowsHolder.appendChild(row);
+        });
+        weightRowsHolder._inputs = inputs;
+        updateSumRow();
+      }
+
+      function updateSumRow() {
+        var mode = ofd1cLoadWeightMode();
+        if (mode !== "manual") {
+          weightSumRow.innerHTML = "";
+          applyWeightsBtn.style.display = "none";
+          return;
+        }
+        applyWeightsBtn.style.display = "";
+        var inputs = weightRowsHolder._inputs || {};
+        var sum = 0;
+        lastEnabledFeatures.forEach(function (k) { sum += parseFloat(inputs[k] && inputs[k].value) || 0; });
+        var valid = Math.round(sum) === 100;
+        weightSumRow.innerHTML = "";
+        weightSumRow.appendChild(el('<span style="font-weight:700;color:' + (valid ? "var(--good)" : "var(--crit)") + '">Сумма: ' + sum.toFixed(0) + '%' + (valid ? "" : " — должно быть 100%") + '</span>'));
+        applyWeightsBtn.disabled = !valid;
+      }
+
+      autoBtn.addEventListener("click", function () {
+        ofd1cSaveWeightMode("auto"); // "Авто" = сброс ручных изменений к TVD-расчёту (Дима, 2026-09-18)
+        renderWeightRows();
+        renderCandidates();
+      });
+      manualBtn.addEventListener("click", function () {
+        ofd1cSaveWeightMode("manual");
+        renderWeightRows();
+        renderCandidates();
+      });
+      applyWeightsBtn.addEventListener("click", function () {
+        var inputs = weightRowsHolder._inputs || {};
+        var weightsPct = {};
+        lastEnabledFeatures.forEach(function (k) { weightsPct[k] = parseFloat(inputs[k] && inputs[k].value) || 0; });
+        ofd1cSaveManualWeights(weightsPct);
+        renderCandidates();
+        renderWeightRows();
+      });
 
       function renderPartnerList() {
         var term = searchInput.value.trim().toLowerCase();
@@ -5168,7 +5423,8 @@
       scoreToInput.addEventListener("input", renderCandidates);
 
       renderPartnerList();
-      renderCandidates();
+      renderCandidates(); // сначала -- заполняет lastAutoWeights/lastEnabledFeatures для панели весов
+      renderWeightRows();
       return wrap;
     },
   };
