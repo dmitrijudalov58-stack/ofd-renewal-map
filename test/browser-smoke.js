@@ -1041,18 +1041,100 @@ async function main() {
       }
       // 2026-09-17 (правка после ревью Димы): контроль-группа (случайная выборка) в UI
       // борда A заменена на "вся действующая база ОФД" -- см. ofd1cActiveOfdClients.
-      console.log("ofd1c: борд «Купившие vs контроль» упоминает всю действующую базу ОФД и отрасль-плейсхолдер:", /действующая база ОФД/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
-      if (!(/действующая база ОФД/.test(portraitNode.innerHTML) && /ОКВЭД/.test(portraitNode.innerHTML))) ok = false;
+      // 2026-09-18: график "Отрасль" вынесен ИЗ борда A отдельным бордом (b8-1c-industry,
+      // проверка ниже) -- борд A больше НЕ должен упоминать ОКВЭД.
+      console.log("ofd1c: борд «Купившие vs контроль» упоминает всю действующую базу ОФД:", /действующая база ОФД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
+      if (!/действующая база ОФД/.test(portraitNode.innerHTML)) ok = false;
+      console.log("ofd1c: борд «Купившие vs контроль» БОЛЬШЕ НЕ содержит блок «Отрасль» (вынесен отдельным бордом):", !/Отрасль \(ОКВЭД/.test(portraitNode.innerHTML) ? "OK" : "FAIL");
+      if (/Отрасль \(ОКВЭД/.test(portraitNode.innerHTML)) ok = false;
     }
 
-    // Борд C "Скоринг для продавцов" (2026-09-17, фаза 4). Инварианты на данных (через API,
-    // не UI): score в [0,100], список отсортирован по убыванию score, ни один купивший НЕ
-    // попадает в кандидаты (уже купили -- скорить нечего). allowedPartners=null -- "все
-    // партнёры разрешены" (используется тут только для инвариант-проверки данных, UI по
-    // умолчанию opt-in с пустым списком -- см. отдельную UI-проверку ниже).
+    // Борд «Отрасль (ОКВЭД)» -- вынесен из борда A отдельным бордом (Дима, 2026-09-18).
+    const industryNode = win.document.querySelector('[data-widget-id="b8-1c-industry"]');
+    console.log("ofd1c: борд «Отрасль (ОКВЭД)» на холсте:", industryNode ? "OK" : "FAIL");
+    if (!industryNode) ok = false;
+    if (industryNode) {
+      console.log("ofd1c: борд «Отрасль (ОКВЭД)» содержит заголовок отрасли:", /Отрасль \(ОКВЭД/.test(industryNode.innerHTML) ? "OK" : "FAIL");
+      if (!/Отрасль \(ОКВЭД/.test(industryNode.innerHTML)) ok = false;
+    }
+
+    // Борд C "Скоринг для продавцов" (2026-09-17, фаза 4; развесовка + ОПФ + фильтр по
+    // DaData -- 2026-09-18). Инварианты на данных (через API, не UI): score в [0,100],
+    // список отсортирован по убыванию score, ни один купивший НЕ попадает в кандидаты (уже
+    // купили -- скорить нечего). allowedPartners=null -- "все партнёры разрешены"
+    // (используется тут только для инвариант-проверки данных, UI по умолчанию opt-in с
+    // пустым списком -- см. отдельную UI-проверку ниже).
+    //
+    // ВАЖНО (2026-09-18): кандидат теперь ТОЛЬКО с реальным совпадением DaData (см.
+    // ofd1cScoringCandidates) -- без обогащения список кандидатов пуст, а эти инварианты
+    // стали бы бессмысленно "зелёными" на пустом массиве (.some на [] всегда false). Тест
+    // НЕ должен зависеть от реального растущего dadata-cache.json на машине (не
+    // детерминировано, фоновый cron пишет туда каждый день) -- строим свою синтетическую
+    // DaData-карту на ВСЮ модель, с вариативными ОКВЭД/ОПФ, чтобы гейты по выборке (>=20)
+    // тоже проходили и признаки реально участвовали в проверках.
     win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1");
+    win.localStorage.removeItem("ofd1c-scoring-weight-mode-v1");
+    win.localStorage.removeItem("ofd1c-scoring-manual-weights-v1");
     const scoringCtx = { asOf: win.OFDState.asOf, M: win.OFDMetrics };
-    const scoringAll = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+    const SYNTH_OKVEDS = ["47.25", "56.10", "62.01", "86.10", "45.20", "68.20"];
+    const SYNTH_OPFS = ["ООО", "ИП", "АО"];
+    // Синтетика -- на ВСЮ активную базу (не model.clients целиком -- та включает историю/
+    // отток, 185к+ на реальном файле, не нужна). Изначально пробовали ограничить подмножеством
+    // в 3000 (опасаясь jsdom-хипа), но OOM оказался НЕ от размера этой карты (тот же обвал
+    // по таймингу что и без неё, см. HISTORY.md 2026-09-18) -- реальная причина в размере
+    // самого файла (785к строк) + 43 виджета. С --max-old-space-size на прогон, вся активная
+    // база — на подмножестве список кандидатов у конкретного партнёра в UI-тесте ниже мог
+    // оказаться пуст просто по невезению (клиенты партнёра не попали в узкую выборку) --
+    // поймано первым прогоном ("после выбора партнёра список кандидатов пересчитался: FAIL").
+    const fullSyntheticDadata = new Map();
+    let synthIdx = 0;
+    function addSynthetic(inn, org) {
+      if (fullSyntheticDadata.has(inn)) return;
+      fullSyntheticDadata.set(inn, {
+        org: org || inn, okved: SYNTH_OKVEDS[synthIdx % SYNTH_OKVEDS.length],
+        region: null, status: "ACTIVE", director: null,
+        opf: SYNTH_OPFS[synthIdx % SYNTH_OPFS.length],
+        enrichedAt: new Date().toISOString(),
+      });
+      synthIdx++;
+    }
+    buyerInns.forEach((inn) => { const c = model.clients.get(inn); if (c) addSynthetic(inn, c.org); });
+    win.OFDWidgets.ofd1cActiveOfdClients(model, scoringCtx).forEach((c) => addSynthetic(c.key, c.org));
+    win.OFDWidgets.ofd1cDadataSetState({ records: fullSyntheticDadata, fileName: "synthetic-full-test.json" });
+
+    const scoringResult = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+    const scoringAll = scoringResult.list;
+    console.log("ofd1c: скоринг -- при полном синтетическом обогащении список кандидатов непуст:", scoringAll.length > 0 ? "OK" : "FAIL", scoringAll.length);
+    if (!scoringAll.length) ok = false;
+    console.log("ofd1c: скоринг -- autoWeights включает industry и opf (гейт по выборке пройден на полном синтетическом обогащении):", scoringResult.enabledFeatures.indexOf("industry") !== -1 && scoringResult.enabledFeatures.indexOf("opf") !== -1 ? "OK" : "FAIL", scoringResult.enabledFeatures);
+    if (!(scoringResult.enabledFeatures.indexOf("industry") !== -1 && scoringResult.enabledFeatures.indexOf("opf") !== -1)) ok = false;
+    const autoWeightSum = scoringResult.enabledFeatures.reduce((s, k) => s + (scoringResult.autoWeights[k] || 0), 0);
+    console.log("ofd1c: скоринг -- сумма autoWeights по включённым признакам = 1:", Math.abs(autoWeightSum - 1) < 1e-9 ? "OK" : "FAIL", autoWeightSum);
+    if (Math.abs(autoWeightSum - 1) >= 1e-9) ok = false;
+
+    // Новое правило (Дима, 2026-09-18): без реального совпадения DaData кандидат вообще не
+    // рассматривается -- ни "ещё не обогащён" (нет записи), ни "DaData не нашла" (notFound).
+    if (scoringAll.length) {
+      const probeInn = scoringAll[0].key;
+      const withoutOneMap = new Map(fullSyntheticDadata);
+      withoutOneMap.delete(probeInn);
+      win.OFDWidgets.ofd1cDadataSetState({ records: withoutOneMap, fileName: "synthetic-missing-one.json" });
+      const withoutOneResult = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+      const stillPresent = withoutOneResult.list.some((r) => r.key === probeInn);
+      console.log("ofd1c: скоринг -- кандидат БЕЗ записи DaData исключён из списка:", !stillPresent ? "OK" : "FAIL", probeInn);
+      if (stillPresent) ok = false;
+
+      const notFoundMap = new Map(fullSyntheticDadata);
+      notFoundMap.set(probeInn, { notFound: true, enrichedAt: new Date().toISOString() });
+      win.OFDWidgets.ofd1cDadataSetState({ records: notFoundMap, fileName: "synthetic-notfound-one.json" });
+      const notFoundResult = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+      const stillPresentNotFound = notFoundResult.list.some((r) => r.key === probeInn);
+      console.log("ofd1c: скоринг -- кандидат с DaData notFound исключён из списка:", !stillPresentNotFound ? "OK" : "FAIL", probeInn);
+      if (stillPresentNotFound) ok = false;
+
+      win.OFDWidgets.ofd1cDadataSetState({ records: fullSyntheticDadata, fileName: "synthetic-full-test.json" }); // восстановить полное обогащение для остальных проверок ниже
+    }
+
     const scoreOutOfRange = scoringAll.some((r) => r.score < 0 || r.score > 100);
     console.log("ofd1c: скоринг -- score всех кандидатов в диапазоне [0,100]:", !scoreOutOfRange ? "OK" : "FAIL");
     if (scoreOutOfRange) ok = false;
@@ -1063,7 +1145,7 @@ async function main() {
     const buyerInScoring = scoringAll.some((r) => buyerInns.indexOf(r.key) !== -1);
     console.log("ofd1c: скоринг -- ни один купивший НЕ попадает в кандидаты:", !buyerInScoring ? "OK" : "FAIL");
     if (buyerInScoring) ok = false;
-    const scoringEmptySetSize = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, new Set()).length;
+    const scoringEmptySetSize = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, new Set()).list.length;
     console.log("ofd1c: скоринг -- пустой набор разрешённых партнёров даёт 0 кандидатов (opt-in):", scoringEmptySetSize === 0 ? "OK" : "FAIL", scoringEmptySetSize);
     if (scoringEmptySetSize !== 0) ok = false;
 
@@ -1108,7 +1190,7 @@ async function main() {
       syntheticMap.set(buyerInns[0], { org: "Тест-Донор", okved: null, region: null, status: "ACTIVE", director: "Иванов Иван Иванович", enrichedAt: new Date().toISOString() });
       syntheticMap.set(syntheticInn, { org: "Тест-Кандидат", okved: null, region: null, status: "ACTIVE", director: "Иванов Иван Иванович", enrichedAt: new Date().toISOString() });
       win.OFDWidgets.ofd1cDadataSetState({ records: syntheticMap, fileName: "synthetic-test.json" });
-      const scoringWithAffiliation = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null);
+      const scoringWithAffiliation = win.OFDWidgets.ofd1cScoringCandidates(model, buyerInns, scoringCtx, null).list;
       const affiliatedRow = scoringWithAffiliation.find((r) => r.key === syntheticInn);
       const affiliationDetected = affiliatedRow && affiliatedRow.affiliated && affiliatedRow.reason.indexOf("тот же директор") !== -1;
       console.log("ofd1c: точки соприкосновения -- общий директор с купившим определяется:", affiliationDetected ? "OK" : "FAIL", affiliatedRow && affiliatedRow.affiliated);
@@ -1147,7 +1229,15 @@ async function main() {
       const zeroByDefault = /партнёры не выбраны/.test(scoringNode.innerHTML);
       console.log("ofd1c: скоринг по умолчанию пуст (ни один партнёр не выбран):", zeroByDefault ? "OK" : "FAIL");
       if (!zeroByDefault) ok = false;
-      const firstPartnerCb = scoringNode.querySelector(".ofd1c-partner-cb");
+      // Берём чекбокс ИМЕННО того партнёра, у которого точно есть кандидат (scoringAll[0] --
+      // уже доказано непустым выше через API-проверку), а не первый попавшийся в списке --
+      // первый по алфавиту/DOM-порядку партнёр может оказаться без единого активного
+      // (не в оттоке) клиента на конкретном реальном файле (поймано на реальных данных:
+      // "Идеалайф" -- все 5 его клиентов давно в оттоке, кандидатов от него в принципе 0
+      // вне зависимости от DaData/весов -- это не баг фильтра, это факт про данные).
+      const targetPartnerName = scoringAll.length ? scoringAll[0].partner : null;
+      const partnerCbs = Array.from(scoringNode.querySelectorAll(".ofd1c-partner-cb"));
+      const firstPartnerCb = (targetPartnerName && partnerCbs.find((cb) => cb.parentElement && cb.parentElement.textContent.trim() === targetPartnerName)) || partnerCbs[0];
       if (firstPartnerCb) {
         firstPartnerCb.checked = true;
         firstPartnerCb.dispatchEvent(new win.Event("change", { bubbles: true }));
@@ -1168,6 +1258,45 @@ async function main() {
       const scorePills = scoringNode.querySelectorAll("table .status-pill");
       console.log("ofd1c: скоринг -- колонка Score рендерится цветной пилюлей (.status-pill):", scorePills.length > 0 ? "OK" : "FAIL", scorePills.length);
       if (!scorePills.length) ok = false;
+
+      // Панель развесовки (Дима, 2026-09-18) -- переключатель Авто/Ручной, сумма=100%
+      // обязательна для «Применить», ручные значения сохраняются в localStorage.
+      const autoModeBtn = scoringNode.querySelector("#ofd1cWeightModeAuto");
+      const manualModeBtn = scoringNode.querySelector("#ofd1cWeightModeManual");
+      console.log("ofd1c: панель развесовки -- кнопки Авто/Ручной на месте:", autoModeBtn && manualModeBtn ? "OK" : "FAIL");
+      if (!(autoModeBtn && manualModeBtn)) ok = false;
+      if (autoModeBtn && manualModeBtn) {
+        manualModeBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
+        const weightInputs = Array.from(scoringNode.querySelectorAll('input[type="number"]')).filter((i) => i.placeholder !== "Score от" && i.placeholder !== "Score до");
+        console.log("ofd1c: панель развесовки -- в «Ручной» поля весов не disabled:", weightInputs.length > 0 && weightInputs.every((i) => !i.disabled) ? "OK" : "FAIL", weightInputs.length);
+        if (!(weightInputs.length > 0 && weightInputs.every((i) => !i.disabled))) ok = false;
+
+        const applyBtn = Array.from(scoringNode.querySelectorAll("button")).find((b) => b.textContent.trim() === "Применить");
+        // Сумма != 100 -- сознательно ломаем (первое поле в 0), кнопка «Применить» обязана заблокироваться.
+        if (weightInputs.length && applyBtn) {
+          weightInputs[0].value = "0";
+          weightInputs[0].dispatchEvent(new win.Event("input", { bubbles: true }));
+          console.log("ofd1c: панель развесовки -- «Применить» заблокирована, если сумма ≠ 100%:", applyBtn.disabled ? "OK" : "FAIL");
+          if (!applyBtn.disabled) ok = false;
+
+          // Возвращаем сумму к 100: остаток веса первого поля переносим в последнее.
+          const totalOthers = weightInputs.slice(1).reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
+          weightInputs[weightInputs.length - 1].value = String(Math.max(0, 100 - totalOthers));
+          weightInputs[weightInputs.length - 1].dispatchEvent(new win.Event("input", { bubbles: true }));
+          console.log("ofd1c: панель развесовки -- «Применить» разблокирована при сумме = 100%:", !applyBtn.disabled ? "OK" : "FAIL");
+          if (applyBtn.disabled) ok = false;
+
+          applyBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
+          const storedManual = JSON.parse(win.localStorage.getItem("ofd1c-scoring-manual-weights-v1") || "null");
+          console.log("ofd1c: панель развесовки -- «Применить» сохраняет веса в localStorage:", storedManual && storedManual.kassa === 0 ? "OK" : "FAIL", storedManual);
+          if (!(storedManual && storedManual.kassa === 0)) ok = false;
+        }
+
+        autoModeBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
+        const weightInputsAfterAuto = Array.from(scoringNode.querySelectorAll('input[type="number"]')).filter((i) => i.placeholder !== "Score от" && i.placeholder !== "Score до");
+        console.log("ofd1c: панель развесовки -- «Авто» снова делает поля readonly:", weightInputsAfterAuto.length > 0 && weightInputsAfterAuto.every((i) => i.disabled) ? "OK" : "FAIL");
+        if (!(weightInputsAfterAuto.length > 0 && weightInputsAfterAuto.every((i) => i.disabled))) ok = false;
+      }
 
       const scoreFromInput = scoringNode.querySelector('input[placeholder="Score от"]');
       const scoreToInput = scoringNode.querySelector('input[placeholder="Score до"]');
