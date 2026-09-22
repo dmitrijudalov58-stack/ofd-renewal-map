@@ -269,9 +269,19 @@
     var w = 520, h = 150, padL = 34, padR = 18, padT = 16, padB = 24;
     var allVals = [].concat.apply([], series.map(function (s) { return s.values; }));
     var maxV = Math.max.apply(null, allVals.concat([1]));
+    // minV -- 0 всегда входит в диапазон (обычный случай "все значения >=0" не меняется:
+    // нижняя граница как и раньше 0), НО если реальные данные уходят в минус (напр.
+    // "Накопительно"/"Дельта изменения" в текущем ещё не закрытом месяце может провалиться
+    // в минус из-за разрыва между новыми и оттоком) -- граница растягивается вниз, чтобы
+    // минимум тоже попадал в видимую область. Раньше без этого y(v) для отрицательных v
+    // уезжал далеко за h (150) и обрезался SVG по умолчанию -- НЕ лечилось ресайзом
+    // карточки, т.к. дело не в размере, а в формуле шкалы (Дима, скрин 2026-09-23).
+    var minV = Math.min.apply(null, allVals.concat([0]));
+    var range = (maxV - minV) || 1;
     var n = months.length;
     var x = function (i) { return n <= 1 ? padL : padL + (i / (n - 1)) * (w - padL - padR); };
-    var y = function (v) { return padT + (1 - v / maxV) * (h - padT - padB); };
+    var y = function (v) { return padT + (1 - (v - minV) / range) * (h - padT - padB); };
+    var yZero = y(0);
 
     function pathFor(values) {
       return values.map(function (v, i) { return (i === 0 ? "M" : "L") + x(i).toFixed(1) + "," + y(v).toFixed(1); }).join(" ");
@@ -280,12 +290,12 @@
     var svgParts = [];
     svgParts.push('<line class="gridline" x1="' + padL + '" y1="' + (padT) + '" x2="' + (w - padR) + '" y2="' + (padT) + '"></line>');
     svgParts.push('<line class="gridline" x1="' + padL + '" y1="' + (padT + (h - padT - padB) / 2) + '" x2="' + (w - padR) + '" y2="' + (padT + (h - padT - padB) / 2) + '"></line>');
-    svgParts.push('<line class="baseline" x1="' + padL + '" y1="' + (h - padB) + '" x2="' + (w - padR) + '" y2="' + (h - padB) + '"></line>');
+    svgParts.push('<line class="baseline" x1="' + padL + '" y1="' + yZero.toFixed(1) + '" x2="' + (w - padR) + '" y2="' + yZero.toFixed(1) + '"></line>');
 
     series.forEach(function (s) {
       var d = pathFor(s.values);
       if (opts.area) {
-        var areaD = d + " L" + x(n - 1).toFixed(1) + "," + (h - padB) + " L" + x(0).toFixed(1) + "," + (h - padB) + " Z";
+        var areaD = d + " L" + x(n - 1).toFixed(1) + "," + yZero.toFixed(1) + " L" + x(0).toFixed(1) + "," + yZero.toFixed(1) + " Z";
         svgParts.push('<path class="mark-area" style="fill:' + s.color + '" d="' + areaD + '"></path>');
       }
       svgParts.push('<path class="mark-line" style="stroke:' + s.color + '" d="' + d + '"></path>');
