@@ -301,7 +301,11 @@
 
       var lastI = n - 1;
       svgParts.push('<circle class="mark-dot" style="fill:' + s.color + '" cx="' + x(lastI).toFixed(1) + '" cy="' + y(s.values[lastI]).toFixed(1) + '" r="3.5" pointer-events="none"></circle>');
-      svgParts.push('<text class="value-label" x="' + (x(lastI) + 6).toFixed(1) + '" y="' + (y(s.values[lastI]) - 6).toFixed(1) + '">' + fmtNum(s.values[lastI]) + '</text>');
+      // text-anchor=end + x-6 (не +6) -- подпись растёт ВЛЕВО от последней точки. С ростом
+      // вправо большое число (напр. накопительное "93 083" в "Прирост базы") вылезало за
+      // правый край viewBox и обрезалось SVG по умолчанию -- ресайз карточки не спасал,
+      // т.к. вся SVG масштабируется пропорционально (Дима, 2026-09-22).
+      svgParts.push('<text class="value-label" text-anchor="end" x="' + (x(lastI) - 6).toFixed(1) + '" y="' + (y(s.values[lastI]) - 6).toFixed(1) + '">' + fmtNum(s.values[lastI]) + '</text>');
     });
 
     var step = Math.max(1, Math.ceil(n / 7));
