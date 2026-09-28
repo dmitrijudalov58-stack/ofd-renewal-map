@@ -1343,6 +1343,29 @@ async function main() {
       console.log("ofd1c: скоринг -- колонка Score рендерится цветной пилюлей (.status-pill):", scorePills.length > 0 ? "OK" : "FAIL", scorePills.length);
       if (!scorePills.length) ok = false;
 
+      // Выгрузка для отдела продаж (2026-09-28) -- XLSX с выпадающим списком статуса. Кнопка
+      // на месте; файл (buildXlsx на тех же данных) читается обратно SheetJS, заголовки и
+      // первая строка совпадают, телефоны/e-mail -- все уникальные со всех кодов клиента.
+      const salesBtn = scoringNode.querySelector(".ofd1c-sales-export");
+      console.log("ofd1c: скоринг -- кнопка «Выгрузка для отдела продаж» на месте:", salesBtn ? "OK" : "FAIL");
+      if (!salesBtn) ok = false;
+      const salesSpec = win.OFDWidgets.ofd1cSalesExportSpec(scoringAll.slice(0, 50), model, win.OFDState.asOf);
+      const salesBytes = win.OFDExport.buildXlsx(salesSpec);
+      const salesWb = win.XLSX.read(salesBytes, { type: "array" });
+      const salesAoa = win.XLSX.utils.sheet_to_json(salesWb.Sheets[salesWb.SheetNames[0]], { header: 1, defval: "" });
+      const statusesAoa = win.XLSX.utils.sheet_to_json(salesWb.Sheets[salesWb.SheetNames[1]], { header: 1 }).map((r) => r[0]);
+      const probe = model.clients.get(scoringAll[0].key);
+      const expPhones = [], expEmails = [];
+      probe.kassas.forEach((k) => k.codes.forEach((r) => { if (r.phone && expPhones.indexOf(r.phone) === -1) expPhones.push(r.phone); if (r.email && expEmails.indexOf(r.email.toLowerCase()) === -1) expEmails.push(r.email.toLowerCase()); }));
+      const gotPhones = String(salesAoa[1][3]).split(", ").filter(Boolean).sort(), gotEmails = String(salesAoa[1][4]).split(", ").filter(Boolean).sort();
+      const salesOk = salesAoa[0].join("|") === "ИНН|Наименование клиента|Касс (действующих)|Телефон|E-mail|Статус звонка"
+        && salesAoa.length === 51 && String(salesAoa[1][0]) === scoringAll[0].key
+        && gotPhones.join("|") === expPhones.sort().join("|") && gotEmails.join("|") === expEmails.sort().join("|")
+        && statusesAoa.join("|") === win.OFDWidgets.OFD1C_CALL_STATUSES.join("|")
+        && salesWb.Workbook.Sheets[1].Hidden === 1;
+      console.log("ofd1c: выгрузка для продаж -- XLSX читается, заголовки/ИНН/все телефоны и e-mail/скрытый лист статусов сходятся:", salesOk ? "OK" : "FAIL", salesAoa[0], salesAoa.length);
+      if (!salesOk) ok = false;
+
       // Панель развесовки (Дима, 2026-09-18) -- переключатель Авто/Ручной, сумма=100%
       // обязательна для «Применить», ручные значения сохраняются в localStorage.
       const autoModeBtn = scoringNode.querySelector("#ofd1cWeightModeAuto");

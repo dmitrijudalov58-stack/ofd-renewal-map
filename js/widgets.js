@@ -4556,7 +4556,7 @@
       }
       var tenureNowMonths = c.appearance ? (ctx.asOf.getTime() - c.appearance.getTime()) / MONTH_MS : null;
       out.push({
-        key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: c.tariff || "—",
+        key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: f.tariff || "—", // c.tariff в модели нет -- тариф последнего кода из признаков (до 2026-09-28 колонка всегда была «—»)
         tenureNowMonths: tenureNowMonths == null ? null : Math.round(tenureNowMonths * 10) / 10,
         score: score, scoreHtml: ofd1cScorePill(score),
         revenuePotential: sm.medianRevenuePerKassa != null ? Math.round(c.kassas.length * sm.medianRevenuePerKassa) : null,
@@ -5401,6 +5401,43 @@
     return "crit";
   }
 
+  // Выгрузка для отдела продаж (Дима, 2026-09-28) -- XLSX с выпадающим списком статуса
+  // звонка (CSV выпадающие списки не умеет). Первые 4 статуса -- от Димы, остальные --
+  // частые исходы B2B-прозвона, добавлены по его просьбе "накидай сам".
+  var OFD1C_CALL_STATUSES = [
+    "Не дозвонились", "Купил", "Отказ", "Уже использует др. решение",
+    "Перезвонить позже", "Неверный номер", "Не ЛПР — передали контакт",
+    "Отправили КП / думает", "Не использует 1С", "Закрывается / прекратил деятельность",
+  ];
+  // Все телефоны и e-mail клиента -- со ВСЕХ кодов всех касс (Дима: "бери всё, что
+  // найдёшь"), без повторов, в порядке от свежих кодов к старым (свежий -- вероятнее живой).
+  function ofd1cClientContacts(client) {
+    var codes = [];
+    client.kassas.forEach(function (k) { k.codes.forEach(function (r) { codes.push(r); }); });
+    codes.sort(function (a, b) { return (b.activated || b.created || 0) - (a.activated || a.created || 0); });
+    var phones = [], emails = [];
+    codes.forEach(function (r) {
+      if (r.phone && phones.indexOf(r.phone) === -1) phones.push(r.phone);
+      if (r.email && emails.indexOf(r.email.toLowerCase()) === -1) emails.push(r.email.toLowerCase());
+    });
+    return { phones: phones, emails: emails };
+  }
+  function ofd1cSalesExportSpec(candidates, model, asOf) {
+    return {
+      sheetName: "Прозвон 1С",
+      headers: ["ИНН", "Наименование клиента", "Касс (действующих)", "Телефон", "E-mail", "Статус звонка"],
+      colWidths: [14, 44, 10, 34, 34, 34],
+      textCols: [0],
+      rows: candidates.map(function (item) {
+        var c = model.clients.get(item.key);
+        var contacts = ofd1cClientContacts(c);
+        var alive = c.kassas.filter(function (k) { return ofd1cKassaAliveAt(k, asOf); }).length;
+        return [item.key, item.org || "", alive, contacts.phones.join(", "), contacts.emails.join(", "), ""];
+      }),
+      listColumn: { index: 5, options: OFD1C_CALL_STATUSES, sheetName: "Статусы" },
+    };
+  }
+
   WIDGETS["b8-1c-scoring"] = {
     title: "Обмен с 1С — скоринг для продавцов", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
@@ -5524,6 +5561,12 @@
           if (root.OFDExport) root.OFDExport.downloadCSV("Скоринг для продавцов — Обмен с 1С", exportRows);
         });
         candidatesHolder.appendChild(downloadBtn);
+        var salesBtn = el('<button class="refresh-chart-btn ofd1c-sales-export" style="margin-top:8px;margin-left:6px;font-weight:700">Выгрузка для отдела продаж (Excel, ' + fmtNum(candidates.length) + ')</button>');
+        salesBtn.addEventListener("click", function () {
+          if (!root.OFDExport || !root.OFDExport.downloadXlsx) return;
+          root.OFDExport.downloadXlsx("Прозвон 1С " + fmtDate(ctx.asOf), ofd1cSalesExportSpec(candidates, model, ctx.asOf));
+        });
+        candidatesHolder.appendChild(salesBtn);
       }
 
       // В "Авто" поля readonly, значения = текущие TVD-веса (%, округлено). В "Ручной" --
@@ -6543,6 +6586,9 @@
     ofd1cPartnerAdjustedIndexes: ofd1cPartnerAdjustedIndexes,
     ofd1cFitFromIndex: ofd1cFitFromIndex,
     ofd1cScoringModel: ofd1cScoringModel,
+    ofd1cClientContacts: ofd1cClientContacts,
+    ofd1cSalesExportSpec: ofd1cSalesExportSpec,
+    OFD1C_CALL_STATUSES: OFD1C_CALL_STATUSES,
     OFD1C_SCORE_FEATURES: OFD1C_SCORE_FEATURES,
     ofd1cIndustryBucketLabel: ofd1cIndustryBucketLabel,
     ofd1cActiveOfdClients: ofd1cActiveOfdClients,
