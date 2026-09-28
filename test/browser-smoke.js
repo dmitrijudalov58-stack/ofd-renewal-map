@@ -1049,14 +1049,9 @@ async function main() {
       if (/Отрасль \(ОКВЭД/.test(portraitNode.innerHTML)) ok = false;
     }
 
-    // Борд «Отрасль (ОКВЭД)» -- вынесен из борда A отдельным бордом (Дима, 2026-09-18).
-    const industryNode = win.document.querySelector('[data-widget-id="b8-1c-industry"]');
-    console.log("ofd1c: борд «Отрасль (ОКВЭД)» на холсте:", industryNode ? "OK" : "FAIL");
-    if (!industryNode) ok = false;
-    if (industryNode) {
-      console.log("ofd1c: борд «Отрасль (ОКВЭД)» содержит заголовок отрасли:", /Отрасль \(ОКВЭД/.test(industryNode.innerHTML) ? "OK" : "FAIL");
-      if (!/Отрасль \(ОКВЭД/.test(industryNode.innerHTML)) ok = false;
-    }
+    // Борд «Отрасль (ОКВЭД)» v3 проверяется НИЖЕ, после установки синтетической DaData:
+    // без обогащения борд честно показывает плейсхолдер, а проверка здесь (до 2026-09-28)
+    // падала с исключением и обрывала все проверки скоринга после неё.
 
     // Борд C "Скоринг для продавцов" (2026-09-17, фаза 4; развесовка + ОПФ + фильтр по
     // DaData -- 2026-09-18). Инварианты на данных (через API, не UI): score в [0,100],
@@ -1074,7 +1069,8 @@ async function main() {
     // тоже проходили и признаки реально участвовали в проверках.
     win.localStorage.removeItem("ofd1c-scoring-allowed-partners-v1");
     win.localStorage.removeItem("ofd1c-scoring-weight-mode-v1");
-    win.localStorage.removeItem("ofd1c-scoring-manual-weights-v1");
+    win.localStorage.removeItem("ofd1c-scoring-manual-weights-v2");
+    win.localStorage.removeItem("ofd1c-scoring-weight-snapshot-v1");
     const scoringCtx = { asOf: win.OFDState.asOf, M: win.OFDMetrics };
     const SYNTH_OKVEDS = ["47.25", "56.10", "62.01", "86.10", "45.20", "68.20"];
     const SYNTH_OPFS = ["ООО", "ИП", "АО"];
@@ -1106,8 +1102,19 @@ async function main() {
     const scoringAll = scoringResult.list;
     console.log("ofd1c: скоринг -- при полном синтетическом обогащении список кандидатов непуст:", scoringAll.length > 0 ? "OK" : "FAIL", scoringAll.length);
     if (!scoringAll.length) ok = false;
-    console.log("ofd1c: скоринг -- autoWeights включает industry и opf (гейт по выборке пройден на полном синтетическом обогащении):", scoringResult.enabledFeatures.indexOf("industry") !== -1 && scoringResult.enabledFeatures.indexOf("opf") !== -1 ? "OK" : "FAIL", scoringResult.enabledFeatures);
-    if (!(scoringResult.enabledFeatures.indexOf("industry") !== -1 && scoringResult.enabledFeatures.indexOf("opf") !== -1)) ok = false;
+    // v3 (2026-09-28): 9 признаков, у каждого статистика силы/шума; синтетические ОКВЭД/ОПФ
+    // раскиданы по кругу, не по покупкам -- эти признаки вправе выключиться (сила ≈ шум),
+    // поэтому проверяем структуру, а не "включён ли конкретный признак".
+    const featureKeys = win.OFDWidgets.OFD1C_SCORE_FEATURES.map((d) => d.key);
+    const statsComplete = featureKeys.length === 9 && featureKeys.every((k) => scoringResult.featureStats[k] && typeof scoringResult.featureStats[k].strength === "number");
+    console.log("ofd1c: скоринг v3 -- статистика силы/шума есть у всех 9 признаков:", statsComplete ? "OK" : "FAIL", featureKeys.length);
+    if (!statsComplete) ok = false;
+    const partnerNotFeature = featureKeys.indexOf("partner") === -1;
+    console.log("ofd1c: скоринг v3 -- партнёр НЕ признак score (только фильтр прозвона):", partnerNotFeature ? "OK" : "FAIL");
+    if (!partnerNotFeature) ok = false;
+    const disabledHaveZero = featureKeys.every((k) => scoringResult.enabledFeatures.indexOf(k) !== -1 || scoringResult.autoWeights[k] === 0);
+    console.log("ofd1c: скоринг v3 -- выключенные признаки (сила ≤ p95 шума) имеют вес 0:", disabledHaveZero ? "OK" : "FAIL");
+    if (!disabledHaveZero) ok = false;
     const autoWeightSum = scoringResult.enabledFeatures.reduce((s, k) => s + (scoringResult.autoWeights[k] || 0), 0);
     console.log("ofd1c: скоринг -- сумма autoWeights по включённым признакам = 1:", Math.abs(autoWeightSum - 1) < 1e-9 ? "OK" : "FAIL", autoWeightSum);
     if (Math.abs(autoWeightSum - 1) >= 1e-9) ok = false;
@@ -1135,6 +1142,46 @@ async function main() {
       win.OFDWidgets.ofd1cDadataSetState({ records: fullSyntheticDadata, fileName: "synthetic-full-test.json" }); // восстановить полное обогащение для остальных проверок ниже
     }
 
+    // Борд «Отрасль (ОКВЭД)» v3 (2026-09-28) -- рейтинг-таблица вместо двух барчартов.
+    // Синтетические ОКВЭД -- 6 кодов по кругу на всю активную базу, каждый >> 300 клиентов.
+    win.OFDCanvas.rerenderAll();
+    const industryNode = win.document.querySelector('[data-widget-id="b8-1c-industry"]');
+    console.log("ofd1c: борд «Отрасль (ОКВЭД)» на холсте:", industryNode ? "OK" : "FAIL");
+    if (!industryNode) ok = false;
+    if (industryNode) {
+      const noOldCharts = !industryNode.querySelector(".chart-card") && !/По убыванию/.test(industryNode.innerHTML);
+      console.log("ofd1c: борд «Отрасль» v3 -- старых барчартов/переключателей сортировки нет:", noOldCharts ? "OK" : "FAIL");
+      if (!noOldCharts) ok = false;
+      const mainRows = Array.from(industryNode.querySelectorAll("table"))[0] ? Array.from(industryNode.querySelectorAll("table"))[0].querySelectorAll("tbody tr") : [];
+      const smSynth = win.OFDWidgets.ofd1cScoringModel(model, scoringCtx);
+      const codeCounts = new Map();
+      smSynth.rows.forEach((r) => { if (r.fToday.industry != null) codeCounts.set(r.fToday.industry, (codeCounts.get(r.fToday.industry) || 0) + 1); });
+      const expectedReliable = Array.from(codeCounts.values()).filter((n) => n >= 300).length;
+      console.log("ofd1c: борд «Отрасль» v3 -- строк в рейтинге = отраслей с базой ≥ 300:", mainRows.length === expectedReliable ? "OK" : "FAIL", mainRows.length, "vs", expectedReliable);
+      if (mainRows.length !== expectedReliable) ok = false;
+      // Независимый пересчёт первой строки: база/купили/индекс к средней.
+      if (mainRows.length) {
+        const code = mainRows[0].dataset.code;
+        const buyerIdxSet = new Set(smSynth.buyerRowIdx);
+        let base = 0, bought = 0, allBase = 0, allBought = 0;
+        smSynth.rows.forEach((r, i) => { if (r.fToday.industry == null) return; allBase++; if (buyerIdxSet.has(i)) allBought++; if (r.fToday.industry === code) { base++; if (buyerIdxSet.has(i)) bought++; } });
+        const cells = Array.from(mainRows[0].children).map((td) => td.textContent.replace(/\s/g, ""));
+        const expIndex = "×" + ((bought / base) / (allBought / allBase)).toFixed(2).replace(".", ",");
+        const rowOk = cells[1] === String(base) && cells[2] === String(bought) && cells[4] === expIndex;
+        console.log("ofd1c: борд «Отрасль» v3 -- база/купили/индекс первой строки сходятся с независимым пересчётом:", rowOk ? "OK" : "FAIL", cells.slice(1, 5), base, bought, expIndex);
+        if (!rowOk) ok = false;
+        mainRows[0].dispatchEvent(new win.Event("click", { bubbles: true }));
+        const drillOk = new RegExp("ОКВЭД " + code).test(industryNode.innerHTML) && industryNode.querySelectorAll("table").length >= 3;
+        console.log("ofd1c: борд «Отрасль» v3 -- клик по строке раскрывает купивших и не купивших по отрасли:", drillOk ? "OK" : "FAIL", industryNode.querySelectorAll("table").length);
+        if (!drillOk) ok = false;
+      }
+    }
+
+    // Фильтр «только с телефоном или e-mail» -- через API, hasContact совпадает с кассами клиента.
+    const contactMismatch = scoringAll.some((r) => r.hasContact !== model.clients.get(r.key).kassas.some((k) => k.phone || k.email));
+    console.log("ofd1c: скоринг -- признак «есть контакт» сходится с полями телефон/e-mail касс:", !contactMismatch ? "OK" : "FAIL");
+    if (contactMismatch) ok = false;
+
     const scoreOutOfRange = scoringAll.some((r) => r.score < 0 || r.score > 100);
     console.log("ofd1c: скоринг -- score всех кандидатов в диапазоне [0,100]:", !scoreOutOfRange ? "OK" : "FAIL");
     if (scoreOutOfRange) ok = false;
@@ -1151,18 +1198,55 @@ async function main() {
 
     // Формула v2 (2026-09-17, после ревью PO/CPO/PMM) -- TVD-эмпирические веса, гейт по
     // оттоку, выручка, точки соприкосновения. Независимые проверки, не "не упало".
-    const tvdIdentical = win.OFDWidgets.ofd1cTVDFromShares(new Map([["a", 0.5], ["b", 0.5]]), new Map([["a", 0.5], ["b", 0.5]]));
-    const tvdDisjoint = win.OFDWidgets.ofd1cTVDFromShares(new Map([["a", 1]]), new Map([["b", 1]]));
-    console.log("ofd1c: TVD одинаковых распределений = 0, полностью разных = 1:", tvdIdentical === 0 && tvdDisjoint === 1 ? "OK" : "FAIL", tvdIdentical, tvdDisjoint);
-    if (!(tvdIdentical === 0 && tvdDisjoint === 1)) ok = false;
+    // Индекс с поправкой на партнёра -- ручной пример, считается независимо. 2 пула
+    // партнёров по 400 клиентов (≥ порога 300): пул A -- 40 купивших (конверсия 10%), пул B --
+    // 4 купивших (1%). Категория "x" -- все 400 клиентов пула A, из них 40 купили.
+    // Ожидаемо = 400 × 10% = 40, купили 40 → индекс 1,0 (вся "сила" x -- от партнёра).
+    // Категория "y" (пул B): ожидаемо 4, купили 4 → 1,0. Без поправки x был бы ×1,82.
+    const unitRows = [];
+    for (let i = 0; i < 400; i++) unitRows.push({ pool: "A", f: { t: "x" } });
+    for (let i = 0; i < 400; i++) unitRows.push({ pool: "B", f: { t: "y" } });
+    const unitBuyers = [];
+    for (let i = 0; i < 40; i++) unitBuyers.push(i);
+    for (let i = 400; i < 404; i++) unitBuyers.push(i);
+    const unitIdx = win.OFDWidgets.ofd1cPartnerAdjustedIndexes(unitRows, unitBuyers, ["t"]).t;
+    const unitOk = Math.abs(unitIdx.cats.get("x").index - 1) < 1e-9 && Math.abs(unitIdx.cats.get("y").index - 1) < 1e-9 && unitIdx.strength < 1e-9;
+    console.log("ofd1c: индекс с поправкой на партнёра -- эффект, целиком объяснённый партнёром, даёт ×1 и силу 0:", unitOk ? "OK" : "FAIL", unitIdx.cats.get("x").index, unitIdx.strength);
+    if (!unitOk) ok = false;
+    // Внутри одного пула: 300 "x" (30 купили) + 300 "y" (3 купили), конверсия пула 5,5%.
+    // x: ожидаемо 16,5 → индекс 30/16,5 = 1,818; y: 3/16,5 = 0,182. fit x = 1 (макс), y = 0.
+    const unitRows2 = [];
+    for (let i = 0; i < 300; i++) unitRows2.push({ pool: "A", f: { t: "x" } });
+    for (let i = 0; i < 300; i++) unitRows2.push({ pool: "A", f: { t: "y" } });
+    const unitBuyers2 = [];
+    for (let i = 0; i < 30; i++) unitBuyers2.push(i);
+    for (let i = 300; i < 303; i++) unitBuyers2.push(i);
+    const unitIdx2 = win.OFDWidgets.ofd1cPartnerAdjustedIndexes(unitRows2, unitBuyers2, ["t"]).t;
+    const fitX = win.OFDWidgets.ofd1cFitFromIndex(unitIdx2, "x"), fitY = win.OFDWidgets.ofd1cFitFromIndex(unitIdx2, "y");
+    const unitOk2 = Math.abs(unitIdx2.cats.get("x").index - 30 / 16.5) < 1e-9 && Math.abs(unitIdx2.cats.get("y").index - 3 / 16.5) < 1e-9 && fitX === 1 && fitY === 0;
+    console.log("ofd1c: индекс внутри одного партнёра + fit (лучшая категория 1, ниже средней 0):", unitOk2 ? "OK" : "FAIL", unitIdx2.cats.get("x").index, fitX, fitY);
+    if (!unitOk2) ok = false;
+    // Категория с базой < 300 -- нейтральна (fit 0), даже если все купили.
+    const unitRows3 = [];
+    for (let i = 0; i < 350; i++) unitRows3.push({ pool: "A", f: { t: i < 50 ? "small" : "big" } });
+    const unitIdx3 = win.OFDWidgets.ofd1cPartnerAdjustedIndexes(unitRows3, [0, 1, 2, 3, 4, 60], ["t"]).t;
+    const smallNeutral = unitIdx3.cats.get("small").index === null && win.OFDWidgets.ofd1cFitFromIndex(unitIdx3, "small") === 0;
+    console.log("ofd1c: категория с базой < 300 нейтральна (индекс не считается, fit 0):", smallNeutral ? "OK" : "FAIL");
+    if (!smallNeutral) ok = false;
 
     console.log("ofd1c: ofd1cIndustryBucketLabel вырезает раздел ОКВЭД:", win.OFDWidgets.ofd1cIndustryBucketLabel("47.25.1") === "47" && win.OFDWidgets.ofd1cIndustryBucketLabel(null) === null ? "OK" : "FAIL");
     if (!(win.OFDWidgets.ofd1cIndustryBucketLabel("47.25.1") === "47" && win.OFDWidgets.ofd1cIndustryBucketLabel(null) === null)) ok = false;
 
-    const tenureNowDist = win.OFDWidgets.ofd1cTenureNowDistribution(win.OFDWidgets.ofd1cActiveOfdClients(model, scoringCtx), win.OFDState.asOf);
-    const tenureNowSumMismatch = tenureNowDist.buckets.reduce((s, b) => s + b.count, 0) + tenureNowDist.excluded.length !== tenureNowDist.total + tenureNowDist.excluded.length;
-    console.log("ofd1c: ofd1cTenureNowDistribution -- сумма бакетов + исключённых = все клиенты:", !tenureNowSumMismatch ? "OK" : "FAIL");
-    if (tenureNowSumMismatch) ok = false;
+    // Признаки на дату -- независимый пересчёт числа касс и роста за год для реального клиента.
+    const probeClient = win.OFDWidgets.ofd1cActiveOfdClients(model, scoringCtx).find((c) => c.kassas.length >= 2) || win.OFDWidgets.ofd1cActiveOfdClients(model, scoringCtx)[0];
+    const probeF = win.OFDWidgets.ofd1cClientFeaturesAt(probeClient, win.OFDState.asOf, null);
+    const expKassa = probeClient.kassas.filter((k) => k.appearance <= win.OFDState.asOf).length;
+    const expGrow = probeClient.kassas.filter((k) => k.appearance <= win.OFDState.asOf && k.appearance > new Date(win.OFDState.asOf.getTime() - 365 * 86400000)).length;
+    const expKassaLabel = expKassa === 1 ? "1" : expKassa <= 3 ? "2–3" : expKassa <= 9 ? "4–9" : "10+";
+    const expGrowLabel = expGrow === 0 ? "0" : expGrow === 1 ? "1" : "2+";
+    const featOk = probeF && probeF.kassa === expKassaLabel && probeF.growthBefore === expGrowLabel && probeF.industry === null && Object.keys(probeF).length === 9;
+    console.log("ofd1c: признаки клиента на дату сходятся с независимым пересчётом (касс/рост за год), без DaData отрасль = null:", featOk ? "OK" : "FAIL", probeF && probeF.kassa, expKassaLabel, probeF && probeF.growthBefore, expGrowLabel);
+    if (!featOk) ok = false;
 
     // Гейт по оттоку -- правильная проверка через clientsAtRisk (тот же механизм, что
     // b1-risk), НЕ через clientChurnStatus (та функция классифицирует уже случившийся
@@ -1266,6 +1350,38 @@ async function main() {
       console.log("ofd1c: панель развесовки -- кнопки Авто/Ручной на месте:", autoModeBtn && manualModeBtn ? "OK" : "FAIL");
       if (!(autoModeBtn && manualModeBtn)) ok = false;
       if (autoModeBtn && manualModeBtn) {
+        // v3: все 9 признаков видны в панели (выключенные -- серой строкой с 0%).
+        const featureRowsShown = win.OFDWidgets.OFD1C_SCORE_FEATURES.every((d) => scoringNode.innerHTML.indexOf(d.label) !== -1);
+        console.log("ofd1c: панель развесовки v3 -- все 9 признаков видны:", featureRowsShown ? "OK" : "FAIL");
+        if (!featureRowsShown) ok = false;
+        // Авто-веса в процентах суммируются ровно в 100 (округление наибольшими остатками) --
+        // иначе при переходе в «Ручной» кнопка «Применить» сразу заблокирована.
+        const autoInputs = Array.from(scoringNode.querySelectorAll('input[type="number"]')).filter((i) => i.placeholder !== "Score от" && i.placeholder !== "Score до");
+        const autoSum = autoInputs.reduce((s2, i) => s2 + (parseFloat(i.value) || 0), 0);
+        console.log("ofd1c: панель развесовки v3 -- авто-веса в % дают ровно 100:", autoSum === 100 ? "OK" : "FAIL", autoSum);
+        if (autoSum !== 100) ok = false;
+        // Первый рендер сохраняет снимок весов молча; подменённый снимок с другими весами
+        // -- плашка «Веса заметно изменились».
+        const snapNow = JSON.parse(win.localStorage.getItem("ofd1c-scoring-weight-snapshot-v1") || "null");
+        console.log("ofd1c: контроль дрейфа -- первый расчёт сохраняет снимок весов, плашки нет:", snapNow && !scoringNode.querySelector(".ofd1c-weight-drift") ? "OK" : "FAIL");
+        if (!(snapNow && !scoringNode.querySelector(".ofd1c-weight-drift"))) ok = false;
+        if (snapNow) {
+          const fakeWeights = Object.assign({}, snapNow.weights);
+          const firstKey = Object.keys(fakeWeights).find((k) => fakeWeights[k] > 0);
+          fakeWeights[firstKey] = fakeWeights[firstKey] + 20;
+          win.localStorage.setItem("ofd1c-scoring-weight-snapshot-v1", JSON.stringify({ weights: fakeWeights, buyers: 1, asOf: "тест" }));
+          autoModeBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
+          const driftBanner = scoringNode.querySelector(".ofd1c-weight-drift");
+          console.log("ofd1c: контроль дрейфа -- сдвиг веса > 5 п.п. показывает плашку:", driftBanner ? "OK" : "FAIL");
+          if (!driftBanner) ok = false;
+          if (driftBanner) {
+            driftBanner.querySelector(".ofd1c-accept-weights").dispatchEvent(new win.Event("click", { bubbles: true }));
+            const snapAfter = JSON.parse(win.localStorage.getItem("ofd1c-scoring-weight-snapshot-v1") || "null");
+            const accepted = !scoringNode.querySelector(".ofd1c-weight-drift") && snapAfter && snapAfter.weights[firstKey] === snapNow.weights[firstKey];
+            console.log("ofd1c: контроль дрейфа -- «Принять новые веса» обновляет снимок и убирает плашку:", accepted ? "OK" : "FAIL");
+            if (!accepted) ok = false;
+          }
+        }
         manualModeBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
         const weightInputs = Array.from(scoringNode.querySelectorAll('input[type="number"]')).filter((i) => i.placeholder !== "Score от" && i.placeholder !== "Score до");
         console.log("ofd1c: панель развесовки -- в «Ручной» поля весов не disabled:", weightInputs.length > 0 && weightInputs.every((i) => !i.disabled) ? "OK" : "FAIL", weightInputs.length);
@@ -1280,16 +1396,21 @@ async function main() {
           if (!applyBtn.disabled) ok = false;
 
           // Возвращаем сумму к 100: остаток веса первого поля переносим в последнее.
-          const totalOthers = weightInputs.slice(1).reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
+          // slice(1, -1) -- БЕЗ последнего поля: оно и есть то, что перезаписываем (до
+          // 2026-09-28 считалось вместе с ним, сумма выходила ≠ 100 -- проходило только
+          // когда веса первого и последнего поля случайно совпадали).
+          const totalOthers = weightInputs.slice(1, -1).reduce((s, i) => s + (parseFloat(i.value) || 0), 0);
           weightInputs[weightInputs.length - 1].value = String(Math.max(0, 100 - totalOthers));
           weightInputs[weightInputs.length - 1].dispatchEvent(new win.Event("input", { bubbles: true }));
           console.log("ofd1c: панель развесовки -- «Применить» разблокирована при сумме = 100%:", !applyBtn.disabled ? "OK" : "FAIL");
           if (applyBtn.disabled) ok = false;
 
           applyBtn.dispatchEvent(new win.Event("click", { bubbles: true }));
-          const storedManual = JSON.parse(win.localStorage.getItem("ofd1c-scoring-manual-weights-v1") || "null");
-          console.log("ofd1c: панель развесовки -- «Применить» сохраняет веса в localStorage:", storedManual && storedManual.kassa === 0 ? "OK" : "FAIL", storedManual);
-          if (!(storedManual && storedManual.kassa === 0)) ok = false;
+          const storedManual = JSON.parse(win.localStorage.getItem("ofd1c-scoring-manual-weights-v2") || "null");
+          const storedVals = storedManual ? Object.values(storedManual) : [];
+          const storedOk = storedVals.length === weightInputs.length && storedVals.indexOf(0) !== -1 && Math.round(storedVals.reduce((a, b) => a + b, 0)) === 100;
+          console.log("ofd1c: панель развесовки -- «Применить» сохраняет веса в localStorage (сумма 100, первое поле 0):", storedOk ? "OK" : "FAIL", storedManual);
+          if (!storedOk) ok = false;
         }
 
         autoModeBtn.dispatchEvent(new win.Event("click", { bubbles: true }));

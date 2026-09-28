@@ -4207,327 +4207,367 @@
     return rows;
   }
 
-  // ---------- Борд C "Скоринг для продавцов" -- формула v2 (2026-09-17, переписана по
-  // итогам ревью с тремя ролями PO/CPO/PMM + доп. взгляды Data Scientist/юрист, см.
-  // разговор в чате в этот день). ЗАМЕНЯЕТ ручные веса 40/35/25 (v1, тот же день чуть
-  // раньше) -- решили НЕ гадать веса, а считать их ЭМПИРИЧЕСКИ из уже собранных данных
-  // борда A (TVD -- Total Variation Distance между распределением купивших и всей базы
-  // по каждому признаку), т.к. живой обратной связи от прозвона пока нет и не предвидится
-  // ("людей на прозвон пока никто не даст"). Добавлены: гейт по оттоку (не скорим
-  // уходящих клиентов), отрасль (ОКВЭД, когда обогащён кандидат), потенциальная выручка
-  // (отдельно от score, не вес), точки соприкосновения через общего директора (отдельная
-  // пометка, не вес -- см. пометку юриста: ФИО физлица, 152-ФЗ, публичные данные ЕГРЮЛ,
-  // но использование для таргетинга продаж заслуживает отдельного взгляда юриста компании
-  // прежде чем расширять использование этого конкретного признака).
+  // ---------- Борд C "Скоринг для продавцов" -- формула v3 (2026-09-28, grilling с Димой,
+  // план tmp/plans/2026-09-28-okved-board-and-scoring-v3.md). ЗАМЕНЯЕТ v2 (TVD-веса +
+  // "совпал с модальной категорией купивших"). Что было не так в v2 (найдено на реальных
+  // данных, 1262 покупателя 2025-2026): (1) "самая частая категория у купивших" != "склонная
+  // к покупке" -- ОКВЭД 47 (розница) модален у купивших просто потому, что его больше всего
+  // в базе, а конверсия у него ×0,78 к средней, при этом медицина 86 (×3,1) и общепит 56
+  // (×2,85) баллов не получали; (2) веса по сырому TVD -- у признаков с большим числом
+  // категорий половина TVD шум (партнёр: 0,52, из них 0,30 шум); (3) касс у купивших
+  // считались "сейчас", после покупки.
+  //
+  // Как считает v3 (Дима одобрил пошагово, простое объяснение -- в чате 2026-09-28):
+  //  1. Купившие = действующие сегодня клиенты из файла сверки 1С; база = вся действующая
+  //     база (ofd1cActiveOfdClients). Гибрид дат: признаки "бизнеса" (касс, ОКВЭД, ОПФ,
+  //     регион, тариф, динамика касс) -- на сегодня; признаки "момента" (срок в ОФД, рост
+  //     касс за 12 мес до покупки, продления) -- на дату ПЕРВОЙ покупки 1С (на сегодня
+  //     купивший физически не может быть "новым" -- срок 0-3 мес переворачивался ×6,2 → ×0,35).
+  //  2. Индекс категории С ПОПРАВКОЙ НА ПАРТНЁРА (Дима: "отвязаться от партнёра, смотреть
+  //     на общие черты клиентов"): ожидаемо = Σ по клиентам категории конверсии их
+  //     партнёра, индекс = купили / ожидаемо. Партнёры с базой < 300 -- общий пул "прочие".
+  //     Сам партнёр в score НЕ входит (только фильтр "кого можно передать на прозвон").
+  //  3. Категории с базой < 300 -- нейтральные (fit 0): там одна случайная покупка
+  //     переворачивает индекс.
+  //  4. Сила признака = средневзвешенное |индекс − 1| по категориям. Из неё вычитается
+  //     медиана "силы" на случайных выборках базы того же размера, что купившие (шум);
+  //     сила ≤ p95 шума -- признак выключается. Вес = чистая сила / сумма (все признаки
+  //     наравне, без потолков и пометок -- решение Димы).
+  //  5. fit кандидата = clamp((индекс его категории − 1) / (макс. индекс признака − 1), 0, 1),
+  //     score = round(100 × Σ вес × fit).
+  var OFD1C_MIN_CATEGORY_BASE = 300; // категория/партнёр меньше -- "мало данных" (Дима, 2026-09-28)
+  var OFD1C_NOISE_ITERATIONS = 200;
+  var OFD1C_NOISE_SEED = 1759017600; // 2026-09-28 -- фиксирован, иначе веса "плавают" между рендерами
+  var OFD1C_PARTNER_POOL_OTHER = "прочие";
+  var DAY_MS = 86400000;
+  var MONTH_MS = 30.4368 * DAY_MS;
 
-  function ofd1cModalBucketLabel(distribution) {
-    var best = null;
-    distribution.buckets.forEach(function (b) {
-      if (!best || b.count > best.count) best = b;
-    });
-    return best ? best.label : null;
-  }
-  function ofd1cBucketFit(bucketsDef, candidateLabel, modalLabel) {
-    if (!modalLabel || !candidateLabel) return 0;
-    if (candidateLabel === modalLabel) return 1;
-    var ci = bucketsDef.findIndex(function (b) { return b.label === candidateLabel; });
-    var mi = bucketsDef.findIndex(function (b) { return b.label === modalLabel; });
-    if (ci < 0 || mi < 0) return 0;
-    return Math.abs(ci - mi) === 1 ? 0.5 : 0;
-  }
+  // when: "today" -- на asOf у обеих групп; "purchase" -- у купивших на дату первой покупки.
+  var OFD1C_SCORE_FEATURES = [
+    { key: "kassa", when: "today", reason: "касс", label: "Число касс", desc: "сколько касс у клиента" },
+    { key: "growthBefore", when: "purchase", reason: "новых касс за год", label: "Рост касс за 12 мес до покупки", desc: "сколько новых касс клиент открыл за год (у купивших — за год до покупки 1С)" },
+    { key: "industry", when: "today", label: "Отрасль (ОКВЭД)", desc: "раздел ОКВЭД из DaData" },
+    { key: "tenure", when: "purchase", reason: "срок в ОФД", label: "Срок в ОФД", desc: "сколько клиент с нами (у купивших — на момент покупки 1С)" },
+    { key: "opf", when: "today", reason: "юр. форма", label: "Юр. форма", desc: "ООО / ИП / … из DaData" },
+    { key: "region", when: "today", reason: "регион", label: "Регион", desc: "регион регистрации из DaData" },
+    { key: "renewals", when: "purchase", reason: "продлений", label: "Продления", desc: "сколько раз продлевалась самая «старая» касса (у купивших — на момент покупки)" },
+    { key: "dynamics", when: "today", reason: "динамика касс за год", label: "Динамика касс за 12 мес", desc: "действующих касс сегодня минус год назад" },
+    { key: "tariff", when: "today", reason: "тариф ОФД", label: "Тариф ОФД", desc: "срок последнего кода ОФД, мес" },
+  ];
+  var OFD1C_SCORE_FEATURE_KEYS = OFD1C_SCORE_FEATURES.map(function (f) { return f.key; });
 
-  // TVD = 0.5 * Σ|доля_A(категория) - доля_B(категория)| по ОБЪЕДИНЕНИЮ категорий обеих
-  // сторон (не только общих) -- 0 = распределения идентичны (признак не различает купивших
-  // и базу, слабый сигнал), ближе к 1 = сильно отличаются (сильный сигнал). Стандартная
-  // мера "расстояния" между двумя распределениями, не наша выдумка -- выбрана как самая
-  // простая объяснимая формула, не ML.
-  function ofd1cTVDFromShares(shareA, shareB) {
-    var cats = new Set(Array.from(shareA.keys()).concat(Array.from(shareB.keys())));
-    var sum = 0;
-    cats.forEach(function (c) { sum += Math.abs((shareA.get(c) || 0) - (shareB.get(c) || 0)); });
-    return sum / 2;
-  }
-  function ofd1cDistributionShares(dist) {
-    var m = new Map();
-    if (!dist.total) return m;
-    dist.buckets.forEach(function (b) { m.set(b.label, b.count / dist.total); });
-    return m;
-  }
-  // Текущий срок в ОФД (appearance..asOf) для ПРОИЗВОЛЬНОГО списка клиентов -- те же
-  // бакеты, что "срок ДО покупки" у купивших (OFD1C_TENURE_BUCKETS), нужно для честного
-  // TVD (сравнение одного и того же признака с обеих сторон) и для tenureFit кандидата.
-  function ofd1cTenureNowDistribution(clients, asOf) {
-    var byLabel = new Map(OFD1C_TENURE_BUCKETS.map(function (b) { return [b.label, []]; }));
-    var excluded = [];
-    clients.forEach(function (c) {
-      if (!c.appearance) { excluded.push(c); return; }
-      var months = (asOf.getTime() - c.appearance.getTime()) / (30.4368 * 86400000);
-      var label = months < 0 ? null : ofd1cTenureBucketLabel(months);
-      if (label === null) { excluded.push(c); return; }
-      byLabel.get(label).push(c);
-    });
-    var buckets = OFD1C_TENURE_BUCKETS.map(function (b) { return { label: b.label, clients: byLabel.get(b.label), count: byLabel.get(b.label).length }; });
-    return { buckets: buckets, excluded: excluded, total: clients.length - excluded.length };
-  }
-  // Раздел ОКВЭД -- первые 2 цифры кода ("47.25.1" -> "47", розничная торговля) -- полный
-  // код слишком гранулярен (тысячи уникальных значений, каждый бакет из 1-2 клиентов),
-  // раздел даёт содержательные группы, сопоставимые по размеру с кассовыми/срок-бакетами.
+  // Раздел ОКВЭД -- первые 2 цифры кода ("47.25.1" -> "47"), полный код слишком гранулярен.
   function ofd1cIndustryBucketLabel(okved) {
     if (!okved) return null;
     var m = String(okved).match(/^(\d{1,2})/);
     return m ? m[1] : null;
   }
-  var OFD1C_INDUSTRY_MIN_SAMPLE = 20; // меньше -- TVD/вес отрасли ненадёжны, признак целиком исключается
-  var OFD1C_OPF_MIN_SAMPLE = 20; // тот же гейт, для ОПФ (юр.форма) -- признак добавлен 2026-09-18
+  function ofd1cKassaAliveAt(k, d) {
+    return k.intervals.some(function (iv) { return iv.start && iv.start <= d && (!iv.end || iv.end >= d); });
+  }
 
-  // Распределение по разделам ОКВЭД -- ДИНАМИЧЕСКИЕ бакеты (не фиксированный список, как
-  // OFD1C_KASSA_BUCKETS -- разделов ОКВЭД много, заранее неизвестно, какие встретятся).
-  // clients -- уже отфильтрованы на "есть обогащение" вызывающей стороной (см. борд A
-  // график 4/ofd1cScoringCandidates) -- эта функция сама не проверяет наличие данных.
-  function ofd1cIndustryDistribution(clients) {
-    var byLabel = new Map();
-    clients.forEach(function (c) {
-      var info = ofd1cDadataInfo(c.key);
-      var label = info && info.okved ? ofd1cIndustryBucketLabel(info.okved) : null;
-      if (label == null) return;
-      if (!byLabel.has(label)) byLabel.set(label, []);
-      byLabel.get(label).push(c);
+  // Все 9 признаков клиента на дату ref (категории-строки, null = нет данных). Кассы --
+  // появившиеся до ref (та же единица, что c.kassas.length "сейчас" по всему инструменту).
+  function ofd1cClientFeaturesAt(c, ref, dadataInfo) {
+    var ks = c.kassas.filter(function (k) { return k.appearance && k.appearance <= ref; });
+    if (!ks.length) return null;
+    var yearAgo = new Date(ref.getTime() - 365 * DAY_MS);
+    var appearance = null, lastCode = null, renewMax = 0, grow = 0, aliveNow = 0, aliveYearAgo = 0;
+    ks.forEach(function (k) {
+      if (!appearance || k.appearance < appearance) appearance = k.appearance;
+      var codes = k.codes.filter(function (r) { return r.activated && r.activated <= ref; });
+      renewMax = Math.max(renewMax, codes.length - 1);
+      codes.forEach(function (r) { if (!lastCode || r.activated > lastCode.activated) lastCode = r; });
+      if (k.appearance > yearAgo) grow++;
+      if (ofd1cKassaAliveAt(k, ref)) aliveNow++;
+      if (ofd1cKassaAliveAt(k, yearAgo)) aliveYearAgo++;
     });
-    var buckets = Array.from(byLabel.keys()).sort().map(function (label) { return { label: label, clients: byLabel.get(label), count: byLabel.get(label).length }; });
-    return { buckets: buckets, total: clients.length };
+    var tenureMonths = (ref.getTime() - appearance.getTime()) / MONTH_MS;
+    var tariffMonths = lastCode ? (/(\d+)/.exec(lastCode.tariff || "") || [])[1] : null;
+    var dyn = aliveNow - aliveYearAgo;
+    var info = dadataInfo && !dadataInfo.notFound ? dadataInfo : null;
+    return {
+      kassa: ofd1cKassaBucketLabel(ks.length),
+      growthBefore: grow === 0 ? "0" : grow === 1 ? "1" : "2+",
+      industry: info ? ofd1cIndustryBucketLabel(info.okved) : null,
+      tenure: ofd1cTenureBucketLabel(tenureMonths),
+      opf: info && info.opf ? info.opf : null,
+      region: info && info.region ? info.region : null,
+      renewals: renewMax >= 3 ? "3+" : String(renewMax),
+      dynamics: !aliveYearAgo ? "не было касс год назад" : dyn < 0 ? "сократилось" : dyn === 0 ? "без изменений" : dyn === 1 ? "+1" : "+2 и больше",
+      tariff: tariffMonths ? tariffMonths + " мес" : null,
+    };
+  }
+
+  // Индексы категорий с поправкой на партнёра. rows -- [{pool, f}] вся база; isBuyer(i) --
+  // является ли rows[i] купившим. Возвращает {featureKey: {cats: Map(label -> {n, bought,
+  // expected, index}), strength, maxIndex}}. Вынесено отдельно -- та же функция считает и
+  // настоящую силу, и шум на случайных выборках (через buyerRowIdx).
+  function ofd1cPartnerAdjustedIndexes(rows, buyerRowIdx, featureKeys) {
+    var poolBase = new Map(), poolBought = new Map();
+    rows.forEach(function (r) { poolBase.set(r.pool, (poolBase.get(r.pool) || 0) + 1); });
+    buyerRowIdx.forEach(function (i) { var p = rows[i].pool; poolBought.set(p, (poolBought.get(p) || 0) + 1); });
+    var poolConv = new Map();
+    poolBase.forEach(function (n, p) { poolConv.set(p, (poolBought.get(p) || 0) / n); });
+    var out = {};
+    featureKeys.forEach(function (key) {
+      var cats = new Map();
+      rows.forEach(function (r) {
+        var v = r.f[key];
+        if (v == null) return;
+        var c = cats.get(v);
+        if (!c) { c = { n: 0, bought: 0, expected: 0, index: null }; cats.set(v, c); }
+        c.n++;
+        c.expected += poolConv.get(r.pool);
+      });
+      buyerRowIdx.forEach(function (i) { var v = rows[i].f[key]; if (v != null && cats.has(v)) cats.get(v).bought++; });
+      var weighted = 0, total = 0, maxIndex = 0;
+      cats.forEach(function (c) {
+        if (c.n < OFD1C_MIN_CATEGORY_BASE || c.expected <= 0) return;
+        c.index = c.bought / c.expected;
+        weighted += c.n * Math.abs(c.index - 1);
+        total += c.n;
+        if (c.index > maxIndex) maxIndex = c.index;
+      });
+      out[key] = { cats: cats, strength: total ? weighted / total : 0, maxIndex: maxIndex };
+    });
+    return out;
+  }
+
+  function ofd1cQuantile(sorted, q) {
+    if (!sorted.length) return 0;
+    return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  }
+
+  // Шум: OFD1C_NOISE_ITERATIONS раз берём случайных клиентов базы (столько же, сколько
+  // купивших), делаем вид, что это "купившие", и считаем ту же силу. Для скорости индексы
+  // считаются через заранее собранные таблицы "категория × пул партнёра" (не проход по
+  // всей базе на каждую итерацию).
+  function ofd1cNoiseStrengths(rows, sampleSize, featureKeys) {
+    var pools = Array.from(new Set(rows.map(function (r) { return r.pool; })));
+    var poolIdx = new Map(pools.map(function (p, i) { return [p, i]; }));
+    var poolBase = new Array(pools.length).fill(0);
+    rows.forEach(function (r) { poolBase[poolIdx.get(r.pool)]++; });
+    var tables = {};
+    featureKeys.forEach(function (key) {
+      var catIdx = new Map(), cross = []; // cross[cat][pool] = n
+      rows.forEach(function (r) {
+        var v = r.f[key];
+        if (v == null) return;
+        if (!catIdx.has(v)) { catIdx.set(v, cross.length); cross.push(new Array(pools.length).fill(0)); }
+        cross[catIdx.get(v)][poolIdx.get(r.pool)]++;
+      });
+      var catN = cross.map(function (row) { return row.reduce(function (s, x) { return s + x; }, 0); });
+      tables[key] = { catIdx: catIdx, cross: cross, catN: catN };
+    });
+    var rand = ofd1cMulberry32(OFD1C_NOISE_SEED);
+    var samples = {};
+    featureKeys.forEach(function (k) { samples[k] = []; });
+    for (var it = 0; it < OFD1C_NOISE_ITERATIONS; it++) {
+      var poolBought = new Array(pools.length).fill(0);
+      var picks = new Array(sampleSize);
+      for (var j = 0; j < sampleSize; j++) {
+        var r = rows[Math.floor(rand() * rows.length)];
+        picks[j] = r;
+        poolBought[poolIdx.get(r.pool)]++;
+      }
+      var poolConv = poolBase.map(function (n, i) { return poolBought[i] / n; });
+      featureKeys.forEach(function (key) {
+        var t = tables[key];
+        var bought = new Array(t.cross.length).fill(0);
+        picks.forEach(function (r) { var v = r.f[key]; if (v != null) bought[t.catIdx.get(v)]++; });
+        var weighted = 0, total = 0;
+        t.cross.forEach(function (row, ci) {
+          if (t.catN[ci] < OFD1C_MIN_CATEGORY_BASE) return;
+          var expected = 0;
+          for (var pi = 0; pi < row.length; pi++) expected += row[pi] * poolConv[pi];
+          if (expected <= 0) return;
+          weighted += t.catN[ci] * Math.abs(bought[ci] / expected - 1);
+          total += t.catN[ci];
+        });
+        samples[key].push(total ? weighted / total : 0);
+      });
+    }
+    var out = {};
+    featureKeys.forEach(function (k) {
+      var s = samples[k].slice().sort(function (a, b) { return a - b; });
+      out[k] = { median: ofd1cQuantile(s, 0.5), p95: ofd1cQuantile(s, 0.95) };
+    });
+    return out;
   }
 
   // Перенормировка весов на подмножество ключей (сумма присутствующих = 1). Используется и
-  // для авто-весов конкретного кандидата (нет данных по признаку -- перенормировать
-  // остальные), и для ручных весов панели развесовки (гейт по выборке может выключить
-  // признак уже ПОСЛЕ того, как ручные веса сохранены без учёта этого).
+  // для кандидата без значения признака (нет ОКВЭД в DaData и т.п.), и для ручных весов
+  // (сохранены до того, как признак включился/выключился).
   function ofd1cNormalizeWeights(weights, keys) {
     var sum = 0;
     keys.forEach(function (k) { sum += weights[k] || 0; });
     var out = {};
     if (sum > 0) { keys.forEach(function (k) { out[k] = (weights[k] || 0) / sum; }); }
-    else { var eq = 1 / keys.length; keys.forEach(function (k) { out[k] = eq; }); }
+    else if (keys.length) { var eq = 1 / keys.length; keys.forEach(function (k) { out[k] = eq; }); }
     return out;
   }
 
-  // model/ctx -- для tenureNow (ctx.asOf) и client.appearance/kassas/partner/tariff.
-  // buyerInns -- исключаются из кандидатов (уже купили, скорить нечего). allowedPartners --
-  // Set имён партнёров (null = все партнёры разрешены, пустой Set = ни одного -- см. пикер).
-  // manualWeights -- ручные веса панели развесовки (Дима, 2026-09-18): {kassa,partner,
-  // tenure,industry?,opf?} в долях (сумма провалидирована на UI = 1), null/undefined -- авто
-  // (TVD). Возвращает {list, autoWeights, enabledFeatures} -- autoWeights нужен панели
-  // развесовки для подсветки отклонения ручного значения от TVD-обоснованного.
-  function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners, manualWeights) {
-    var buyerSet = new Set(buyerInns);
+  function ofd1cFitFromIndex(stat, label) {
+    if (label == null || !stat) return 0;
+    var c = stat.cats.get(label);
+    if (!c || c.index == null || stat.maxIndex <= 1) return 0;
+    return Math.max(0, Math.min(1, (c.index - 1) / (stat.maxIndex - 1)));
+  }
+
+  // Тяжёлая часть (признаки 88к клиентов + шум) -- не зависит от выбранных партнёров и
+  // ручных весов, кэшируется на (модель, asOf, файл 1С, файл DaData). Без кэша каждый клик
+  // по чекбоксу партнёра пересчитывал бы всю базу.
+  var ofd1cScoringCache = null;
+  function ofd1cScoringModel(model, ctx) {
+    var c0 = ofd1cScoringCache;
+    if (c0 && c0.model === model && c0.asOf === ctx.asOf.getTime() && c0.records === OFD1C_STATE.records && c0.dadata === OFD1C_DADATA_STATE.records) return c0.result;
+
     var entries = ofd1cMatchedEntries(model);
-    var buyerClients = entries.map(function (e) { return e.client; });
+    var purchaseByInn = new Map(entries.filter(function (e) { return e.appearance; }).map(function (e) { return [e.inn, e.appearance]; }));
     var wholeBase = ofd1cActiveOfdClients(model, ctx);
+    var partnerOf = function (c) { return c.partner || "—"; };
+    var partnerBase = new Map();
+    wholeBase.forEach(function (c) { partnerBase.set(partnerOf(c), (partnerBase.get(partnerOf(c)) || 0) + 1); });
 
-    // ---- шаг 1: эмпирические веса (TVD купивших vs вся действующая база), тот же
-    // baseline, что уже использует борд A (ofd1cActiveOfdClients). ----
-    var kassaDistBuyers = ofd1cKassaDistribution(buyerClients);
-    var kassaDistBase = ofd1cKassaDistribution(wholeBase);
-    var tvdKassa = ofd1cTVDFromShares(ofd1cDistributionShares(kassaDistBuyers), ofd1cDistributionShares(kassaDistBase));
-    var kassaModal = ofd1cModalBucketLabel(kassaDistBuyers);
-
-    var tenureDistBuyers = ofd1cTenureDistribution(entries); // срок ДО покупки, у купивших
-    var tenureDistBase = ofd1cTenureNowDistribution(wholeBase, ctx.asOf); // срок СЕЙЧАС, у всей базы -- тот же набор бакетов
-    var tvdTenure = ofd1cTVDFromShares(ofd1cDistributionShares(tenureDistBuyers), ofd1cDistributionShares(tenureDistBase));
-    var tenureModal = tenureDistBuyers.buckets.length ? ofd1cModalBucketLabel(tenureDistBuyers) : null;
-
-    var partnerRows = ofd1cPartnerConversion(model, entries); // теперь включает партнёров с buyers=0 (нужно для честного TVD)
-    var totalBuyers = entries.length, totalClients = model.clients.size;
-    var partnerBuyerShare = new Map(), partnerBaseShare = new Map(), rateByPartner = new Map();
-    partnerRows.forEach(function (r) {
-      if (totalBuyers > 0) partnerBuyerShare.set(r.partner, r.buyers / totalBuyers);
-      if (totalClients > 0) partnerBaseShare.set(r.partner, r.total / totalClients);
-      rateByPartner.set(r.partner, r.rate);
-    });
-    var tvdPartner = ofd1cTVDFromShares(partnerBuyerShare, partnerBaseShare);
-    var maxRate = partnerRows.reduce(function (m, r) { return Math.max(m, r.rate); }, 0);
-
-    function countsToShare(arr) {
-      var counts = new Map();
-      arr.forEach(function (v) { counts.set(v, (counts.get(v) || 0) + 1); });
-      var share = new Map();
-      counts.forEach(function (n, k) { share.set(k, n / arr.length); });
-      return { share: share, counts: counts };
-    }
-
-    // Отрасль -- ТОЛЬКО если обогащения достаточно с обеих сторон (иначе TVD посчитан бы
-    // по горстке случайных ИНН и был бы шумом, не сигналом). OFD1C_DADATA_STATE может
-    // вообще не быть загружен -- тогда buyersWithIndustry/baseWithIndustry = 0, отрасль
-    // целиком выключается, остальные веса просто перенормируются.
-    var buyersWithIndustry = [], baseWithIndustry = [];
-    buyerClients.forEach(function (c) {
-      var info = ofd1cDadataInfo(c.key);
-      if (info && info.okved) buyersWithIndustry.push(ofd1cIndustryBucketLabel(info.okved));
-    });
+    var rows = [], buyerRowIdx = [];
     wholeBase.forEach(function (c) {
       var info = ofd1cDadataInfo(c.key);
-      if (info && info.okved) baseWithIndustry.push(ofd1cIndustryBucketLabel(info.okved));
+      var fToday = ofd1cClientFeaturesAt(c, ctx.asOf, info);
+      if (!fToday) return;
+      var f = fToday;
+      var purchase = purchaseByInn.get(c.key);
+      if (purchase) {
+        var fPurchase = ofd1cClientFeaturesAt(c, purchase, info);
+        if (!fPurchase) return; // покупка раньше первой кассы -- данные врут, не участвует ни как купивший, ни как база
+        f = {};
+        OFD1C_SCORE_FEATURES.forEach(function (d) { f[d.key] = d.when === "purchase" ? fPurchase[d.key] : fToday[d.key]; });
+        buyerRowIdx.push(rows.length);
+      }
+      var p = partnerOf(c);
+      rows.push({ client: c, f: f, fToday: fToday, pool: partnerBase.get(p) >= OFD1C_MIN_CATEGORY_BASE ? p : OFD1C_PARTNER_POOL_OTHER });
     });
-    var industryEnabled = buyersWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE && baseWithIndustry.length >= OFD1C_INDUSTRY_MIN_SAMPLE;
-    var tvdIndustry = 0, industryModal = null;
-    if (industryEnabled) {
-      var buyerInd = countsToShare(buyersWithIndustry), baseInd = countsToShare(baseWithIndustry);
-      tvdIndustry = ofd1cTVDFromShares(buyerInd.share, baseInd.share);
-      var bestIndCount = -1;
-      buyerInd.counts.forEach(function (n, k) { if (n > bestIndCount) { bestIndCount = n; industryModal = k; } });
-    }
 
-    // ОПФ (юр.форма) -- 5-й признак (Дима, 2026-09-18: TVD=0.30 на реальных данных 2025 года,
-    // сильнее уже используемых "касс" 0.23 -- см. tmp/plans/2026-09-18). Тот же гейт по
-    // минимальной выборке и та же механика, что у отрасли -- намеренно не общий код (разные
-    // источники модальности), проще две параллельные копии, чем общий интерфейс.
-    var buyersWithOpf = [], baseWithOpf = [];
-    buyerClients.forEach(function (c) {
-      var info = ofd1cDadataInfo(c.key);
-      if (info && info.opf) buyersWithOpf.push(info.opf);
+    var stats = ofd1cPartnerAdjustedIndexes(rows, buyerRowIdx, OFD1C_SCORE_FEATURE_KEYS);
+    var noise = buyerRowIdx.length ? ofd1cNoiseStrengths(rows, buyerRowIdx.length, OFD1C_SCORE_FEATURE_KEYS) : null;
+    var featureStats = {}, enabledFeatures = [], netSum = 0;
+    OFD1C_SCORE_FEATURE_KEYS.forEach(function (k) {
+      var s = stats[k], nz = noise ? noise[k] : { median: 0, p95: 0 };
+      var net = Math.max(0, s.strength - nz.median);
+      var enabled = buyerRowIdx.length > 0 && s.strength > nz.p95 && net > 0;
+      featureStats[k] = { strength: s.strength, noiseMedian: nz.median, noiseP95: nz.p95, net: net, enabled: enabled, cats: s.cats, maxIndex: s.maxIndex };
+      if (enabled) { enabledFeatures.push(k); netSum += net; }
     });
-    wholeBase.forEach(function (c) {
-      var info = ofd1cDadataInfo(c.key);
-      if (info && info.opf) baseWithOpf.push(info.opf);
-    });
-    var opfEnabled = buyersWithOpf.length >= OFD1C_OPF_MIN_SAMPLE && baseWithOpf.length >= OFD1C_OPF_MIN_SAMPLE;
-    var tvdOpf = 0, opfModal = null;
-    if (opfEnabled) {
-      var buyerOpf = countsToShare(buyersWithOpf), baseOpf = countsToShare(baseWithOpf);
-      tvdOpf = ofd1cTVDFromShares(buyerOpf.share, baseOpf.share);
-      var bestOpfCount = -1;
-      buyerOpf.counts.forEach(function (n, k) { if (n > bestOpfCount) { bestOpfCount = n; opfModal = k; } });
-    }
+    var autoWeights = {};
+    OFD1C_SCORE_FEATURE_KEYS.forEach(function (k) { autoWeights[k] = featureStats[k].enabled && netSum > 0 ? featureStats[k].net / netSum : 0; });
 
-    // ---- веса -- по ВСЕМ включённым признакам. kassa/partner/tenure включены всегда,
-    // industry/opf -- только если гейт по выборке (>=20 с каждой стороны) пройден.
-    var featureTvd = { kassa: tvdKassa, partner: tvdPartner, tenure: tvdTenure, industry: tvdIndustry, opf: tvdOpf };
-    var enabledFeatures = ["kassa", "partner", "tenure"].concat(industryEnabled ? ["industry"] : []).concat(opfEnabled ? ["opf"] : []);
-    var tvdSum = enabledFeatures.reduce(function (s, k) { return s + featureTvd[k]; }, 0);
-    var autoWeights = { kassa: 0, partner: 0, tenure: 0, industry: 0, opf: 0 };
-    if (tvdSum > 0) {
-      enabledFeatures.forEach(function (k) { autoWeights[k] = featureTvd[k] / tvdSum; });
-    } else {
-      var eqShare = 1 / enabledFeatures.length; // вырожденный случай (все TVD=0) -- равные веса, не деление на 0
-      enabledFeatures.forEach(function (k) { autoWeights[k] = eqShare; });
-    }
-    // Ручной режим (панель развесовки, Дима, 2026-09-18) -- веса берутся из manualWeights
-    // (уже провалидированы на UI: сумма=1, каждый >=0), но ТОЛЬКО для признаков, реально
-    // включённых сейчас -- гейт по выборке не обходится ручным вводом, иначе можно накрутить
-    // вес статистически ненадёжному признаку. Перенормировка на случай, если manualWeights
-    // не содержит какой-то из enabledFeatures (сохранили веса ДО того, как признак включился).
-    var activeWeights = autoWeights;
-    if (manualWeights) {
-      var manualSubset = {};
-      enabledFeatures.forEach(function (k) { manualSubset[k] = manualWeights[k] || 0; });
-      activeWeights = ofd1cNormalizeWeights(manualSubset, enabledFeatures);
-    }
-
-    // ---- потенциальная выручка -- НЕ часть score, отдельная колонка. Медиана
-    // реальной выручки на кассу среди уже купивших (из m.records.totalSum -- настоящие
-    // суммы из файла сверки 1С, не гадаем), делённая на касс-на-момент-покупки (не
-    // касс-сейчас -- прокси размера бизнеса В МОМЕНТ решения о покупке). ----
+    // Потенциальная выручка -- НЕ часть score, отдельная колонка (как в v2): медиана
+    // реальной выручки на кассу у купивших (суммы из сверки 1С) × касс кандидата.
     var revenuePerKassaSamples = [];
     entries.forEach(function (e) {
       var sum = e.records.reduce(function (s, r) { return s + (r.totalSum || 0); }, 0);
       var atPurchase = ofd1cKassasAtPurchase(e.client, e.appearance);
       if (sum > 0 && atPurchase) revenuePerKassaSamples.push(sum / atPurchase);
     });
-    var medianRevenuePerKassa = ofd1cMedian(revenuePerKassaSamples);
 
-    // ---- шаг 3: точки соприкосновения -- общий директор с уже купившим (dadata.director).
-    // Map(ФИО -> Set(ИНН купивших с этим директором)) -- строим один раз, не на каждого
-    // кандидата. ФИО физлица (152-ФЗ), публичные данные ЕГРЮЛ -- см. пометку юриста выше. ----
+    // Точки соприкосновения -- общий директор с уже купившим (как в v2, отдельная пометка,
+    // не вес; ФИО физлица, 152-ФЗ -- см. пометку юриста в HISTORY.md 2026-09-17).
     var buyerDirectorMap = new Map();
-    buyerClients.forEach(function (c) {
-      var info = ofd1cDadataInfo(c.key);
+    entries.forEach(function (e) {
+      var info = ofd1cDadataInfo(e.inn);
       if (info && info.director) {
         if (!buyerDirectorMap.has(info.director)) buyerDirectorMap.set(info.director, new Set());
-        buyerDirectorMap.get(info.director).add(c.key);
+        buyerDirectorMap.get(info.director).add(e.inn);
       }
     });
 
-    // Гейт по оттоку (PO, ревью 2026-09-17) -- не скорим клиента, который уходит/на грани
-    // ухода. ПЕРВАЯ версия гейта (снята в этом же заходе, не гипотеза -- поймано первым
-    // же прогоном теста: "Кандидатов: 0") ошибочно использовала clientChurnStatus как
-    // "активен ли клиент прямо сейчас" -- эта функция классифицирует УЖЕ СЛУЧИВШИЙСЯ разрыв
-    // (нужен clientChurnStatus только для клиентов, чей currentEnd уже в прошлом), для
-    // действующего клиента с currentEnd в будущем она возвращает "pending" ВСЕГДА -- гейт
-    // отсекал практически всю базу. Верно: (1) кандидат берётся из wholeBase (уже
-    // отфильтрован "действующий сейчас", та же логика, что борд A), (2) ДОПОЛНИТЕЛЬНО
-    // исключаем тех, кто под риском в ближайшие 30 дней -- тот же `clientsAtRisk`, что уже
-    // использует борд "Клиенты под риском" (b1-risk), не самодельная интерпретация.
+    // Гейт по оттоку -- клиенты под риском в ближайшие 30 дней не скорятся (тот же
+    // clientsAtRisk, что b1-risk; clientChurnStatus для этого НЕ подходит, см. HISTORY.md).
     var riskyInns = new Set(ctx.M.clientsAtRisk(model, ctx.asOf, ctx.M.daysThresholdFn(ctx.asOf, 30)).map(function (r) { return r.key; }));
 
+    var result = {
+      rows: rows, buyerRowIdx: buyerRowIdx, buyerInns: new Set(entries.map(function (e) { return e.inn; })),
+      featureStats: featureStats, enabledFeatures: enabledFeatures, autoWeights: autoWeights,
+      buyersCount: buyerRowIdx.length, baseCount: rows.length,
+      medianRevenuePerKassa: ofd1cMedian(revenuePerKassaSamples),
+      buyerDirectorMap: buyerDirectorMap, riskyInns: riskyInns,
+    };
+    ofd1cScoringCache = { model: model, asOf: ctx.asOf.getTime(), records: OFD1C_STATE.records, dadata: OFD1C_DADATA_STATE.records, result: result };
+    return result;
+  }
+
+  function ofd1cReasonText(key, label, index) {
+    var x = "×" + index.toFixed(2).replace(".", ",");
+    var name = key === "industry" ? "отрасль " + label + (OFD1C_OKVED_LABELS[label] ? " (" + OFD1C_OKVED_LABELS[label] + ")" : "") : ofd1cFeatureDef(key).reason + " «" + label + "»";
+    return name + " — " + x + " к средней";
+  }
+  function ofd1cFeatureDef(key) {
+    for (var i = 0; i < OFD1C_SCORE_FEATURES.length; i++) if (OFD1C_SCORE_FEATURES[i].key === key) return OFD1C_SCORE_FEATURES[i];
+    return { key: key, label: key, reason: key };
+  }
+  function ofd1cFeatureLabel(key) { return ofd1cFeatureDef(key).label; }
+
+  // buyerInns -- оставлен в сигнатуре для совместимости (купившие берутся из файла сверки
+  // внутри ofd1cScoringModel). allowedPartners -- Set имён (null = все, пустой = никого).
+  // manualWeights -- ручные веса панели в долях по ключам OFD1C_SCORE_FEATURES, null -- авто.
+  function ofd1cScoringCandidates(model, buyerInns, ctx, allowedPartners, manualWeights) {
+    var sm = ofd1cScoringModel(model, ctx);
+    var activeWeights = sm.autoWeights;
+    if (manualWeights) {
+      // Ручной ввод не обходит автоотключение признака (сила не выше шума) -- иначе можно
+      // накрутить вес статистически пустому признаку.
+      var manualSubset = {};
+      sm.enabledFeatures.forEach(function (k) { manualSubset[k] = manualWeights[k] || 0; });
+      activeWeights = ofd1cNormalizeWeights(manualSubset, sm.enabledFeatures);
+    }
+    var excluded = new Set(buyerInns);
     var out = [];
-    wholeBase.forEach(function (c) {
-      var inn = c.key;
-      if (buyerSet.has(inn)) return;
+    sm.rows.forEach(function (row) {
+      var c = row.client, inn = c.key;
+      if (sm.buyerInns.has(inn) || excluded.has(inn)) return;
       var partner = c.partner || "—";
       if (allowedPartners && !allowedPartners.has(partner)) return;
-      if (riskyInns.has(inn)) return;
-      // Без реального совпадения DaData кандидата не рассматриваем ВООБЩЕ (Дима,
-      // 2026-09-18: "без полного сопоставления просто не рассматриваем, чтобы не создавать
-      // шум") -- ни "ещё не обогащён" (нет записи в кэше), ни "DaData не нашла" (notFound).
-      // Раньше отсутствие данных просто перераспределяло вес между остальными признаками --
-      // теперь кандидат целиком выпадает из списка.
-      var dadataInfo = ofd1cDadataInfo(inn);
-      if (!dadataInfo || dadataInfo.notFound) return;
+      if (sm.riskyInns.has(inn)) return;
+      // Без реального совпадения DaData кандидат не рассматривается (Дима, 2026-09-18).
+      var info = ofd1cDadataInfo(inn);
+      if (!info || info.notFound) return;
 
-      var kassaLabel = ofd1cKassaBucketLabel(c.kassas.length);
-      var kassaFit = ofd1cBucketFit(OFD1C_KASSA_BUCKETS, kassaLabel, kassaModal);
-      var rate = rateByPartner.has(partner) ? rateByPartner.get(partner) : 0;
-      var partnerFit = maxRate > 0 ? rate / maxRate : 0;
-      var tenureNowMonths = c.appearance ? (ctx.asOf.getTime() - c.appearance.getTime()) / (30.4368 * 86400000) : null;
-      var tenureLabel = tenureNowMonths == null ? null : ofd1cTenureBucketLabel(tenureNowMonths);
-      var tenureFit = ofd1cBucketFit(OFD1C_TENURE_BUCKETS, tenureLabel, tenureModal);
-
-      var industryLabel = industryEnabled && dadataInfo.okved ? ofd1cIndustryBucketLabel(dadataInfo.okved) : null;
-      var industryFit = industryLabel != null ? (industryLabel === industryModal ? 1 : 0) : null;
-      var opfLabel = opfEnabled && dadataInfo.opf ? dadataInfo.opf : null;
-      var opfFit = opfLabel != null ? (opfLabel === opfModal ? 1 : 0) : null;
-
-      // Веса для ЭТОГО конкретного кандидата -- перенормируем на признаки, у которых
-      // реально есть значение (industryFit/opfFit могут быть null для отдельного кандидата,
-      // даже если признак глобально включён -- редкий случай "DaData нашла компанию, но без
-      // ОКВЭД/ОПФ в ответе"). kassa/partner/tenure есть всегда, не бывают null.
-      var presentKeys = ["kassa", "partner", "tenure"].concat(industryFit != null ? ["industry"] : []).concat(opfFit != null ? ["opf"] : []);
+      var f = row.fToday; // кандидат -- всё на сегодня (для него "сегодня" и есть момент решения)
+      var presentKeys = sm.enabledFeatures.filter(function (k) { return f[k] != null; });
       var w = ofd1cNormalizeWeights(activeWeights, presentKeys);
-
-      var score = Math.round(100 * (
-        w.kassa * kassaFit + w.partner * partnerFit + w.tenure * tenureFit
-        + (industryFit != null ? w.industry * industryFit : 0)
-        + (opfFit != null ? w.opf * opfFit : 0)
-      ));
-
-      var reasons = [];
-      if (kassaFit > 0) reasons.push(fmtNum(c.kassas.length) + " касс (бакет " + kassaLabel + (kassaFit === 1 ? ", как у большинства купивших" : ", рядом с типичным") + ")");
-      if (partnerFit > 0) reasons.push("партнёр «" + partner + "» с конверсией " + fmtPct(rate));
-      if (tenureFit > 0) reasons.push("срок в ОФД " + tenureNowMonths.toFixed(1) + " мес (окно " + tenureLabel + (tenureFit === 1 ? ", то же, где чаще покупают" : ", рядом") + ")");
-      if (industryFit === 1) reasons.push("отрасль ОКВЭД " + industryLabel + ", как у большинства купивших");
-      if (opfFit === 1) reasons.push("организационно-правовая форма «" + opfLabel + "», как у большинства купивших");
+      var total = 0, contributions = [];
+      presentKeys.forEach(function (k) {
+        var st = sm.featureStats[k];
+        var fit = ofd1cFitFromIndex(st, f[k]);
+        total += w[k] * fit;
+        if (fit > 0) contributions.push({ key: k, part: w[k] * fit, label: f[k], index: st.cats.get(f[k]).index });
+      });
+      var score = Math.round(100 * total);
+      contributions.sort(function (a, b) { return b.part - a.part; });
+      var reasons = contributions.slice(0, 3).map(function (x) { return ofd1cReasonText(x.key, x.label, x.index); });
 
       var affiliated = null;
-      if (dadataInfo.director && buyerDirectorMap.has(dadataInfo.director)) {
-        var withThisDirector = buyerDirectorMap.get(dadataInfo.director);
+      if (info.director && sm.buyerDirectorMap.has(info.director)) {
+        var withThisDirector = sm.buyerDirectorMap.get(info.director);
         if (!(withThisDirector.size === 1 && withThisDirector.has(inn))) {
           affiliated = Array.from(withThisDirector).join(", ");
-          reasons.unshift("⚡ тот же директор (" + dadataInfo.director + "), что у уже купившего 1С: " + affiliated);
+          reasons.unshift("⚡ тот же директор (" + info.director + "), что у уже купившего 1С: " + affiliated);
         }
       }
-
-      var revenuePotential = medianRevenuePerKassa != null ? Math.round(c.kassas.length * medianRevenuePerKassa) : null;
-
+      var tenureNowMonths = c.appearance ? (ctx.asOf.getTime() - c.appearance.getTime()) / MONTH_MS : null;
       out.push({
         key: inn, org: c.org, partner: partner, activeKassas: c.kassas.length, tariff: c.tariff || "—",
         tenureNowMonths: tenureNowMonths == null ? null : Math.round(tenureNowMonths * 10) / 10,
         score: score, scoreHtml: ofd1cScorePill(score),
-        revenuePotential: revenuePotential,
+        revenuePotential: sm.medianRevenuePerKassa != null ? Math.round(c.kassas.length * sm.medianRevenuePerKassa) : null,
         affiliated: affiliated,
-        reason: reasons.length ? reasons.join("; ") : "недостаточно данных для уверенного совпадения",
+        hasContact: !!(c.kassas.some(function (k) { return k.phone || k.email; })),
+        dynamics: f.dynamics,
+        reason: reasons.length ? reasons.join("; ") : "черты клиента на уровне средней базы",
       });
     });
     out.sort(function (a, b) { return b.score - a.score; });
-    return { list: out, autoWeights: autoWeights, enabledFeatures: enabledFeatures };
+    return { list: out, autoWeights: sm.autoWeights, enabledFeatures: sm.enabledFeatures, featureStats: sm.featureStats, buyersCount: sm.buyersCount, baseCount: sm.baseCount };
   }
 
   function ofd1cLapsedAt(entry, atDate) {
@@ -5078,67 +5118,192 @@
     },
   };
 
-  // ---------- Борд "Отрасль (ОКВЭД)" -- вынесен из b8-1c-portrait-compare отдельным
-  // бордом (Дима, 2026-09-18: борд "купившие vs контроль" стал перенасыщенным, 4 графика
-  // на одном холсте неудобны). Логика 1:1 та же, что была графиком 4 борда A -- своя копия
-  // entries/buyerClients/wholeBase/openCard (тот же паттерн setup, что у самого борда A),
-  // не общий импорт state -- виджеты рендерятся независимо друг от друга.
+  // Словарь расшифровок ОКВЭД -- двузначный код класса -> краткое название (Дима,
+  // 2026-09-18: "под каждым ОКВЭД краткое наименование, за что данный ОКВЭД отвечает").
+  // Источник: официальный текст ОК 029-2014 (КДЕС Ред.2), приказ Росстандарта от
+  // 31.01.2014 №14-ст (consultant.ru/document/cons_doc_LAW_163320/), сверено кросс-
+  // источниками (research-агент, 2026-09-18) -- для UI-подсказки, не юридический
+  // документ; отсутствующие в диапазоне 01-99 числа (04,34,40,44,48,54,57,67,76,83,89) --
+  // официальные пропуски классификатора, не баг словаря.
+  var OFD1C_OKVED_LABELS = {
+    "01": "Растениеводство и животноводство, охота", "02": "Лесоводство и лесозаготовки",
+    "03": "Рыболовство и рыбоводство", "05": "Добыча угля",
+    "06": "Добыча сырой нефти и природного газа", "07": "Добыча металлических руд",
+    "08": "Добыча прочих полезных ископаемых", "09": "Услуги в области добычи полезных ископаемых",
+    "10": "Производство пищевых продуктов", "11": "Производство напитков",
+    "12": "Производство табачных изделий", "13": "Производство текстильных изделий",
+    "14": "Производство одежды", "15": "Производство кожи и изделий из кожи",
+    "16": "Обработка древесины, изделия из дерева", "17": "Производство бумаги и бумажных изделий",
+    "18": "Полиграфическая деятельность, копирование носителей", "19": "Производство кокса и нефтепродуктов",
+    "20": "Производство химических веществ и продуктов", "21": "Производство лекарственных средств и материалов",
+    "22": "Производство резиновых и пластмассовых изделий", "23": "Производство прочей неметаллической минеральной продукции",
+    "24": "Металлургическое производство", "25": "Производство готовых металлических изделий",
+    "26": "Производство компьютеров, электроники, оптики", "27": "Производство электрического оборудования",
+    "28": "Производство машин и оборудования", "29": "Производство автотранспортных средств, прицепов",
+    "30": "Производство прочих транспортных средств", "31": "Производство мебели",
+    "32": "Производство прочих готовых изделий", "33": "Ремонт и монтаж машин и оборудования",
+    "35": "Электро-, газо-, пароснабжение, кондиционирование воздуха", "36": "Забор, очистка и распределение воды",
+    "37": "Сбор и обработка сточных вод", "38": "Сбор, обработка и утилизация отходов",
+    "39": "Ликвидация загрязнений, удаление отходов", "41": "Строительство зданий",
+    "42": "Строительство инженерных сооружений", "43": "Специализированные строительные работы",
+    "45": "Торговля и ремонт автотранспорта, мотоциклов", "46": "Оптовая торговля (кроме автотранспорта)",
+    "47": "Розничная торговля (кроме автотранспорта)", "49": "Сухопутный и трубопроводный транспорт",
+    "50": "Деятельность водного транспорта", "51": "Деятельность воздушного и космического транспорта",
+    "52": "Складское хозяйство, вспомогательная транспортная деятельность", "53": "Почтовая связь и курьерская деятельность",
+    "55": "Услуги по временному проживанию (гостиницы)", "56": "Деятельность ресторанов и предприятий питания",
+    "58": "Издательская деятельность", "59": "Производство кино-, видеофильмов, звукозапись",
+    "60": "Телевизионное и радиовещание", "61": "Деятельность в сфере телекоммуникаций",
+    "62": "Разработка ПО, IT-консультации", "63": "Деятельность в области информационных технологий",
+    "64": "Финансовые услуги (кроме страхования)", "65": "Страхование и пенсионное обеспечение",
+    "66": "Вспомогательная деятельность в финансах и страховании", "68": "Операции с недвижимым имуществом",
+    "69": "Деятельность в области права и бухучёта", "70": "Головные офисы, управленческий консалтинг",
+    "71": "Архитектура, инженерное проектирование, испытания", "72": "Научные исследования и разработки",
+    "73": "Реклама и исследование конъюнктуры рынка", "74": "Прочая профессиональная научно-техническая деятельность",
+    "75": "Ветеринарная деятельность", "77": "Аренда и лизинг",
+    "78": "Трудоустройство и подбор персонала", "79": "Деятельность туристических агентств",
+    "80": "Услуги безопасности и расследований", "81": "Обслуживание зданий и территорий",
+    "82": "Административно-хозяйственные услуги для бизнеса", "84": "Госуправление, военная безопасность, соцобеспечение",
+    "85": "Образование", "86": "Деятельность в области здравоохранения",
+    "87": "Уход с обеспечением проживания", "88": "Социальные услуги без обеспечения проживания",
+    "90": "Творческая деятельность, искусство, развлечения", "91": "Деятельность библиотек, архивов, музеев",
+    "92": "Организация азартных игр, заключение пари", "93": "Деятельность в области спорта, отдыха",
+    "94": "Деятельность общественных организаций", "95": "Ремонт компьютеров и предметов личного пользования",
+    "96": "Прочие персональные услуги", "97": "Деятельность домашних хозяйств с наёмными работниками",
+    "98": "Недифференцированная деятельность частных домохозяйств", "99": "Деятельность экстерриториальных организаций и органов",
+  };
+
+  // ---------- Борд "Отрасль (ОКВЭД)" v3 (Дима, 2026-09-28: "очень неудачное отображение,
+  // неудобно сопоставлять купивших и общую базу -- принципиально изменить формат"). Вопрос
+  // борда -- "в каких отраслях клиенты покупают 1С чаще среднего". v2 (два барчарта "штук"
+  // бок о бок + таблица + drilldown) показывала розницу 47 первой просто потому, что её
+  // больше всего в базе, при конверсии ×0,78 к средней. v3 -- ОДНА таблица-рейтинг:
+  // база / купили / конверсия / индекс к средней (полоска вокруг ×1) / индекс без влияния
+  // партнёра (тот, что использует скоринг). Отрасли с базой < 300 -- свёрнутая группа "мало
+  // данных" (одна случайная покупка переворачивает индекс). Данные -- из того же
+  // ofd1cScoringModel (кэш), что скоринг: купившие = действующие сегодня, база = вся
+  // действующая база, только клиенты с ОКВЭД из DaData.
+  var OFD1C_INDUSTRY_BAR_MAX = 4; // правый край полоски = ×4, выше -- упирается в край
+  var OFD1C_INDUSTRY_TABLE_MAX_HEIGHT = "620px";
+
+  function ofd1cIndexBar(index) {
+    var left = 30, right = 70; // % ширины: слева 0..×1, справа ×1..×MAX
+    var fill, color, offset;
+    if (index >= 1) {
+      fill = Math.min(1, (index - 1) / (OFD1C_INDUSTRY_BAR_MAX - 1)) * right;
+      offset = left; color = "var(--good)";
+    } else {
+      fill = (1 - Math.max(0, index)) * left;
+      offset = left - fill; color = "var(--muted)";
+    }
+    return '<div style="position:relative;min-width:150px;height:12px;background:color-mix(in oklab, var(--line) 55%, transparent);border-radius:6px">' +
+      '<div style="position:absolute;left:' + offset.toFixed(1) + '%;width:' + fill.toFixed(1) + '%;top:0;bottom:0;background:' + color + ';border-radius:6px"></div>' +
+      '<div style="position:absolute;left:' + left + '%;top:-2px;bottom:-2px;width:2px;background:var(--ink)" title="×1 — средняя"></div>' +
+      '<span style="display:none">' + index.toFixed(4) + '</span></div>';
+  }
+  function ofd1cFmtIndex(x) { return x == null ? "—" : "×" + x.toFixed(2).replace(".", ","); }
+
   WIDGETS["b8-1c-industry"] = {
-    title: "Обмен с 1С — отрасль (ОКВЭД)", type: "график", scope: "as-of", span: true,
+    title: "Обмен с 1С — отрасль (ОКВЭД)", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx) {
       var wrap = el('<div></div>');
       if (!OFD1C_STATE.records) {
-        wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится распределение купивших 1С по отраслям.</div>'));
+        wrap.appendChild(el('<div class="placeholder-body">Загрузи файл в борде «Обмен с 1С — загрузка файла» — здесь появится рейтинг отраслей по конверсии в 1С.</div>'));
         return wrap;
       }
-      var entries = ofd1cMatchedEntries(model);
-      if (!entries.length) {
-        wrap.appendChild(el('<div class="placeholder-body">Ни один клиент из файла обмена 1С не сопоставился с базой ОФД по ИНН — сравнивать не с чем.</div>'));
+      if (!OFD1C_DADATA_STATE.records) {
+        wrap.appendChild(el('<div class="placeholder-body">Загрузи <code>dadata-cache.json</code> (кнопка «DaData» в шапке) — отрасль клиента берётся оттуда.</div>'));
         return wrap;
       }
-      function openCard(inn, cardHolder) {
-        if (!cardHolder) return;
+      var sm = ofd1cScoringModel(model, ctx);
+      var stat = sm.featureStats.industry;
+      var rowsWithInd = sm.rows.filter(function (r) { return r.fToday.industry != null; });
+      var buyerIdxSet = new Set(sm.buyerRowIdx);
+      var buyersWithInd = sm.buyerRowIdx.filter(function (i) { return sm.rows[i].fToday.industry != null; }).length;
+      if (!buyersWithInd || !rowsWithInd.length) {
+        wrap.appendChild(el('<div class="placeholder-body">Нет купивших 1С с отраслью из DaData — сравнивать не с чем.</div>'));
+        return wrap;
+      }
+      var avgConv = buyersWithInd / rowsWithInd.length;
+      var byCode = new Map();
+      sm.rows.forEach(function (r, i) {
+        var code = r.fToday.industry;
+        if (code == null) return;
+        var g = byCode.get(code);
+        if (!g) { g = { code: code, label: OFD1C_OKVED_LABELS[code] || null, base: [], buyers: [] }; byCode.set(code, g); }
+        g.base.push(r.client);
+        if (buyerIdxSet.has(i)) g.buyers.push(r.client);
+      });
+      var items = Array.from(byCode.values()).map(function (g) {
+        var conv = g.buyers.length / g.base.length;
+        var c = stat.cats.get(g.code);
+        return { code: g.code, label: g.label, base: g.base, buyers: g.buyers, conv: conv, index: conv / avgConv, adjIndex: c ? c.index : null };
+      });
+      var reliable = items.filter(function (x) { return x.base.length >= OFD1C_MIN_CATEGORY_BASE; }).sort(function (a, b) { return b.index - a.index; });
+      var small = items.filter(function (x) { return x.base.length < OFD1C_MIN_CATEGORY_BASE; }).sort(function (a, b) { return b.base.length - a.base.length; });
+
+      wrap.appendChild(el(
+        '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;margin-bottom:10px">' +
+        '<div><span class="stat-label">Средняя конверсия в 1С</span> <b style="font-size:20px">' + fmtPct(avgConv) + '</b></div>' +
+        '<div class="stat-label" style="color:var(--muted)">купили ' + fmtNum(buyersWithInd) + ' из ' + fmtNum(rowsWithInd.length) + ' действующих клиентов с отраслью из DaData</div>' +
+        '</div>'
+      ));
+      wrap.appendChild(el('<div class="stat-label" style="margin-bottom:8px;color:var(--muted)">Индекс к средней: ×1 — покупают как все, ×2 — вдвое чаще. «Без влияния партнёра» — тот же индекс, очищенный от того, что отрасль чаще приходит через сильных в 1С партнёров; его использует скоринг. Клик по строке — список клиентов ниже.</div>'));
+
+      var drillHolder = el('<div style="margin-top:12px"></div>');
+      var cardHolder = el('<div style="margin-top:10px"></div>');
+      function openCard(inn) {
         var client = model.clients.get(inn);
         if (!client) return;
         var matched = ofd1cMatchClients(model).find(function (x) { return x.inn === inn; });
-        var m = matched || { inn: inn, client: client, records: [] };
-        ofd1cRenderClientCard(cardHolder, m, ctx);
+        ofd1cRenderClientCard(cardHolder, matched || { inn: inn, client: client, records: [] }, ctx);
       }
-      var buyerClients = entries.map(function (e) { return e.client; });
-      var wholeBase = ofd1cActiveOfdClients(model, ctx);
+      function renderDrilldown(item) {
+        drillHolder.innerHTML = "";
+        cardHolder.innerHTML = "";
+        drillHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>ОКВЭД ' + esc(item.code) + (item.label ? ' — ' + esc(item.label) : '') + '</b> · база ' + fmtNum(item.base.length) + ', купили ' + fmtNum(item.buyers.length) + ', конверсия ' + fmtPct(item.conv) + '</div>'));
+        var cols = el('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"></div>');
+        var buyerSet = new Set(item.buyers);
+        [["Купившие 1С", item.buyers], ["Не купившие", item.base.filter(function (c) { return !buyerSet.has(c); })]].forEach(function (pair) {
+          var col = el('<div></div>'); // заголовок и счётчик рисует сам renderDrillTable
+          var area = el('<div></div>');
+          col.appendChild(area);
+          renderDrillTable(area, pair[1].map(ofd1cClientRow), OFD1C_PORTRAIT_COLUMNS, OFD1C_PORTRAIT_FILTERS, "клиентов", pair[0], 300, openCard);
+          cols.appendChild(col);
+        });
+        drillHolder.appendChild(cols);
+        drillHolder.appendChild(cardHolder);
+      }
 
-      var industrySection = el('<div class="chart-card" style="border:1px solid var(--line);border-radius:12px;padding:12px 14px"></div>');
-      industrySection.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Отрасль (ОКВЭД, раздел)</b></div>'));
-      if (!OFD1C_DADATA_STATE.records) {
-        industrySection.appendChild(el('<div class="placeholder-body">Загрузи <code>dadata-cache.json</code> в борде «Обогащение DaData — загрузка» — здесь появится распределение по отраслям.</div>'));
-      } else {
-        var buyersInd = buyerClients.filter(function (c) { var i = ofd1cDadataInfo(c.key); return i && i.okved; });
-        var baseInd = wholeBase.filter(function (c) { var i = ofd1cDadataInfo(c.key); return i && i.okved; });
-        if (buyersInd.length < OFD1C_INDUSTRY_MIN_SAMPLE || baseInd.length < OFD1C_INDUSTRY_MIN_SAMPLE) {
-          industrySection.appendChild(el('<div class="placeholder-body">Обогащено пока ' + fmtNum(buyersInd.length) + ' из ' + fmtNum(entries.length) + ' купивших 1С и ' + fmtNum(baseInd.length) + ' клиентов базы — обогащение идёт партиями по дням, недостаточно данных для надёжного графика (нужно от ' + OFD1C_INDUSTRY_MIN_SAMPLE + ' с каждой стороны). Загляни через несколько дней.</div>'));
-        } else {
-          var industryDistBuyers = ofd1cIndustryDistribution(buyersInd);
-          var industryDistBase = ofd1cIndustryDistribution(baseInd);
-          industrySection.appendChild(el(
-            '<div class="stat-label" style="margin-bottom:6px;color:var(--muted)">Обогащено: ' + fmtNum(buyersInd.length) + ' из ' + fmtNum(entries.length) + ' купивших, ' + fmtNum(baseInd.length) + ' из ' + fmtNum(wholeBase.length) + ' действующей базы — график по мере обогащения будет точнее.</div>'
-          ));
-          var indCols = el('<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px"></div>');
-          var indBuyerCol = el('<div></div>');
-          indBuyerCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Купившие 1С</div>'));
-          indBuyerCol.appendChild(ofd1cBucketDrillBoard(industryDistBuyers.buckets.filter(function (b) { return b.count > 0; }).map(function (b) {
-            return { label: "ОКВЭД " + b.label + " (" + fmtPct(industryDistBuyers.total ? b.count / industryDistBuyers.total : 0) + ")", count: b.count, rows: b.clients.map(ofd1cClientRow) };
-          }), { color: "var(--s1)", exportName: "Отрасль — купившие 1С", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
-          var indBaseCol = el('<div></div>');
-          indBaseCol.appendChild(el('<div class="stat-label" style="margin-bottom:4px">Вся действующая база (обогащённая часть)</div>'));
-          indBaseCol.appendChild(ofd1cBucketDrillBoard(industryDistBase.buckets.filter(function (b) { return b.count > 0; }).map(function (b) {
-            return { label: "ОКВЭД " + b.label + " (" + fmtPct(industryDistBase.total ? b.count / industryDistBase.total : 0) + ")", count: b.count, rows: b.clients.map(ofd1cClientRow) };
-          }), { color: "var(--s2)", exportName: "Отрасль — база", onRowClick: openCard, columns: OFD1C_PORTRAIT_COLUMNS }));
-          indCols.appendChild(indBuyerCol);
-          indCols.appendChild(indBaseCol);
-          industrySection.appendChild(indCols);
-        }
+      var headers = [
+        { label: "ОКВЭД / отрасль" }, { label: "База", num: true }, { label: "Купили", num: true },
+        { label: "Конверсия", num: true }, { label: "Индекс к средней", num: true },
+        { label: "", html: true }, { label: "Без влияния партнёра", num: true },
+      ];
+      function tableFor(list) {
+        var t = makeSortableTable(headers, list.map(function (x) {
+          return [x.code + (x.label ? " " + x.label : ""), x.base.length, x.buyers.length, fmtPct(x.conv), ofd1cFmtIndex(x.index), ofd1cIndexBar(x.index), ofd1cFmtIndex(x.adjIndex)];
+        }));
+        t.querySelectorAll("tbody tr").forEach(function (tr, i) {
+          tr.style.cursor = "pointer";
+          tr.dataset.code = list[i].code;
+          tr.addEventListener("click", function () { renderDrilldown(list[i]); });
+        });
+        return t;
       }
-      wrap.appendChild(industrySection);
+      // Рейтинг -- главное содержимое борда: общий кап .table-scroll (260px ≈ 5 строк)
+      // прятал 24 из 29 отраслей. ~15 строк на экране, остальное -- прокрутка внутри.
+      var mainTable = tableFor(reliable);
+      mainTable.style.maxHeight = OFD1C_INDUSTRY_TABLE_MAX_HEIGHT;
+      mainTable.querySelectorAll("th").forEach(function (th) { th.style.position = "sticky"; th.style.top = "0"; th.style.background = "var(--card-bg)"; th.style.zIndex = "1"; });
+      wrap.appendChild(mainTable);
+      if (small.length) {
+        var details = el('<details class="ofd1c-small-industries" style="margin-top:10px"><summary style="cursor:pointer;color:var(--muted);font-size:12.5px">Мелкие отрасли (база меньше ' + OFD1C_MIN_CATEGORY_BASE + '): ' + fmtNum(small.length) + ' шт. — мало данных, индекс ненадёжен, в скоринге не учитываются</summary></details>');
+        var smallTable = tableFor(small);
+        smallTable.style.opacity = ".6";
+        details.appendChild(smallTable);
+        wrap.appendChild(details);
+      }
+      wrap.appendChild(drillHolder);
       return wrap;
     },
   };
@@ -5174,6 +5339,7 @@
     // Потенциальная выручка -- НЕ часть score (формула v2, 2026-09-17), отдельная колонка
     // для сортировки продавцом по ценности, не только по похожести профиля.
     { label: "Потенц. выручка", key: "revenuePotential", num: true },
+    { label: "Динамика касс 12 мес", key: "dynamics" },
     { label: "Причина", key: "reason" },
   ];
   var OFD1C_SCORING_FILTERS = [{ label: "ИНН", key: "key" }, { label: "Клиент", key: "org" }, { label: "Партнёр", key: "partner" }];
@@ -5184,20 +5350,38 @@
   // Персистентность -- localStorage, тот же приём, что уже хранит выбор партнёров на этом
   // борде (переживает reload/новую загрузку файла).
   var OFD1C_WEIGHT_MODE_KEY = "ofd1c-scoring-weight-mode-v1"; // "auto" | "manual"
-  var OFD1C_MANUAL_WEIGHTS_KEY = "ofd1c-scoring-manual-weights-v1"; // {kassa,partner,tenure,industry,opf} в процентах 0-100
+  var OFD1C_MANUAL_WEIGHTS_KEY = "ofd1c-scoring-manual-weights-v2"; // {ключ признака v3: %} -- v2 ключа: набор признаков сменился 2026-09-28, старые ручные веса (с партнёром) не переносим
+  // Контроль дрейфа весов (Дима, 2026-09-28: "как часто уточнять правильность весов") --
+  // снимок последних принятых авто-весов; сдвиг любого > OFD1C_WEIGHT_DRIFT_PP -- плашка.
+  var OFD1C_WEIGHT_SNAPSHOT_KEY = "ofd1c-scoring-weight-snapshot-v1"; // {weights:{k:%}, buyers, asOf}
+  var OFD1C_WEIGHT_DRIFT_PP = 5;
   var OFD1C_WEIGHT_DEVIATION_WARN = 5; // п.п. -- порог жёлтого (Дима, 2026-09-18)
   var OFD1C_WEIGHT_DEVIATION_CRIT = 15; // п.п. -- порог красного
-  var OFD1C_WEIGHT_LABELS = {
-    kassa: "Число касс", partner: "Партнёр", tenure: "Срок в ОФД",
-    industry: "Отрасль (ОКВЭД)", opf: "Организационно-правовая форма",
-  };
-  var OFD1C_WEIGHT_DESCRIPTIONS = {
-    kassa: "похожесть числа касс на типичное у уже купивших 1С",
-    partner: "конверсия партнёра — доля его клиентов, купивших 1С",
-    tenure: "срок в ОФД до сейчас попадает в типичное окно покупки у купивших",
-    industry: "отрасль (ОКВЭД, раздел) совпадает с типичной у купивших",
-    opf: "юр.форма (ООО/ИП/...) совпадает с типичной у купивших",
-  };
+  function ofd1cLoadWeightSnapshot() {
+    try { var v = JSON.parse(localStorage.getItem(OFD1C_WEIGHT_SNAPSHOT_KEY) || "null"); return v && v.weights ? v : null; } catch (e) { return null; }
+  }
+  function ofd1cSaveWeightSnapshot(snap) {
+    try { localStorage.setItem(OFD1C_WEIGHT_SNAPSHOT_KEY, JSON.stringify(snap)); } catch (e) { /* не критично */ }
+  }
+  // Доли -> целые проценты с суммой ровно 100 (метод наибольших остатков). Простое
+  // Math.round на 9 признаках даёт 99/101 -- и кнопка "Применить" в ручном режиме
+  // оказывалась заблокированной сразу после переключения с "Авто".
+  function ofd1cRoundPct(weights, keys) {
+    var out = {}, rest = [], sum = 0;
+    keys.forEach(function (k) { var v = (weights[k] || 0) * 100; out[k] = Math.floor(v); sum += out[k]; rest.push({ k: k, r: v - out[k] }); });
+    if (!keys.some(function (k) { return weights[k] > 0; })) return out;
+    rest.sort(function (a, b) { return b.r - a.r; });
+    for (var i = 0; i < 100 - sum && i < rest.length; i++) out[rest[i].k]++;
+    return out;
+  }
+  // Признаки, чей авто-вес сдвинулся больше порога относительно снимка. Признак, которого
+  // нет в снимке, считается как 0 (новый признак с весом > порога тоже заметный сдвиг).
+  function ofd1cWeightDrift(autoPct, snapshot) {
+    if (!snapshot) return [];
+    return OFD1C_SCORE_FEATURE_KEYS.filter(function (k) {
+      return Math.abs((autoPct[k] || 0) - (snapshot.weights[k] || 0)) > OFD1C_WEIGHT_DRIFT_PP;
+    });
+  }
   function ofd1cLoadWeightMode() {
     try { return localStorage.getItem(OFD1C_WEIGHT_MODE_KEY) === "manual" ? "manual" : "auto"; } catch (e) { return "auto"; }
   }
@@ -5255,7 +5439,11 @@
 
       // ---- Панель развесовки ----
       var weightBox = el('<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:14px"></div>');
-      weightBox.appendChild(el('<div class="stat-label" style="margin-bottom:8px"><b>Развесовка признаков скоринга</b></div>'));
+      weightBox.appendChild(el('<div class="stat-label" style="margin-bottom:4px"><b>Развесовка признаков скоринга</b></div>'));
+      var weightInfoRow = el('<div class="stat-label" style="margin-bottom:8px;color:var(--muted)"></div>');
+      weightBox.appendChild(weightInfoRow);
+      var driftHolder = el('<div></div>');
+      weightBox.appendChild(driftHolder);
       var modeRow = el('<div style="margin-bottom:10px;display:flex;gap:8px"></div>');
       var autoBtn = el('<button class="refresh-chart-btn" id="ofd1cWeightModeAuto">Авто</button>');
       var manualBtn = el('<button class="refresh-chart-btn" id="ofd1cWeightModeManual">Ручной</button>');
@@ -5278,13 +5466,20 @@
       var scoreFilterRow = el('<div style="margin-bottom:10px;display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="color:var(--muted)">Score диапазон:</span></div>');
       scoreFilterRow.appendChild(scoreFromInput);
       scoreFilterRow.appendChild(scoreToInput);
+      // Контакт -- НЕ вес (поле берётся с последнего кода и у купивших могло появиться
+      // после покупки -- утечка), только фильтр "можно дозвониться" (план 2026-09-28).
+      var contactLabel = el('<label style="display:flex;align-items:center;gap:5px;margin-left:10px;cursor:pointer"><input type="checkbox" class="ofd1c-contact-only"> только с телефоном или e-mail</label>');
+      var contactOnlyInput = contactLabel.querySelector("input");
+      scoreFilterRow.appendChild(contactLabel);
       wrap.appendChild(scoreFilterRow);
 
       var candidatesHolder = el('<div></div>');
       wrap.appendChild(candidatesHolder);
 
-      var lastAutoWeights = { kassa: 0, partner: 0, tenure: 0, industry: 0, opf: 0 };
-      var lastEnabledFeatures = ["kassa", "partner", "tenure"];
+      var lastAutoWeights = {};
+      var lastEnabledFeatures = [];
+      var lastFeatureStats = {};
+      var lastBuyersCount = 0;
 
       // Панель хранит проценты (0-100, то, что видит Дима); ofd1cScoringCandidates ждёт
       // доли (сумма=1) -- конвертация только в этой точке.
@@ -5302,13 +5497,15 @@
         var result = ofd1cScoringCandidates(model, buyerInns, ctx, allowed, manualActive);
         lastAutoWeights = result.autoWeights;
         lastEnabledFeatures = result.enabledFeatures;
+        lastFeatureStats = result.featureStats;
+        lastBuyersCount = result.buyersCount;
         var all = result.list;
         var from = scoreFromInput.value === "" ? null : parseFloat(scoreFromInput.value);
         var to = scoreToInput.value === "" ? null : parseFloat(scoreToInput.value);
         var candidates = all.filter(function (c) {
-          return (from == null || c.score >= from) && (to == null || c.score <= to);
+          return (from == null || c.score >= from) && (to == null || c.score <= to) && (!contactOnlyInput.checked || c.hasContact);
         });
-        candidatesHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Кандидатов: ' + fmtNum(candidates.length) + (candidates.length !== all.length ? " из " + fmtNum(all.length) + " (сужено фильтром Score)" : "") + (allowed.size ? ' · партнёров выбрано: ' + fmtNum(allowed.size) : ' · партнёры не выбраны — список пуст') + '</div>'));
+        candidatesHolder.appendChild(el('<div class="stat-label" style="margin-bottom:8px">Кандидатов: ' + fmtNum(candidates.length) + (candidates.length !== all.length ? " из " + fmtNum(all.length) + " (сужено фильтрами)" : "") + (allowed.size ? ' · партнёров выбрано: ' + fmtNum(allowed.size) : ' · партнёры не выбраны — список пуст') + '</div>'));
         if (!candidates.length) return;
         var tableArea = el('<div></div>');
         candidatesHolder.appendChild(tableArea);
@@ -5337,15 +5534,26 @@
         autoBtn.style.cssText = mode === "auto" ? "font-weight:700;border-color:var(--brand)" : "";
         manualBtn.style.cssText = mode === "manual" ? "font-weight:700;border-color:var(--brand)" : "";
         weightRowsHolder.innerHTML = "";
-        var autoPct = {};
-        lastEnabledFeatures.forEach(function (k) { autoPct[k] = Math.round((lastAutoWeights[k] || 0) * 100); });
+        var autoPct = ofd1cRoundPct(lastAutoWeights, lastEnabledFeatures);
+        renderWeightInfo(autoPct);
         var manualSaved = ofd1cLoadManualWeights();
         var inputs = {};
-        lastEnabledFeatures.forEach(function (k) {
+        OFD1C_SCORE_FEATURES.forEach(function (def) {
+          var k = def.key, st = lastFeatureStats[k];
+          var enabled = lastEnabledFeatures.indexOf(k) !== -1;
+          var statLine = st ? "сила " + st.strength.toFixed(3).replace(".", ",") + " · случайный шум " + st.noiseMedian.toFixed(3).replace(".", ",") : "";
+          if (!enabled) {
+            weightRowsHolder.appendChild(el(
+              '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;font-size:12.5px;opacity:.55">' +
+              '<div style="flex:1"><b>' + esc(def.label) + '</b><div style="color:var(--muted)">' + esc(def.desc) + ' · выключен: не отличается от случайности' + (statLine ? ' (' + statLine + ')' : '') + '</div></div>' +
+              '<span style="width:70px;text-align:center">0</span><span>%</span></div>'
+            ));
+            return;
+          }
           var startVal = mode === "manual" && manualSaved && manualSaved[k] != null ? manualSaved[k] : autoPct[k];
           var row = el(
             '<div style="display:flex;align-items:center;gap:10px;padding:5px 0;font-size:12.5px">' +
-            '<div style="flex:1"><b>' + esc(OFD1C_WEIGHT_LABELS[k]) + '</b><div style="color:var(--muted)">' + esc(OFD1C_WEIGHT_DESCRIPTIONS[k]) + '</div></div>' +
+            '<div style="flex:1"><b>' + esc(def.label) + '</b><div style="color:var(--muted)">' + esc(def.desc) + (statLine ? ' · ' + statLine : '') + '</div></div>' +
             '<input type="number" min="0" max="100" step="1" style="width:70px;padding:5px 6px;border-radius:8px;font-weight:700;text-align:center" value="' + startVal + '"' + (mode === "auto" ? " disabled" : "") + '>' +
             '<span>%</span></div>'
           );
@@ -5365,6 +5573,27 @@
         });
         weightRowsHolder._inputs = inputs;
         updateSumRow();
+      }
+
+      // "Посчитано на N купивших" + плашка дрейфа. Первый расчёт (снимка нет) -- снимок
+      // сохраняется молча: сравнивать не с чем.
+      function renderWeightInfo(autoPct) {
+        var asOfLabel = fmtDate(ctx.asOf);
+        weightInfoRow.textContent = "Авто-веса посчитаны на " + fmtNum(lastBuyersCount) + " действующих купивших 1С, дата " + asOfLabel + ". Партнёр в балл не входит — индексы очищены от его влияния.";
+        driftHolder.innerHTML = "";
+        var snap = ofd1cLoadWeightSnapshot();
+        if (!snap) { ofd1cSaveWeightSnapshot({ weights: autoPct, buyers: lastBuyersCount, asOf: asOfLabel }); return; }
+        var drifted = ofd1cWeightDrift(autoPct, snap);
+        if (!drifted.length) return;
+        var list = drifted.map(function (k) { return ofd1cFeatureLabel(k) + ": " + (snap.weights[k] || 0) + "% → " + (autoPct[k] || 0) + "%"; }).join("; ");
+        var banner = el('<div class="ofd1c-weight-drift" style="border:1px solid var(--warn);background:color-mix(in oklab, var(--warn) 14%, transparent);border-radius:10px;padding:8px 10px;margin-bottom:10px;font-size:12.5px">' +
+          '<b>Веса заметно изменились</b> (больше ' + OFD1C_WEIGHT_DRIFT_PP + ' п.п. с прошлого раза: ' + esc(snap.buyers + " купивших, " + snap.asOf) + '): ' + esc(list) + '. Проверь, не сломались ли данные. ' +
+          '<button class="refresh-chart-btn ofd1c-accept-weights" style="margin-left:6px">Принять новые веса</button></div>');
+        banner.querySelector(".ofd1c-accept-weights").addEventListener("click", function () {
+          ofd1cSaveWeightSnapshot({ weights: autoPct, buyers: lastBuyersCount, asOf: asOfLabel });
+          driftHolder.innerHTML = "";
+        });
+        driftHolder.appendChild(banner);
       }
 
       function updateSumRow() {
@@ -5435,6 +5664,7 @@
       searchInput.addEventListener("input", renderPartnerList);
       scoreFromInput.addEventListener("input", renderCandidates);
       scoreToInput.addEventListener("input", renderCandidates);
+      contactOnlyInput.addEventListener("change", renderCandidates);
 
       renderPartnerList();
       renderCandidates(); // сначала -- заполняет lastAutoWeights/lastEnabledFeatures для панели весов
@@ -6309,11 +6539,12 @@
     ofd1cTenureDistribution: ofd1cTenureDistribution,
     ofd1cPartnerConversion: ofd1cPartnerConversion,
     ofd1cScoringCandidates: ofd1cScoringCandidates,
-    ofd1cTVDFromShares: ofd1cTVDFromShares,
-    ofd1cDistributionShares: ofd1cDistributionShares,
-    ofd1cTenureNowDistribution: ofd1cTenureNowDistribution,
+    ofd1cClientFeaturesAt: ofd1cClientFeaturesAt,
+    ofd1cPartnerAdjustedIndexes: ofd1cPartnerAdjustedIndexes,
+    ofd1cFitFromIndex: ofd1cFitFromIndex,
+    ofd1cScoringModel: ofd1cScoringModel,
+    OFD1C_SCORE_FEATURES: OFD1C_SCORE_FEATURES,
     ofd1cIndustryBucketLabel: ofd1cIndustryBucketLabel,
-    ofd1cIndustryDistribution: ofd1cIndustryDistribution,
     ofd1cActiveOfdClients: ofd1cActiveOfdClients,
     ofd1cMedian: ofd1cMedian,
     ccBootstrapCustomChannelsFromServer: ccBootstrapCustomChannelsFromServer,
