@@ -237,7 +237,13 @@ async function handleApi(request, env, url) {
   if (url.pathname === "/api/overrides" && request.method === "GET") {
     const raw = await env.OFD_USERS.get("overrides:" + auth.username);
     if (!raw) return Response.json({ overrides: null, customChannels: [] });
-    const parsed = JSON.parse(raw);
+    // try/catch (2026-10-01): битая запись роняла весь запрос. Лучше отдать пустые
+    // настройки и дать человеку работать, чем показать ошибку вместо борда.
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch (e) {
+      console.error("overrides parse failed for", auth.username, e && e.message);
+      return Response.json({ overrides: null, customChannels: [] });
+    }
     // v2 (Дима, 2026-09-04): помимо overrides храним ещё имена custom-каналов (см. POST
     // ниже) -- старые записи (до этого поля) остаются плоским объектом partner->channel
     // без обёртки {v:2,...}, читаем их как раньше, просто без customChannels.

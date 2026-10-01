@@ -481,3 +481,16 @@ table.wtable tbody tr:hover { background: var(--paper); }
   border-radius: 8px; padding: 7px 10px; font-size: 12px; white-space: nowrap; line-height: 1.6; }
 .ch-tip b { font-family: var(--mono); font-weight: 600; }
 .ch-export { margin-left: auto; }
+
+/* B9 «Прирост базы»: таблица занимает ВСЮ высоту виджета (Дима, 2026-10-01). Общий
+   .table-scroll держит жёсткий max-height:260px, из-за чего при растягивании карточки
+   росла пустота под таблицей, а не число видимых строк. Меняем только внутри B9 --
+   у .table-scroll девять потребителей в других бордах, их потолок трогать нельзя.
+   Цепочка: .widget (flex-колонка) -> .widget-body (flex:1) -> .ch-wrap -> .ch-tablebox. */
+.widget:has(.ch-wrap) { min-height: 0; }
+.widget-body:has(> .ch-wrap) { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.ch-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.ch-tablebox { flex: 1; min-height: 120px; overflow: auto; }
+.ch-tablebox { position: relative; }
+.ch-tablebox .table-scroll { max-height: none; position: absolute; inset: 0; overflow: auto; }
+.ch-table thead th { position: sticky; top: 0; z-index: 2; background: var(--card-bg); }

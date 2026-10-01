@@ -1310,12 +1310,52 @@
     return { byChannel: byChannel, bySide: bySide, total: total };
   }
 
-  // Помесячный ряд по ОДНОМУ каналу за год: новые, отток, вернувшиеся, pending и база.
-  // Формулы те же, что в computeFlow -- interval-based, с грейс-периодом: событие относится
-  // к месяцу ДАТЫ ОКОНЧАНИЯ, но пока с неё не прошёл 31 день от asOf, статус "pending" и в
-  // отток НЕ засчитывается. Это важно показать в UI: на as-of 30.09.2026 весь сентябрь ещё
-  // pending (0 подтверждённого оттока при 1 815 висящих), и без пометки борд читается как
-  // "отток упал до нуля".
+  // Помесячный ряд по каналу за год. ФОРМУЛА ТА ЖЕ, что у борда «Прирост базы»
+  // (computeGapFlow + computeGapActiveCount, per-gap модель) -- число оттока в «Динамике
+  // год к году» обязано совпадать с «Приростом базы» до единицы (Дима, 2026-10-01).
+  // Первая версия считала отток по итоговой дате окончания клиента (currentEnd): клиент,
+  // ушедший в марте и потом вернувшийся, «стирался» из марта, и отток выходил на 10-20%
+  // ниже (август 2026: 4 828 против 5 385). Вернувшиеся считались через clientReturnInfo и
+  // были завышены в 2-5 раз, база -- через clientLapsedAt без грейса.
+  // Теперь: новые -- coverage[0].start; отток -- КАЖДЫЙ разрыв со статусом churned в месяце
+  // его даты окончания; pending -- разрывы в грейсе; вернувшиеся -- g.S у churned-разрыва;
+  // база на 1-е число -- isAliveAtWithGrace.
+  // Разбор клиента (покрытие + разрывы) дорогой, а борд вызывает расчёт десятки раз
+  // (каналы x партнёры x два года), поэтому на (год, as-of) считаем один раз и кэшируем.
+  function channelYearCache(model, year, asOf) {
+    var key = year + "|" + asOf.getTime();
+    model._chYear = model._chYear || {};
+    if (model._chYear[key]) return model._chYear[key];
+    var starts = [];
+    for (var m = 0; m < 12; m++) starts.push(new Date(year, m, 1));
+    var recs = [];
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      var coverage = clientCoverage(c);
+      if (!coverage.length) return;
+      var gaps = coverageGaps(coverage, asOf);
+      var alive = 0;
+      for (var mm = 0; mm < 12; mm++) if (isAliveAtWithGrace(coverage, gaps, starts[mm])) alive |= (1 << mm);
+      var rec = { c: c, alive: alive, nw: -1, ch: null, pe: null, rt: null };
+      // ещё не появился на as-of -- как будто его нет в данных (как в computeGapFlow)
+      if (coverage[0].start <= asOf) {
+        var st = coverage[0].start;
+        if (st.getFullYear() === year) rec.nw = st.getMonth();
+        gaps.forEach(function (g) {
+          if (g.status === "churned") {
+            if (g.E.getFullYear() === year) (rec.ch = rec.ch || []).push(g.E.getMonth());
+            if (g.S && g.S.getFullYear() === year) (rec.rt = rec.rt || []).push(g.S.getMonth());
+          } else if (g.status === "pending") {
+            if (g.E.getFullYear() === year) (rec.pe = rec.pe || []).push(g.E.getMonth());
+          }
+        });
+      }
+      recs.push(rec);
+    });
+    model._chYear[key] = recs;
+    return recs;
+  }
+
   function computeChannelMonthly(model, year, asOf, opts, filterFn) {
     var months = [];
     for (var m = 0; m < 12; m++) {
@@ -1325,27 +1365,19 @@
         ripe: asOf >= addDays(new Date(year, m + 1, 0, 23, 59, 59), REANIM_WINDOW_START_DAYS),
       });
     }
-    var yStart = new Date(year, 0, 1), yEnd = new Date(year, 11, 31, 23, 59, 59);
-    model.clients.forEach(function (c) {
-      if (c.phys) return;
-      if (filterFn && !filterFn(c)) return;
-      if (c.appearance && c.appearance >= yStart && c.appearance <= yEnd) months[c.appearance.getMonth()].newClients++;
-      if (c.currentEnd && c.currentEnd >= yStart && c.currentEnd <= yEnd) {
-        var st = clientChurnStatus(c, asOf);
-        if (st === "churned") months[c.currentEnd.getMonth()].churned++;
-        else if (st === "pending") months[c.currentEnd.getMonth()].pending++;
-      }
-      var ret = clientReturnInfo(c);
-      if (ret && ret.returnDate >= yStart && ret.returnDate <= yEnd) months[ret.returnDate.getMonth()].returned++;
-      for (var m2 = 0; m2 < 12; m2++) {
-        if (!clientLapsedAt(c, new Date(year, m2, 1))) months[m2].baseAtStart++;
-      }
+    channelYearCache(model, year, asOf).forEach(function (r) {
+      if (filterFn && !filterFn(r.c)) return;
+      if (r.nw >= 0) months[r.nw].newClients++;
+      if (r.ch) r.ch.forEach(function (i) { months[i].churned++; });
+      if (r.pe) r.pe.forEach(function (i) { months[i].pending++; });
+      if (r.rt) r.rt.forEach(function (i) { months[i].returned++; });
+      for (var i = 0; i < 12; i++) if (r.alive & (1 << i)) months[i].baseAtStart++;
     });
     return months;
   }
   var MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 
-  // Та же раскладка, но сразу по всем пяти каналам -- чтобы не гонять clients.forEach пять раз.
+  // Та же раскладка, но сразу по всем пяти каналам.
   function computeChannelsMonthly(model, year, asOf, opts) {
     var out = {};
     CHANNELS.forEach(function (ch) {

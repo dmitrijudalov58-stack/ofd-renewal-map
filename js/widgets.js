@@ -6329,7 +6329,7 @@
         wrap.appendChild(el('<div class="ch-verdict">' +
           chVCell("Привели, " + per, fmtNum(n26), pc(n26, n25), n26 >= n25, (yNow - 1) + ": " + fmtNum(n25)) +
           chVCell("Потеряли, " + per, fmtNum(c26), pc(c26, c25), c26 <= c25, (yNow - 1) + ": " + fmtNum(c25)) +
-          chVCell("Отток от базы на 1 января", b26 ? (100 * c26 / b26).toFixed(1).replace(".", ",") + "%" : "—", "", true,
+          chVCell("Отток за " + per + ", % от базы на 1 января", b26 ? (100 * c26 / b26).toFixed(1).replace(".", ",") + "%" : "—", "", true,
             (yNow - 1) + ": " + (b25 ? (100 * c25 / b25).toFixed(1).replace(".", ",") + "%" : "—")) +
           '<div><div class="ch-vlabel">Итог год к году</div><div class="ch-vbig" style="color:var(' +
           (good ? "--good" : "--crit") + ')">' + (good ? "▲ положительная" : "▼ отрицательная") +
@@ -6501,7 +6501,7 @@
   WIDGETS["b9-channels-growth"] = {
     title: "Каналы продаж — прирост базы", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
-      var wrap = el("<div></div>");
+      var wrap = el('<div class="ch-wrap"></div>');
       function draw() {
         wrap.innerHTML = "";
         var M = root.OFDMetrics;
@@ -6639,7 +6639,9 @@
             draw();
           });
         });
-        wrap.appendChild(tblWrap);
+        var tableBox = el('<div class="ch-tablebox"></div>');
+        tableBox.appendChild(tblWrap);
+        wrap.appendChild(tableBox);
         // Выгрузка: в файл идут ВСЕ партнёры каждого канала, а не только раскрытые на экране —
         // на гейте может понадобиться любой, лишние строки в Excel не мешают.
         wrap.appendChild(chExportBtn("Каналы — прирост базы", function () {
