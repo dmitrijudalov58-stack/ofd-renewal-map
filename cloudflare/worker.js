@@ -115,7 +115,7 @@ const ADMIN_PAGE_HTML = `<!doctype html>
   <button onclick="createUser()">Создать доступ</button>
 </div>
 <div id="credBox" class="cred-box"></div>
-<table id="usersTable"><thead><tr><th>ФИО</th><th>Логин</th><th>Создан</th><th>Последний вход</th><th>Входов</th><th></th></tr></thead><tbody></tbody></table>
+<table id="usersTable"><thead><tr><th>ФИО</th><th>Логин</th><th>Создан</th><th></th></tr></thead><tbody></tbody></table>
 <script>
 async function loadUsers() {
   const res = await fetch("/admin/api/users");
@@ -124,17 +124,15 @@ async function loadUsers() {
   tbody.innerHTML = "";
   data.users.forEach(u => {
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
+    tr.innerHTML = "<td></td><td></td><td></td><td></td>";
     tr.children[0].textContent = u.fio;
     tr.children[1].textContent = u.username;
     tr.children[2].textContent = new Date(u.createdAt).toLocaleDateString("ru-RU");
-    tr.children[3].textContent = u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("ru-RU") : "ещё не заходил";
-    tr.children[4].textContent = u.loginCount;
     const btn = document.createElement("button");
     btn.textContent = "Отозвать";
     btn.className = "danger";
     btn.onclick = () => revokeUser(u.username);
-    tr.children[5].appendChild(btn);
+    tr.children[3].appendChild(btn);
     tbody.appendChild(tr);
   });
 }
@@ -172,7 +170,7 @@ async function handleAdmin(request, env, url) {
       const raw = await env.OFD_USERS.get(key.name);
       if (!raw) continue;
       const rec = JSON.parse(raw);
-      users.push({ username: key.name, fio: rec.fio, createdAt: rec.createdAt, lastLoginAt: rec.lastLoginAt || null, loginCount: rec.loginCount || 0 });
+      users.push({ username: key.name, fio: rec.fio, createdAt: rec.createdAt });
     }
     users.sort((a, b) => b.createdAt - a.createdAt);
     return Response.json({ users });
@@ -215,22 +213,9 @@ async function verifySiteUser(request, env) {
 async function handleSite(request, env, url) {
   const auth = await verifySiteUser(request, env);
   if (!auth) return unauthorized("OFD Renewal Map");
-  // Журнал посещений (Дима, 2026-08-26) -- только последний вход + счётчик, не полный лог.
-  // Пишем ТОЛЬКО на заход на index.html, не на каждый js/css-ассет одного визита --
-  // иначе один визит = 7-10 записей в KV, упёрлись бы в дневной лимит писей гораздо раньше.
-  if (url.pathname === "/" || url.pathname === "/index.html") {
-    // try/catch обязателен (2026-10-01): при исчерпании дневного лимита записей KV put
-    // бросает исключение, оно уходило наружу и роняло ВЕСЬ запрос -- Cloudflare отдавал
-    // "Ошибка 1101: рабочий процесс выдал исключение" вместо сайта. Журнал посещений --
-    // вспомогательная статистика, она не должна решать, увидит ли человек борды.
-    try {
-      auth.rec.lastLoginAt = Date.now();
-      auth.rec.loginCount = (auth.rec.loginCount || 0) + 1;
-      await env.OFD_USERS.put(auth.username, JSON.stringify(auth.rec));
-    } catch (e) {
-      console.error("visit log skipped:", e && e.message);
-    }
-  }
+  // Журнал посещений убран (Дима, 2026-10-01): «я ей уже не пользуюсь, не нужно знать,
+  // кто и в какое время зашёл». Заодно снята причина падения в 1101 — на обычный
+  // просмотр сайта записей в KV теперь нет вообще, только чтение.
   return env.ASSETS.fetch(request);
 }
 

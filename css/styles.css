@@ -473,3 +473,11 @@ table.wtable tbody tr:hover { background: var(--paper); }
 .ch-pill.warn { background: color-mix(in oklab, var(--warn) 22%, transparent); color: var(--warn); }
 .ch-pill.good { background: color-mix(in oklab, var(--good) 15%, transparent); color: var(--good); }
 @media (max-width: 760px) { .ch-pane { grid-template-columns: 1fr; } }
+
+/* Подсказка на графике каналов: числа обоих лет при наведении (Дима, 2026-10-01). */
+.ch-chart { position: relative; }
+.ch-tip { position: absolute; pointer-events: none; display: none; z-index: 3; min-width: 200px;
+  background: var(--card-bg); border: 1px solid var(--line); box-shadow: var(--shadow);
+  border-radius: 8px; padding: 7px 10px; font-size: 12px; white-space: nowrap; line-height: 1.6; }
+.ch-tip b { font-family: var(--mono); font-weight: 600; }
+.ch-export { margin-left: auto; }

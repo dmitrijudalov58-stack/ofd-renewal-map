@@ -6122,6 +6122,18 @@
     return out;
   }
 
+  // Кнопка выгрузки для бордов B9 (Дима+Оксана, 2026-10-01: «без выгрузки не вариант»).
+  // Отдаёт ровно то, что на экране, в CSV — график Оксана скриншотит сама, в файл идёт
+  // массив цифр, из которого он построен.
+  function chExportBtn(label, buildRows) {
+    var b = el('<button type="button" class="refresh-chart-btn ch-export">' + esc(label) + "</button>");
+    b.addEventListener("click", function () {
+      if (!root.OFDExport || !root.OFDExport.downloadCSV) return;
+      root.OFDExport.downloadCSV(label, buildRows());
+    });
+    return b;
+  }
+
   // ---------- часть 1: каналы и закреплённые партнёры ----------
   var CH_SETUP_SEL = new Map();
   WIDGETS["b9-channels-setup"] = {
@@ -6146,6 +6158,13 @@
         head.querySelector(".ch-reset").addEventListener("click", function () {
           chOverrides = {}; chSaveOverrides(); chBroadcast();
         });
+        head.appendChild(chExportBtn("Каналы — состав", function () {
+          var out = [["Партнёр", "Канал", "Закреплён вручную", "Клиентов действующих", "Клиентов всего", "Касс"]];
+          chPartnerRows(model, ctx.asOf).forEach(function (r) {
+            out.push([r.name, r.channel, chOverrides[r.name] ? "да" : "", r.alive, r.clients, r.kassas]);
+          });
+          return out;
+        }));
         var pane = el('<div class="ch-pane"></div>');
         var left = el('<div class="ch-col"></div>'), right = el('<div class="ch-col"></div>');
         left.appendChild(el('<div class="ch-colhead">Канал</div>'));
@@ -6265,6 +6284,16 @@
         legend.querySelectorAll(".ch-segopt").forEach(function (o) {
           o.addEventListener("click", function () { st.metric = o.dataset.k; draw(); });
         });
+        legend.appendChild(chExportBtn("Каналы — динамика " + st.ch, function () {
+          var out = [["Канал", "Месяц", "Год", "Новые", "Отток подтверждённый", "В грейсе", "Вернувшиеся", "Разница", "Клиентов на 1-е"]];
+          [[yNow, cur], [yNow - 1, prev]].forEach(function (pair) {
+            pair[1].forEach(function (m, i) {
+              out.push([st.ch, CH_MON[i], pair[0], m.newClients, m.churned, m.ripe ? 0 : m.pending,
+                m.returned, m.newClients - m.churned, m.baseAtStart]);
+            });
+          });
+          return out;
+        }));
         wrap.appendChild(legend);
         function vals(s, k) {
           return s.map(function (m) { return k === "N" ? m.newClients : k === "C" ? m.churned : m.newClients - m.churned; });
@@ -6279,8 +6308,11 @@
         var lastRipe = 0;
         cur.forEach(function (m, i) { if (m.ripe && (m.newClients || m.churned)) lastRipe = i; });
         var hasFuture = cur.map(function (m, i) { return i <= ctx.asOf.getMonth(); });
-        wrap.appendChild(el('<div class="ch-chart">' +
-          chDrawChart(a26, a25, worst, lastRipe, ctx.asOf.getMonth(), yNow, MN[st.metric], cur, prev, st.metric) + "</div>"));
+        var chartBox = el('<div class="ch-chart">' +
+          chDrawChart(a26, a25, worst, lastRipe, ctx.asOf.getMonth(), yNow, MN[st.metric], cur, prev, st.metric) +
+          '<div class="ch-tip"></div></div>');
+        wrap.appendChild(chartBox);
+        chBindHover(chartBox, cur, prev, yNow, ctx.asOf.getMonth());
         // Вердикт за январь–as-of
         var upto = ctx.asOf.getMonth() + 1;
         function sum(arr, key) { var t = 0; for (var i = 0; i < upto; i++) t += arr[i][key]; return t; }
@@ -6316,6 +6348,46 @@
     },
     onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_DYN.delete(instanceId); },
   };
+
+  function chBindHover(box, cur, prev, yNow, asOfMonth) {
+    var svg = box.querySelector("svg"), tip = box.querySelector(".ch-tip");
+    var hit = box.querySelector(".hit"), xh = box.querySelector(".xh");
+    if (!svg || !hit) return;
+    var W = 1100, L = 56, R = 52;
+    function row(m, year, color, future) {
+      if (future) return '<span class="ch-sw" style="background:' + color + '"></span>' + year +
+        ': <span class="muted">месяц ещё не наступил</span>';
+      var grace = m.ripe ? 0 : m.pending;
+      return '<span class="ch-sw" style="background:' + color + '"></span><strong>' + year + "</strong>" +
+        " · новые <b>" + fmtNum(m.newClients) + "</b>" +
+        " · отток <b>" + fmtNum(m.churned) + "</b>" +
+        (grace ? ' <span class="ch-gtag">+' + fmtNum(grace) + " в грейсе</span>" : "") +
+        " · разница <b>" + (m.newClients - m.churned >= 0 ? "+" : "−") + fmtNum(Math.abs(m.newClients - m.churned)) + "</b>";
+    }
+    function show(i) {
+      box.querySelectorAll(".hl").forEach(function (r) { r.setAttribute("opacity", +r.dataset.m === i ? "0.08" : "0"); });
+      box.querySelectorAll(".ml").forEach(function (t) {
+        var on = +t.dataset.m === i;
+        t.setAttribute("fill", on ? "var(--ink)" : "var(--muted)");
+        t.setAttribute("font-weight", on ? "700" : "400");
+      });
+      if (i < 0) { tip.style.display = "none"; if (xh) xh.setAttribute("visibility", "hidden"); return; }
+      var x = L + (i + 0.5) * (W - L - R) / 12;
+      if (xh) { xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("visibility", "visible"); }
+      tip.innerHTML = "<strong>" + CH_MONF[i] + "</strong><br>" +
+        row(cur[i], yNow, "var(--s2)", i > asOfMonth) + "<br>" + row(prev[i], yNow - 1, "var(--s1)", false);
+      tip.style.display = "block";
+      var r = svg.getBoundingClientRect(), px = x * r.width / W + 14;
+      if (px + tip.offsetWidth > r.width) px = x * r.width / W - tip.offsetWidth - 14;
+      tip.style.left = Math.max(0, px) + "px";
+      tip.style.top = "34px";
+    }
+    hit.addEventListener("mousemove", function (e) {
+      var r = svg.getBoundingClientRect(), vx = (e.clientX - r.left) * W / r.width;
+      show(Math.max(0, Math.min(11, Math.floor((vx - L) / ((W - L - R) / 12)))));
+    });
+    hit.addEventListener("mouseleave", function () { show(-1); });
+  }
 
   function chVCell(label, big, delta, good, sub) {
     return '<div><div class="ch-vlabel">' + esc(label) + '</div><div class="ch-vbig">' + big +
@@ -6370,6 +6442,8 @@
     }
     g += a26.slice(0, solidTo).map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s2)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
     g += '<text x="' + (x(asOfMonth) + 9) + '" y="' + (y(a26[asOfMonth]) - 10) + '" font-size="11" font-weight="600" fill="var(--ink)">' + yNow + "</text>";
+    g += '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (H - Bm) + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>';
+    g += '<rect class="hit" x="' + L + '" y="0" width="' + (W - L - R) + '" height="' + H + '" fill="transparent"/>';
     return '<h4 class="ch-ctitle">' + esc(title) + ' по месяцам</h4><svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
       esc(title) + ": " + yNow + " против " + (yNow - 1) + '">' + g + "</svg>";
   }
@@ -6405,7 +6479,9 @@
     var co = a.base ? a.c / a.base / a.k * 100 : 0, co5 = b.base ? b.c / b.base / b.k * 100 : 0;
     var ci = a.base ? a.n / a.base / a.k * 100 : 0, ci5 = b.base ? b.n / b.base / b.k * 100 : 0;
     return [
-      fmtNum(a.base),
+      // Дельта у базы (Оксана, 2026-10-01: «сравнение по количеству клиентов к 2025 году») —
+      // единственная колонка, у которой её не было, остальные пять шли с парой «к 2025».
+      fmtNum(a.base), chDelta(chPct(a.base, b.base), a.base >= b.base),
       fmtNum(a.n), chDelta(chPct(a.n, b.n), a.n >= b.n),
       fmtNum(a.c) + (a.g ? '<span class="ch-grace-sub">+' + fmtNum(a.g) + " в грейсе</span>" : ""),
       chDelta(chPct(a.c, b.c), a.c <= b.c),
@@ -6503,7 +6579,7 @@
         var pctSub = one ? "знач." : "в мес.";
         var mm = ("0" + (st.from + 1)).slice(-2);
         var thead = '<tr><th rowspan="2">Канал</th>' +
-          '<th class="grp" rowspan="2">Количество клиентов<br><span class="ch-sub">на 01.' + mm + "</span></th>" +
+          '<th class="grp" colspan="2">Количество клиентов<br><span class="ch-sub">на 01.' + mm + "</span></th>" +
           '<th class="grp" colspan="2">Новые</th>' +
           '<th class="grp" colspan="2">Отток' + (graceMonths.length ? ' <span class="ch-gtag">⏳ предв.</span>' : "") + "</th>" +
           '<th class="grp" colspan="2">Вернувшиеся</th>' +
@@ -6511,6 +6587,7 @@
           '<th class="grp" colspan="2">% притока</th>' +
           '<th class="grp" rowspan="2">Динамика</th></tr>' +
           '<tr><th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
+          '<th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
           '<th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
           '<th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
           '<th class="num gstart ch-sub">' + pctSub + '</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
@@ -6527,7 +6604,7 @@
           body += '<tr class="ch-line' + (open ? " open" : "") + '" data-ch="' + esc(ch) + '">' +
             '<td><span class="ch-caret">' + (open ? "▾" : "▸") + "</span>" + esc(ch) +
             ' <span class="cnt">' + inCh.length + "</span></td>" +
-            chCells(a, b).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+            chCells(a, b).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
             '<td class="gstart">' + chVerdict(a, b) + "</td></tr>";
           if (open) {
             var sub = inCh.slice(0, 25).map(function (p) {
@@ -6542,17 +6619,17 @@
             sub.forEach(function (s) {
               body += '<tr class="ch-subline"><td title="' + esc(s.p.name) + '">' + esc(s.p.name) +
                 (chOverrides[s.p.name] ? ' <span class="ch-moved">вручную</span>' : "") + "</td>" +
-                chCells(s.a, s.b).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+                chCells(s.a, s.b).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
                 '<td class="gstart">' + chVerdict(s.a, s.b) + "</td></tr>";
             });
             if (inCh.length > 25) {
-              body += '<tr class="ch-subline"><td colspan="13" class="muted">…и ещё ' + fmtNum(inCh.length - 25) +
+              body += '<tr class="ch-subline"><td colspan="14" class="muted">…и ещё ' + fmtNum(inCh.length - 25) +
                 " партнёров в этом канале</td></tr>";
             }
           }
         });
         body += '<tr class="ch-total"><td><strong>Итого</strong></td>' +
-          chCells(T26, T25).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+          chCells(T26, T25).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
           '<td class="gstart">' + chVerdict(T26, T25) + "</td></tr>";
         var tblWrap = el('<div class="table-scroll"><table class="wtable ch-table"><thead>' + thead + "</thead><tbody>" + body + "</tbody></table></div>");
         tblWrap.querySelectorAll(".ch-line").forEach(function (tr) {
@@ -6563,6 +6640,39 @@
           });
         });
         wrap.appendChild(tblWrap);
+        // Выгрузка: в файл идут ВСЕ партнёры каждого канала, а не только раскрытые на экране —
+        // на гейте может понадобиться любой, лишние строки в Excel не мешают.
+        wrap.appendChild(chExportBtn("Каналы — прирост базы", function () {
+          var head = ["Уровень", "Канал", "Партнёр", "Клиентов на начало", "Клиентов к " + (yNow - 1) + ", %",
+            "Новые", "Новые к " + (yNow - 1) + ", %", "Отток", "В грейсе", "Отток к " + (yNow - 1) + ", %",
+            "Вернувшиеся", "Вернувшиеся к " + (yNow - 1) + ", %", "% оттока", "% оттока к " + (yNow - 1) + ", п.п.",
+            "% притока", "% притока к " + (yNow - 1) + ", п.п."];
+          function pctRaw(a, b) { return b ? ((a / b - 1) * 100).toFixed(1).replace(".", ",") : ""; }
+          function line(level, chName, pName, a, b) {
+            var co = a.base ? a.c / a.base / a.k * 100 : 0, co5 = b.base ? b.c / b.base / b.k * 100 : 0;
+            var ci = a.base ? a.n / a.base / a.k * 100 : 0, ci5 = b.base ? b.n / b.base / b.k * 100 : 0;
+            return [level, chName, pName, a.base, pctRaw(a.base, b.base), a.n, pctRaw(a.n, b.n),
+              a.c, a.g, pctRaw(a.c, b.c), a.r, pctRaw(a.r, b.r),
+              co.toFixed(2).replace(".", ","), (co - co5).toFixed(2).replace(".", ","),
+              ci.toFixed(2).replace(".", ","), (ci - ci5).toFixed(2).replace(".", ",")];
+          }
+          var out = [head], E26 = chZero(), E25 = chZero();
+          M.CHANNELS.forEach(function (ch) {
+            var f2 = function (c) { return chClientChannel(c) === ch; };
+            var a = chAgg(chSeries(model, ctx, yNow, f2), st.from, st.to);
+            var b = chAgg(chSeries(model, ctx, yNow - 1, f2), st.from, st.to);
+            chAddAgg(E26, a); chAddAgg(E25, b);
+            out.push(line("канал", ch, "", a, b));
+            partnerRows.filter(function (p2) { return p2.channel === ch; }).forEach(function (p2) {
+              var pf = function (c) { return chClientChannel(c) === ch && chPartnerOf(c) === p2.name; };
+              out.push(line("партнёр", ch, p2.name,
+                chAgg(chSeries(model, ctx, yNow, pf), st.from, st.to),
+                chAgg(chSeries(model, ctx, yNow - 1, pf), st.from, st.to)));
+            });
+          });
+          out.push(line("итого", "", "", E26, E25));
+          return out;
+        }));
         wrap.appendChild(el('<div class="muted" style="margin-top:6px">База — на начало первого месяца; новые, отток и вернувшиеся — сумма за период; ' +
           "% оттока и % притока — в среднем за месяц, поэтому месяц и квартал сравнимы напрямую. " +
           "Клик по каналу раскрывает его партнёров, сверху — у кого год к году хуже всего.</div>"));
