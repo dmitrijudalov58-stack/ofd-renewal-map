@@ -219,9 +219,17 @@ async function handleSite(request, env, url) {
   // Пишем ТОЛЬКО на заход на index.html, не на каждый js/css-ассет одного визита --
   // иначе один визит = 7-10 записей в KV, упёрлись бы в дневной лимит писей гораздо раньше.
   if (url.pathname === "/" || url.pathname === "/index.html") {
-    auth.rec.lastLoginAt = Date.now();
-    auth.rec.loginCount = (auth.rec.loginCount || 0) + 1;
-    await env.OFD_USERS.put(auth.username, JSON.stringify(auth.rec));
+    // try/catch обязателен (2026-10-01): при исчерпании дневного лимита записей KV put
+    // бросает исключение, оно уходило наружу и роняло ВЕСЬ запрос -- Cloudflare отдавал
+    // "Ошибка 1101: рабочий процесс выдал исключение" вместо сайта. Журнал посещений --
+    // вспомогательная статистика, она не должна решать, увидит ли человек борды.
+    try {
+      auth.rec.lastLoginAt = Date.now();
+      auth.rec.loginCount = (auth.rec.loginCount || 0) + 1;
+      await env.OFD_USERS.put(auth.username, JSON.stringify(auth.rec));
+    } catch (e) {
+      console.error("visit log skipped:", e && e.message);
+    }
   }
   return env.ASSETS.fetch(request);
 }
@@ -279,12 +287,24 @@ async function handleApi(request, env, url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
-      return handleAdmin(request, env, url);
+    try {
+      if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+        return await handleAdmin(request, env, url);
+      }
+      if (url.pathname.startsWith("/api/")) {
+        return await handleApi(request, env, url);
+      }
+      return await handleSite(request, env, url);
+    } catch (e) {
+      // Любое необработанное исключение раньше уходило наружу, и Cloudflare показывал
+      // "Ошибка 1101" вместо сайта (2026-10-01: лимит записей KV в журнале посещений).
+      // Отдаём понятную 500 вместо загадочной страницы Cloudflare. Статику здесь НЕ
+      // отдаём намеренно: исключение могло прилететь до проверки пароля, и фолбэк на
+      // ASSETS открыл бы сайт без авторизации.
+      console.error("worker error on", url.pathname, e && e.stack);
+      return new Response("Временная ошибка сервера. Обнови страницу через минуту.", {
+        status: 500, headers: { "content-type": "text/plain; charset=utf-8" },
+      });
     }
-    if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, env, url);
-    }
-    return handleSite(request, env, url);
   },
 };
