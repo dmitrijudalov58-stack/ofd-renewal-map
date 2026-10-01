@@ -6095,19 +6095,30 @@
   function chPartnerOf(c) {
     return c.kassas && c.kassas.length ? (c.kassas[c.kassas.length - 1].partner || "—") : "—";
   }
+  // Список строится от ВСЕХ партнёров выгрузки, не только от тех, у кого есть клиенты-юрлица.
+  // Раньше шёл от клиентов, и партнёр с кассами, но без ИНН организации, пропадал молча:
+  // Оксана не нашла «ООО "Астрал-Софт" ОКС М» (1 касса, 0 клиентов), и с ним ещё ~300 других.
   function chPartnerRows(model, asOf) {
     var byPartner = new Map();
+    function bucket(name, channel) {
+      var row = byPartner.get(name);
+      if (!row) { row = { name: name, home: channel || "Партнёры", clients: 0, alive: 0, kassas: 0 }; byPartner.set(name, row); }
+      return row;
+    }
+    model.kassas.forEach(function (k) { bucket(k.partner || "—", k.channel).kassas++; });
+    model.reserveRows.forEach(function (r) {
+      bucket(r.partner || "—", root.OFDMetrics.classifyChannel(r.partner, r.salesCenter));
+    });
     model.clients.forEach(function (c) {
       if (c.phys || !c.kassas.length) return;
-      var last = c.kassas[c.kassas.length - 1], name = last.partner || "—";
-      var row = byPartner.get(name);
-      if (!row) { row = { name: name, home: last.channel || "Партнёры", clients: 0, alive: 0 }; byPartner.set(name, row); }
+      var last = c.kassas[c.kassas.length - 1];
+      var row = bucket(last.partner || "—", last.channel);
       row.clients++;
       if (!root.OFDMetrics.clientLapsedAt(c, asOf)) row.alive++;
     });
     var out = [];
     byPartner.forEach(function (r) { r.channel = chOverrides[r.name] || r.home; out.push(r); });
-    out.sort(function (a, b) { return b.alive - a.alive; });
+    out.sort(function (a, b) { return b.alive - a.alive || b.kassas - a.kassas; });
     return out;
   }
 
