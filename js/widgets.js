@@ -6064,12 +6064,17 @@
   ];
 
   // ================= B9: Каналы продаж (Дима, 2026-10-01) ===========================
-  // Пять каналов вместо трёх: Корп (АТОЛ), Ольга Зибер, Пенигина — прямые, Пенигина — ОП,
-  // Партнёры. Разнесение в metrics.classifyChannel по паре «Партнёр» + «Центр продаж»;
-  // здесь поверх него живут РУЧНЫЕ перезакрепления — правило даёт стартовую раскладку,
-  // рука всегда важнее. Хранятся в localStorage по имени партнёра, как ccOverrides у B5.
+  // Собрано строго по утверждённому драфту (артефакт «Борды на обсуждение», задача 1) и
+  // комментариям к нему. Один борд из трёх частей, в библиотеке — три пункта:
+  //   1. Каналы и закреплённые партнёры  (b9-channels-setup)
+  //   2. Динамика канала: 2026 против 2025 (b9-channels-dynamics)
+  //   3. Прирост базы по каналам          (b9-channels-growth)
+  // Пять каналов: Корп, Ольга Зибер, Пенигина — прямые, Пенигина — ОП, Партнёры.
+  // Правило разнесения — в metrics.classifyChannel (пара «Партнёр» + «Центр продаж»),
+  // поверх него ручные перезакрепления: правило даёт старт, рука важнее.
   var CH_OVERRIDE_KEY = "ofd.channelOverrides.v1";
   var CH_REFRESHERS = {};
+  var CH_NOCHANNEL = "Без канала";
   function chLoadOverrides() {
     try { return JSON.parse(localStorage.getItem(CH_OVERRIDE_KEY) || "{}"); } catch (e) { return {}; }
   }
@@ -6078,37 +6083,36 @@
     try { localStorage.setItem(CH_OVERRIDE_KEY, JSON.stringify(chOverrides)); } catch (e) { /* приватный режим */ }
   }
   function chBroadcast() { Object.keys(CH_REFRESHERS).forEach(function (k) { CH_REFRESHERS[k](); }); }
-  function chChannels() { return root.OFDMetrics.CHANNELS.concat(["Без канала"]); }
-  // Канал клиента: берётся по САМОЙ СВЕЖЕЙ кассе (Дима, 2026-10-01 — 11,2% клиентов имеют
-  // кассы в разных каналах, однозначного ответа из данных нет), поверх — ручной override.
+  function chEditCount() { return Object.keys(chOverrides).filter(function (k) { return chOverrides[k]; }).length; }
+  function chAllChannels() { return root.OFDMetrics.CHANNELS.concat([CH_NOCHANNEL]); }
+  // Канал клиента — по самой свежей кассе (Дима: 11,2% клиентов имеют кассы в разных
+  // каналах, однозначного ответа из данных нет), поверх — ручной override партнёра.
   function chClientChannel(c) {
     if (!c.kassas || !c.kassas.length) return "Партнёры";
     var last = c.kassas[c.kassas.length - 1];
-    var ov = chOverrides[last.partner || "—"];
-    return ov || last.channel || "Партнёры";
+    return chOverrides[last.partner || "—"] || last.channel || "Партнёры";
   }
-  function chPartnerChannel(partnerName, baseChannel) {
-    return chOverrides[partnerName] || baseChannel;
+  function chPartnerOf(c) {
+    return c.kassas && c.kassas.length ? (c.kassas[c.kassas.length - 1].partner || "—") : "—";
   }
-  // Партнёры с их каналом и числом действующих клиентов — основа борда 1 и раскрытия в борде 3.
   function chPartnerRows(model, asOf) {
     var byPartner = new Map();
     model.clients.forEach(function (c) {
       if (c.phys || !c.kassas.length) return;
-      var last = c.kassas[c.kassas.length - 1];
-      var name = last.partner || "—";
+      var last = c.kassas[c.kassas.length - 1], name = last.partner || "—";
       var row = byPartner.get(name);
-      if (!row) { row = { name: name, base: last.channel || "Партнёры", clients: 0, alive: 0 }; byPartner.set(name, row); }
+      if (!row) { row = { name: name, home: last.channel || "Партнёры", clients: 0, alive: 0 }; byPartner.set(name, row); }
       row.clients++;
       if (!root.OFDMetrics.clientLapsedAt(c, asOf)) row.alive++;
     });
     var out = [];
-    byPartner.forEach(function (r) { r.channel = chPartnerChannel(r.name, r.base); out.push(r); });
+    byPartner.forEach(function (r) { r.channel = chOverrides[r.name] || r.home; out.push(r); });
     out.sort(function (a, b) { return b.alive - a.alive; });
     return out;
   }
 
-  var CH_SETUP_SEL = new Map(); // instanceId -> выбранный канал
+  // ---------- часть 1: каналы и закреплённые партнёры ----------
+  var CH_SETUP_SEL = new Map();
   WIDGETS["b9-channels-setup"] = {
     title: "Каналы продаж — состав", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
@@ -6118,52 +6122,86 @@
         var rows = chPartnerRows(model, ctx.asOf);
         var sel = CH_SETUP_SEL.get(instanceId) || "Ольга Зибер";
         var counts = {};
-        chChannels().forEach(function (ch) { counts[ch] = { p: 0, c: 0 }; });
+        chAllChannels().forEach(function (ch) { counts[ch] = { p: 0, c: 0 }; });
         rows.forEach(function (r) {
           if (!counts[r.channel]) counts[r.channel] = { p: 0, c: 0 };
           counts[r.channel].p++; counts[r.channel].c += r.alive;
         });
-        var edits = Object.keys(chOverrides).filter(function (k) { return chOverrides[k]; }).length;
         var head = el('<div class="threshold-row" style="justify-content:space-between">' +
-          '<span class="muted">Правило даёт стартовую раскладку, ручные правки важнее. Правок: ' + edits + "</span>" +
+          '<span class="muted">Правило даёт стартовую раскладку, ручные правки важнее. ' +
+          '<span class="ch-edits">Ручных правок: ' + chEditCount() + "</span></span>" +
           '<button type="button" class="refresh-chart-btn ch-reset">Сбросить к правилу</button></div>');
         wrap.appendChild(head);
         head.querySelector(".ch-reset").addEventListener("click", function () {
           chOverrides = {}; chSaveOverrides(); chBroadcast();
         });
-        var pane = el('<div style="display:grid;grid-template-columns:minmax(190px,1fr) minmax(260px,2fr);gap:12px"></div>');
-        var left = el("<div></div>"), right = el("<div></div>");
-        chChannels().forEach(function (ch) {
+        var pane = el('<div class="ch-pane"></div>');
+        var left = el('<div class="ch-col"></div>'), right = el('<div class="ch-col"></div>');
+        left.appendChild(el('<div class="ch-colhead">Канал</div>'));
+        chAllChannels().forEach(function (ch) {
           var n = counts[ch] || { p: 0, c: 0 };
-          if (ch === "Без канала" && !n.p) return;
-          var b = el('<button type="button" class="refresh-chart-btn" style="display:flex;width:100%;justify-content:space-between;margin-bottom:4px' +
-            (ch === sel ? ";border-color:var(--brand);color:var(--brand);font-weight:600" : "") + '">' +
-            esc(ch) + "<span>" + fmtNum(n.c) + " кл · " + n.p + " п</span></button>");
+          if (ch === CH_NOCHANNEL && !n.p) return;
+          var b = el('<button type="button" class="ch-row' + (ch === sel ? " on" : "") +
+            (ch === CH_NOCHANNEL ? " warn" : "") + '">' + esc(ch) +
+            ' <span class="cnt">' + fmtNum(n.c) + " кл · " + n.p + " п</span></button>");
           b.addEventListener("click", function () { CH_SETUP_SEL.set(instanceId, ch); draw(); });
           left.appendChild(b);
         });
-        var inChannel = rows.filter(function (r) { return r.channel === sel; });
-        right.appendChild(el('<div class="muted" style="margin-bottom:6px">Партнёры канала «' + esc(sel) + '» — ' + inChannel.length + "</div>"));
-        var list = el('<div style="max-height:320px;overflow:auto"></div>');
-        inChannel.slice(0, 200).forEach(function (r) {
-          var moved = chOverrides[r.name] ? ' <span class="muted">(вручную)</span>' : "";
-          var row = el('<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:3px 0">' +
-            '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.name) + '">' +
-            esc(r.name) + moved + '</span><span class="muted">' + fmtNum(r.alive) + "</span></div>");
-          var sl = el('<select style="max-width:170px"><option value="">Перенести в…</option>' +
-            chChannels().filter(function (x) { return x !== r.channel; })
-              .map(function (x) { return '<option value="' + esc(x) + '">' + esc(x) + "</option>"; }).join("") + "</select>");
-          sl.addEventListener("change", function () {
-            if (!sl.value) return;
-            chOverrides[r.name] = sl.value; chSaveOverrides(); chBroadcast();
-          });
-          row.appendChild(sl);
-          list.appendChild(row);
-        });
-        if (inChannel.length > 200) list.appendChild(el('<div class="muted">Показаны первые 200 из ' + inChannel.length + "</div>"));
+        right.appendChild(el('<div class="ch-colhead">Партнёры канала «' + esc(sel) + "»</div>"));
+        var search = el('<input type="text" class="ch-search" placeholder="поиск партнёра…">');
+        right.appendChild(search);
+        var list = el('<div class="ch-prlist"></div>');
         right.appendChild(list);
+        var note = el('<div class="muted" style="margin-top:6px"></div>');
+        right.appendChild(note);
+        function drawList() {
+          var q = search.value.trim().toLowerCase();
+          var inCh = rows.filter(function (r) {
+            return r.channel === sel && (!q || r.name.toLowerCase().indexOf(q) >= 0);
+          });
+          list.innerHTML = "";
+          inCh.slice(0, 200).forEach(function (r) {
+            var row = el('<div class="ch-pr"><span class="nm" title="' + esc(r.name) + '">' + esc(r.name) + "</span>" +
+              (chOverrides[r.name] ? ' <span class="ch-moved">вручную</span>' : "") +
+              '<span class="cnt">' + fmtNum(r.alive) + "</span></div>");
+            if (sel !== CH_NOCHANNEL) {
+              var unpin = el('<button type="button" class="refresh-chart-btn ch-unpin">Открепить</button>');
+              unpin.addEventListener("click", function () {
+                chOverrides[r.name] = CH_NOCHANNEL; chSaveOverrides(); chBroadcast();
+              });
+              row.appendChild(unpin);
+            }
+            var sl = el('<select class="ch-move"><option value="">Перенести в…</option>' +
+              chAllChannels().filter(function (x) { return x !== r.channel && x !== CH_NOCHANNEL; })
+                .map(function (x) { return '<option value="' + esc(x) + '">' + esc(x) + "</option>"; }).join("") + "</select>");
+            sl.addEventListener("change", function () {
+              if (!sl.value) return;
+              chOverrides[r.name] = sl.value; chSaveOverrides(); chBroadcast();
+            });
+            row.appendChild(sl);
+            list.appendChild(row);
+          });
+          if (!inCh.length) list.appendChild(el('<div class="muted">Никого не найдено.</div>'));
+          note.textContent = inCh.length > 200 ? "Показаны первые 200 из " + fmtNum(inCh.length) + " — остальных через поиск."
+            : (sel === CH_NOCHANNEL ? "Откреплённые партнёры не попадают ни в один канал, пока их не закрепят." : "");
+        }
+        search.addEventListener("input", drawList);
+        drawList();
         pane.appendChild(left); pane.appendChild(right);
         wrap.appendChild(pane);
+        // Правило разнесения — под спойлером: это стартовая раскладка, дальше работают правки.
+        var rule = el('<details class="ch-rule"><summary>Как партнёры разнесены изначально — правило по полю «Центр продаж»</summary></details>');
+        rule.appendChild(makeSortableTable(
+          [{ label: "#", num: true }, { label: "Условие" }, { label: "Канал" }],
+          [["1", "«Партнер» в справочнике «Корп»", "Корп"],
+           ["2", "«Партнер» в справочнике Зибер", "Ольга Зибер"],
+           ["3", "«Центр продаж» — представительство и «Партнер» — тот же офис", "Пенигина — прямые"],
+           ["4", "«Центр продаж» — представительство, «Партнер» — другой", "Пенигина — ОП"],
+           ["5", "Всё остальное", "Партнёры"]]
+        ));
+        rule.appendChild(el('<div class="muted" style="padding:6px 2px">Проверяется сверху вниз, первое совпадение. ' +
+          "Правила 1–2 стоят выше «Центра продаж» намеренно: «ЛК ОФД» и АТОЛ сидят в общем ЦП и иначе ушли бы в «Партнёры».</div>"));
+        wrap.appendChild(rule);
       }
       draw();
       CH_REFRESHERS[instanceId] = draw;
@@ -6172,7 +6210,19 @@
     onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_SETUP_SEL.delete(instanceId); },
   };
 
-  var CH_DYN_SEL = new Map();
+  // ---------- общий расчёт по каналу за год ----------
+  var CH_MON = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  var CH_MONF = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+  function chSeries(model, ctx, year, filterFn) {
+    return root.OFDMetrics.computeChannelMonthly(model, year, ctx.asOf, ctx.opts, filterFn);
+  }
+  function chGraceEnd(year, m) {
+    var d = new Date(year, m + 1, 0);
+    return new Date(d.getTime() + 31 * 86400000).toLocaleDateString("ru-RU");
+  }
+
+  // ---------- часть 2: динамика канала, 2026 против 2025 одним графиком ----------
+  var CH_DYN = new Map();
   WIDGETS["b9-channels-dynamics"] = {
     title: "Каналы продаж — динамика год к году", type: "график", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
@@ -6180,56 +6230,187 @@
       function draw() {
         wrap.innerHTML = "";
         var M = root.OFDMetrics;
-        var sel = CH_DYN_SEL.get(instanceId) || "Ольга Зибер";
+        var st = CH_DYN.get(instanceId) || { ch: "Ольга Зибер", metric: "C" };
+        CH_DYN.set(instanceId, st);
         var yNow = ctx.asOf.getFullYear();
-        var tabs = el('<div class="threshold-row" style="flex-wrap:wrap"></div>');
+        var tabs = el('<div class="ch-tabs"></div>');
         M.CHANNELS.forEach(function (ch) {
-          var b = el('<button type="button" class="refresh-chart-btn"' +
-            (ch === sel ? ' style="border-color:var(--brand);color:var(--brand);font-weight:600"' : "") + ">" + esc(ch) + "</button>");
-          b.addEventListener("click", function () { CH_DYN_SEL.set(instanceId, ch); draw(); });
+          var b = el('<button type="button" class="ch-tab' + (ch === st.ch ? " on" : "") + '">' + esc(ch) + "</button>");
+          b.addEventListener("click", function () { st.ch = ch; draw(); });
           tabs.appendChild(b);
         });
         wrap.appendChild(tabs);
-        var f = function (c) { return chClientChannel(c) === sel; };
-        var cur = M.computeChannelMonthly(model, yNow, ctx.asOf, ctx.opts, f);
-        var prev = M.computeChannelMonthly(model, yNow - 1, ctx.asOf, ctx.opts, f);
-        var metricSel = el('<div class="threshold-row"><label>Показатель ' +
-          '<select class="ch-metric"><option value="churned">Отток</option><option value="newClients">Новые</option>' +
-          '<option value="returned">Вернувшиеся</option></select></label>' +
-          '<span class="muted">' + yNow + " — оранжевый, " + (yNow - 1) + " — синий</span></div>");
-        wrap.appendChild(metricSel);
-        var metric = CH_DYN_SEL.get(instanceId + ":m") || "churned";
-        metricSel.querySelector(".ch-metric").value = metric;
-        metricSel.querySelector(".ch-metric").addEventListener("change", function (e) {
-          CH_DYN_SEL.set(instanceId + ":m", e.target.value); draw();
+        var f = function (c) { return chClientChannel(c) === st.ch; };
+        var cur = chSeries(model, ctx, yNow, f), prev = chSeries(model, ctx, yNow - 1, f);
+        var MN = { N: "Новые клиенты", C: "Отток клиентов", S: "Разница (новые − отток)" };
+        var legend = el('<div class="ch-legend">' +
+          '<span><i class="ch-sw" style="background:var(--s2)"></i>' + yNow + "</span>" +
+          '<span><i class="ch-sw" style="background:var(--s1)"></i>' + (yNow - 1) + "</span>" +
+          '<span class="ch-seg">' +
+          ["N", "C", "S"].map(function (k) {
+            return '<span class="ch-segopt' + (k === st.metric ? " on" : "") + '" data-k="' + k +
+              '">' + (k === "N" ? "новые" : k === "C" ? "отток" : "разница") + "</span>";
+          }).join("") + "</span></div>");
+        legend.querySelectorAll(".ch-segopt").forEach(function (o) {
+          o.addEventListener("click", function () { st.metric = o.dataset.k; draw(); });
         });
-        // lineChart ждёт массив Date (сам форматирует подписи по getMonth), не строки-метки.
-        var months = cur.map(function (m, i) { return new Date(yNow, i, 1); });
-        // Незрелые месяцы (с даты окончания не прошёл 31 день) обрываем, а не рисуем нулём —
-        // иначе линия падает в ноль и читается как «оттока нет».
-        var curVals = cur.map(function (m) { return m.ripe ? m[metric] : null; });
-        // lineChart отдаёт HTML-СТРОКУ, не Node — оборачиваем, иначе appendChild падает.
-        var chart = lineChart(months, [
-          { label: String(yNow - 1), values: prev.map(function (m) { return m[metric]; }), color: "var(--s1)" },
-          { label: String(yNow), values: curVals.map(function (v) { return v == null ? 0 : v; }), color: "var(--s2)" },
-        ], { area: false });
-        wrap.appendChild(el('<div style="margin-top:10px">' + chart + "</div>"));
-        var unripe = cur.filter(function (m) { return !m.ripe && (m.pending || m.churned); });
-        if (unripe.length) {
-          var pend = unripe.reduce(function (t, m) { return t + m.pending; }, 0);
-          wrap.appendChild(el('<div class="muted" style="margin-top:6px">Месяцы ' +
-            unripe.map(function (m) { return m.label; }).join(", ") +
-            " ещё не закрыты: " + fmtNum(pend) + " клиентов в грейс-периоде, отток по ним подтвердится позже.</div>"));
+        wrap.appendChild(legend);
+        function vals(s, k) {
+          return s.map(function (m) { return k === "N" ? m.newClients : k === "C" ? m.churned : m.newClients - m.churned; });
+        }
+        var a26 = vals(cur, st.metric), a25 = vals(prev, st.metric);
+        // Грейс: по незрелым месяцам подтверждённый отток занижен — пунктир ведёт к худшему
+        // случаю (все pending уйдут в отток), сплошная линия обрывается на последнем зрелом.
+        var worst = cur.map(function (m, i) {
+          var add = m.ripe ? 0 : m.pending;
+          return st.metric === "N" ? a26[i] : st.metric === "C" ? a26[i] + add : a26[i] - add;
+        });
+        var lastRipe = 0;
+        cur.forEach(function (m, i) { if (m.ripe && (m.newClients || m.churned)) lastRipe = i; });
+        var hasFuture = cur.map(function (m, i) { return i <= ctx.asOf.getMonth(); });
+        wrap.appendChild(el('<div class="ch-chart">' +
+          chDrawChart(a26, a25, worst, lastRipe, ctx.asOf.getMonth(), yNow, MN[st.metric], cur, prev, st.metric) + "</div>"));
+        // Вердикт за январь–as-of
+        var upto = ctx.asOf.getMonth() + 1;
+        function sum(arr, key) { var t = 0; for (var i = 0; i < upto; i++) t += arr[i][key]; return t; }
+        var n26 = sum(cur, "newClients"), n25 = sum(prev, "newClients");
+        var c26 = sum(cur, "churned"), c25 = sum(prev, "churned");
+        var b26 = cur[0].baseAtStart, b25 = prev[0].baseAtStart;
+        function pc(a, b) {
+          if (!b) return "—";
+          var v = (a / b - 1) * 100;
+          return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1).replace(".", ",") + "%";
+        }
+        var net26 = n26 - c26, net25 = n25 - c25, good = net26 >= net25;
+        var per = "янв–" + CH_MON[ctx.asOf.getMonth()];
+        wrap.appendChild(el('<div class="ch-verdict">' +
+          chVCell("Привели, " + per, fmtNum(n26), pc(n26, n25), n26 >= n25, (yNow - 1) + ": " + fmtNum(n25)) +
+          chVCell("Потеряли, " + per, fmtNum(c26), pc(c26, c25), c26 <= c25, (yNow - 1) + ": " + fmtNum(c25)) +
+          chVCell("Отток от базы на 1 января", b26 ? (100 * c26 / b26).toFixed(1).replace(".", ",") + "%" : "—", "", true,
+            (yNow - 1) + ": " + (b25 ? (100 * c25 / b25).toFixed(1).replace(".", ",") + "%" : "—")) +
+          '<div><div class="ch-vlabel">Итог год к году</div><div class="ch-vbig" style="color:var(' +
+          (good ? "--good" : "--crit") + ')">' + (good ? "▲ положительная" : "▼ отрицательная") +
+          '</div><div class="ch-vsub">чистый прирост ' + fmtNum(net26) + " против " + fmtNum(net25) + "</div></div>" +
+          "</div>"));
+        var grace = cur.filter(function (m, i) { return !m.ripe && i <= ctx.asOf.getMonth() && m.pending; });
+        if (grace.length) {
+          wrap.appendChild(el('<div class="muted" style="margin-top:8px">Пунктир ведёт к худшему случаю: ' +
+            fmtNum(grace.reduce(function (t, m) { return t + m.pending; }, 0)) +
+            " клиентов ещё в грейс-периоде, полая точка — уже подтверждённый отток.</div>"));
         }
       }
       draw();
       CH_REFRESHERS[instanceId] = draw;
       return wrap;
     },
-    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_DYN_SEL.delete(instanceId); },
+    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_DYN.delete(instanceId); },
   };
 
-  var CH_GROWTH_SEL = new Map();
+  function chVCell(label, big, delta, good, sub) {
+    return '<div><div class="ch-vlabel">' + esc(label) + '</div><div class="ch-vbig">' + big +
+      (delta ? ' <span class="ch-delta ' + (good ? "up" : "down") + '">' + delta + "</span>" : "") +
+      '</div><div class="ch-vsub">' + esc(sub) + "</div></div>";
+  }
+  // Один SVG: 2026 оранжевым, 2025 синим, 12 месяцев. Возвращает СТРОКУ (как lineChart).
+  function chDrawChart(a26, a25, worst, lastRipe, asOfMonth, yNow, title, cur, prev, metric) {
+    var W = 1100, H = 280, L = 56, R = 52, T = 18, Bm = 30;
+    var shown26 = a26.slice(0, asOfMonth + 1), shownW = worst.slice(0, asOfMonth + 1);
+    var all = shown26.concat(a25, shownW);
+    var lo = Math.min.apply(null, all.concat([0])), hi = Math.max.apply(null, all.concat([1]));
+    var pad = (hi - lo) * 0.15 || 10;
+    var y0 = Math.min(0, lo - pad), y1 = hi + pad;
+    var x = function (i) { return L + (i + 0.5) * (W - L - R) / 12; };
+    var y = function (v) { return T + (H - T - Bm) * (1 - (v - y0) / (y1 - y0)); };
+    var g = "";
+    for (var i = 0; i < 12; i++) {
+      g += '<rect class="hl" data-m="' + i + '" x="' + (x(i) - (W - L - R) / 24) + '" y="' + T +
+        '" width="' + ((W - L - R) / 12) + '" height="' + (H - T - Bm) + '" fill="var(--brand)" opacity="0"/>';
+    }
+    var step = (y1 - y0) / 4;
+    for (var t = 0; t <= 4; t++) {
+      var tv = y0 + step * t;
+      g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(tv) + '" y2="' + y(tv) +
+        '" stroke="' + (Math.abs(tv) < 0.5 ? "var(--muted)" : "var(--viz-grid)") + '" stroke-width="1"/>' +
+        '<text x="' + (L - 8) + '" y="' + (y(tv) + 4) + '" text-anchor="end" font-size="11" fill="var(--muted)">' +
+        Math.round(tv).toLocaleString("ru-RU") + "</text>";
+    }
+    for (i = 0; i < 12; i++) {
+      g += '<text class="ml" data-m="' + i + '" x="' + x(i) + '" y="' + (H - 9) +
+        '" text-anchor="middle" font-size="11.5" fill="var(--muted)">' + CH_MON[i] + "</text>";
+    }
+    function path(arr, n, col) {
+      return arr.slice(0, n).map(function (v, i2) { return (i2 ? "L" : "M") + x(i2).toFixed(1) + " " + y(v).toFixed(1); }).join(" ");
+    }
+    g += '<path d="' + path(a25, 12) + '" fill="none" stroke="var(--s1)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+    g += a25.map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s1)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
+    g += '<text x="' + (x(11) + 9) + '" y="' + (y(a25[11]) + 4) + '" font-size="11" font-weight="600" fill="var(--ink)">' + (yNow - 1) + "</text>";
+    var solidTo = Math.min(lastRipe, asOfMonth) + 1;
+    g += '<path d="' + path(a26, solidTo) + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+    // Хвост от последнего зрелого месяца к худшему случаю — пунктиром.
+    if (solidTo <= asOfMonth) {
+      var seg = [];
+      for (var k = solidTo - 1; k <= asOfMonth; k++) if (k >= 0) seg.push((seg.length ? "L" : "M") + x(k).toFixed(1) + " " + y(worst[k]).toFixed(1));
+      g += '<path d="' + seg.join(" ") + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-dasharray="5 4" stroke-linecap="round"/>';
+      g += '<text x="' + x(asOfMonth) + '" y="' + (y(worst[asOfMonth]) - 12) + '" text-anchor="middle" font-size="10" fill="var(--muted)">грейс</text>';
+      g += '<line x1="' + x(asOfMonth) + '" x2="' + x(asOfMonth) + '" y1="' + y(worst[asOfMonth]) + '" y2="' + y(a26[asOfMonth]) +
+        '" stroke="var(--s2)" stroke-width="1.5" stroke-dasharray="2 3"/>';
+      g += '<circle cx="' + x(asOfMonth) + '" cy="' + y(a26[asOfMonth]) + '" r="4.5" fill="var(--card-bg)" stroke="var(--s2)" stroke-width="2"/>';
+      g += '<text x="' + (x(asOfMonth) - 9) + '" y="' + (y(a26[asOfMonth]) + 4) + '" text-anchor="end" font-size="10" fill="var(--muted)">подтверждено</text>';
+    }
+    g += a26.slice(0, solidTo).map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s2)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
+    g += '<text x="' + (x(asOfMonth) + 9) + '" y="' + (y(a26[asOfMonth]) - 10) + '" font-size="11" font-weight="600" fill="var(--ink)">' + yNow + "</text>";
+    return '<h4 class="ch-ctitle">' + esc(title) + ' по месяцам</h4><svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
+      esc(title) + ": " + yNow + " против " + (yNow - 1) + '">' + g + "</svg>";
+  }
+
+  // ---------- часть 3: прирост базы по каналам ----------
+  var CH_GROWTH = new Map();
+  function chAgg(series, from, to) {
+    var o = { base: series[from].baseAtStart, n: 0, c: 0, g: 0, r: 0, k: to - from + 1 };
+    for (var m = from; m <= to; m++) {
+      o.n += series[m].newClients;
+      o.c += series[m].churned;
+      o.g += series[m].ripe ? 0 : series[m].pending;
+      o.r += series[m].returned;
+    }
+    return o;
+  }
+  function chAddAgg(a, b) { a.base += b.base; a.n += b.n; a.c += b.c; a.g += b.g; a.r += b.r; a.k = b.k; return a; }
+  function chZero() { return { base: 0, n: 0, c: 0, g: 0, r: 0, k: 1 }; }
+  function chPct(a, b) {
+    if (!b) return "—";
+    var v = (a / b - 1) * 100;
+    return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1).replace(".", ",") + "%";
+  }
+  function chPP(a, b) {
+    var v = a - b;
+    return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2).replace(".", ",") + " п.п.";
+  }
+  function chP2(v) { return v.toFixed(2).replace(".", ",") + "%"; }
+  function chDelta(txt, good) { return '<span class="ch-delta ' + (good ? "up" : "down") + '">' + txt + "</span>"; }
+  // Проценты — в СРЕДНЕМ ЗА МЕСЯЦ (делим на число месяцев): иначе квартал даёт втрое
+  // больший процент, чем месяц, и читается как обвал. Так месяц и период сравнимы напрямую.
+  function chCells(a, b) {
+    var co = a.base ? a.c / a.base / a.k * 100 : 0, co5 = b.base ? b.c / b.base / b.k * 100 : 0;
+    var ci = a.base ? a.n / a.base / a.k * 100 : 0, ci5 = b.base ? b.n / b.base / b.k * 100 : 0;
+    return [
+      fmtNum(a.base),
+      fmtNum(a.n), chDelta(chPct(a.n, b.n), a.n >= b.n),
+      fmtNum(a.c) + (a.g ? '<span class="ch-grace-sub">+' + fmtNum(a.g) + " в грейсе</span>" : ""),
+      chDelta(chPct(a.c, b.c), a.c <= b.c),
+      fmtNum(a.r), chDelta(chPct(a.r, b.r), a.r >= b.r),
+      chP2(co), chDelta(chPP(co, co5), co <= co5),
+      chP2(ci), chDelta(chPP(ci, ci5), ci >= ci5),
+    ];
+  }
+  function chVerdict(a, b) {
+    if (!a.base || !b.base) return "";
+    var d = ((a.c / a.base - b.c / b.base) - (a.n / a.base - b.n / b.base)) / a.k * 100;
+    if (d >= 0.35) return '<span class="ch-pill crit">провал</span>';
+    if (d <= 0) return '<span class="ch-pill good">лучше ' + "прошлого года" + "</span>";
+    return '<span class="ch-pill warn">хуже прошлого года</span>';
+  }
+
   WIDGETS["b9-channels-growth"] = {
     title: "Каналы продаж — прирост базы", type: "таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
@@ -6237,63 +6418,151 @@
       function draw() {
         wrap.innerHTML = "";
         var M = root.OFDMetrics;
-        var yNow = ctx.asOf.getFullYear();
-        var mon = CH_GROWTH_SEL.has(instanceId) ? CH_GROWTH_SEL.get(instanceId) : ctx.asOf.getMonth();
-        var open = CH_GROWTH_SEL.get(instanceId + ":open") || null;
-        var ctl = el('<div class="threshold-row"><label>Месяц <select class="ch-month">' +
-          ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
-            .map(function (l, i) { return '<option value="' + i + '"' + (i === mon ? " selected" : "") + ">" + l + " " + yNow + "</option>"; }).join("") +
-          "</select></label></div>");
-        wrap.appendChild(ctl);
-        ctl.querySelector(".ch-month").addEventListener("change", function (e) {
-          CH_GROWTH_SEL.set(instanceId, +e.target.value); draw();
-        });
-        function rowFor(label, filterFn) {
-          var a = M.computeChannelMonthly(model, yNow, ctx.asOf, ctx.opts, filterFn)[mon];
-          var b = M.computeChannelMonthly(model, yNow - 1, ctx.asOf, ctx.opts, filterFn)[mon];
-          function d(now, was) {
-            if (!was) return "—";
-            var v = (now / was - 1) * 100;
-            var cls = v >= 0 ? "good" : "crit";
-            return '<span style="color:var(--' + cls + ')">' + (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1) + "%</span>";
-          }
-          var churnTxt = fmtNum(a.churned) + (a.ripe ? "" : ' <span class="muted">+' + fmtNum(a.pending) + " в грейсе</span>");
-          return [label, fmtNum(a.baseAtStart), fmtNum(a.newClients) + " " + d(a.newClients, b.newClients),
-            churnTxt + " " + d(a.churned, b.churned), fmtNum(a.returned),
-            a.baseAtStart ? (100 * a.churned / a.baseAtStart).toFixed(2) + "%" : "—"];
-        }
-        var hdr = [{ label: "Канал" }, { label: "Клиентов на 1-е", num: true }, { label: "Новые", html: true },
-          { label: "Отток", html: true }, { label: "Вернувшиеся", num: true }, { label: "% оттока", num: true }];
-        var body = [];
-        M.CHANNELS.forEach(function (ch) {
-          body.push(rowFor(ch, function (c) { return chClientChannel(c) === ch; }));
-          if (open === ch) {
-            chPartnerRows(model, ctx.asOf).filter(function (p) { return p.channel === ch; }).slice(0, 25).forEach(function (p) {
-              body.push(rowFor("    " + p.name, function (c) {
-                return chClientChannel(c) === ch && c.kassas.length && (c.kassas[c.kassas.length - 1].partner || "—") === p.name;
-              }));
-            });
-          }
-        });
-        var tbl = makeSortableTable(hdr, body);
-        tbl.querySelectorAll("tbody tr").forEach(function (tr) {
-          var name = tr.cells[0].textContent;
-          if (M.CHANNELS.indexOf(name) === -1) return;
-          tr.style.cursor = "pointer";
-          tr.addEventListener("click", function () {
-            CH_GROWTH_SEL.set(instanceId + ":open", open === name ? null : name); draw();
+        var yNow = ctx.asOf.getFullYear(), curMonth = ctx.asOf.getMonth();
+        var st = CH_GROWTH.get(instanceId);
+        if (!st) { st = { mode: "one", from: curMonth, to: curMonth, pending: false, open: {} }; CH_GROWTH.set(instanceId, st); }
+        // --- строка выбора периода ---
+        var bar = el('<div class="ch-monthbar"></div>');
+        var seg = el('<span class="ch-seg"><span class="ch-segopt' + (st.mode === "one" ? " on" : "") + '" data-m="one">Месяц</span>' +
+          '<span class="ch-segopt' + (st.mode === "range" ? " on" : "") + '" data-m="range">Период</span></span>');
+        seg.querySelectorAll(".ch-segopt").forEach(function (o) {
+          o.addEventListener("click", function () {
+            st.mode = o.dataset.m; st.pending = false;
+            if (st.mode === "one") st.from = st.to;
+            draw();
           });
         });
-        wrap.appendChild(tbl);
-        wrap.appendChild(el('<div class="muted" style="margin-top:6px">Клик по каналу — его партнёры (топ-25). ' +
-          "Процент считается к числу клиентов на 1-е число месяца. Дельта — к тому же месяцу " + (yNow - 1) + ".</div>"));
+        bar.appendChild(seg);
+        var months = el('<div class="ch-months"></div>');
+        var series = {}, prevSeries = {};
+        for (var mi = 0; mi < 12; mi++) {
+          (function (i) {
+            var future = i > curMonth;
+            var ripe = ctx.asOf >= new Date(new Date(yNow, i + 1, 0, 23, 59, 59).getTime() + 31 * 86400000);
+            var cls = "ch-mo" + (i >= st.from && i <= st.to ? (i === st.from || i === st.to ? " edge" : " in") : "") + (!future && !ripe ? " grace" : "");
+            var b = el('<button type="button" class="' + cls + '"' + (future ? " disabled" : "") + ' title="' +
+              (future ? "месяц ещё не наступил" : !ripe ? "грейс-период до " + chGraceEnd(yNow, i) + ": отток предварительный" : "") +
+              '">' + CH_MON[i] + (!future && !ripe ? '<span class="ch-gdot">⏳</span>' : "") + "</button>");
+            if (!future) {
+              b.addEventListener("click", function () {
+                if (st.mode === "one") { st.from = st.to = i; }
+                else if (!st.pending) { st.from = st.to = i; st.pending = true; }
+                else { st.from = Math.min(st.from, i); st.to = Math.max(st.to, i); st.pending = false; }
+                draw();
+              });
+            }
+            months.appendChild(b);
+          })(mi);
+        }
+        bar.appendChild(months);
+        if (st.mode === "range") {
+          var presets = el('<span class="ch-presets">' +
+            '<button type="button" class="refresh-chart-btn" data-p="q">Последние 3 мес.</button>' +
+            '<button type="button" class="refresh-chart-btn" data-p="ytd">С начала года</button></span>');
+          presets.querySelectorAll("[data-p]").forEach(function (b) {
+            b.addEventListener("click", function () {
+              if (b.dataset.p === "q") { st.from = Math.max(0, curMonth - 2); st.to = curMonth; }
+              else { st.from = 0; st.to = curMonth; }
+              st.pending = false; draw();
+            });
+          });
+          bar.appendChild(presets);
+          bar.appendChild(el('<span class="muted">' +
+            (st.pending ? "теперь последний месяц периода" : "клик — первый месяц, второй клик — последний") + "</span>"));
+        }
+        var one = st.from === st.to;
+        bar.appendChild(el('<span class="chip-inline">' +
+          (one ? CH_MONF[st.from] + " " + yNow : CH_MON[st.from] + "–" + CH_MON[st.to] + " " + yNow + " · " + (st.to - st.from + 1) + " мес.") +
+          "</span>"));
+        wrap.appendChild(bar);
+        // --- плашка грейса ---
+        var graceMonths = [];
+        for (var gm = st.from; gm <= st.to; gm++) {
+          if (ctx.asOf < new Date(new Date(yNow, gm + 1, 0, 23, 59, 59).getTime() + 31 * 86400000)) graceMonths.push(gm);
+        }
+        if (graceMonths.length) {
+          var g0 = graceMonths[0];
+          wrap.appendChild(el('<div class="ch-gracebar"><span class="ch-gico">⏳</span><span><strong>' +
+            CH_MONF[g0].charAt(0).toUpperCase() + CH_MONF[g0].slice(1) + " в грейс-периоде до " + chGraceEnd(yNow, g0) + ".</strong> " +
+            "Клиенты, у которых подписка закончилась в этом месяце, ещё могут продлиться в течение 30 дней. " +
+            "В отток они пока не входят — показаны отдельно строкой «в грейсе» под цифрой оттока. " +
+            "Окончательный отток за " + CH_MONF[g0] + " будет после " + chGraceEnd(yNow, g0) + ".</span></div>"));
+        }
+        // --- таблица ---
+        var pctSub = one ? "знач." : "в мес.";
+        var mm = ("0" + (st.from + 1)).slice(-2);
+        var thead = '<tr><th rowspan="2">Канал</th>' +
+          '<th class="grp" rowspan="2">Количество клиентов<br><span class="ch-sub">на 01.' + mm + "</span></th>" +
+          '<th class="grp" colspan="2">Новые</th>' +
+          '<th class="grp" colspan="2">Отток' + (graceMonths.length ? ' <span class="ch-gtag">⏳ предв.</span>' : "") + "</th>" +
+          '<th class="grp" colspan="2">Вернувшиеся</th>' +
+          '<th class="grp" colspan="2">% оттока</th>' +
+          '<th class="grp" colspan="2">% притока</th>' +
+          '<th class="grp" rowspan="2">Динамика</th></tr>' +
+          '<tr><th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
+          '<th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
+          '<th class="num gstart ch-sub">клиенты</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
+          '<th class="num gstart ch-sub">' + pctSub + '</th><th class="num ch-sub">к ' + (yNow - 1) + "</th>" +
+          '<th class="num gstart ch-sub">' + pctSub + '</th><th class="num ch-sub">к ' + (yNow - 1) + "</th></tr>";
+        var body = "", T26 = chZero(), T25 = chZero();
+        var partnerRows = chPartnerRows(model, ctx.asOf);
+        M.CHANNELS.forEach(function (ch) {
+          var f = function (c) { return chClientChannel(c) === ch; };
+          var a = chAgg(chSeries(model, ctx, yNow, f), st.from, st.to);
+          var b = chAgg(chSeries(model, ctx, yNow - 1, f), st.from, st.to);
+          chAddAgg(T26, a); chAddAgg(T25, b);
+          var open = !!st.open[ch];
+          var inCh = partnerRows.filter(function (p) { return p.channel === ch; });
+          body += '<tr class="ch-line' + (open ? " open" : "") + '" data-ch="' + esc(ch) + '">' +
+            '<td><span class="ch-caret">' + (open ? "▾" : "▸") + "</span>" + esc(ch) +
+            ' <span class="cnt">' + inCh.length + "</span></td>" +
+            chCells(a, b).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+            '<td class="gstart">' + chVerdict(a, b) + "</td></tr>";
+          if (open) {
+            var sub = inCh.slice(0, 25).map(function (p) {
+              var pf = function (c) { return chClientChannel(c) === ch && chPartnerOf(c) === p.name; };
+              return { p: p, a: chAgg(chSeries(model, ctx, yNow, pf), st.from, st.to), b: chAgg(chSeries(model, ctx, yNow - 1, pf), st.from, st.to) };
+            });
+            // Худшие по динамике сверху — «кто провалился» видно сразу, как просил Дима.
+            sub.sort(function (x, z) {
+              function d(o) { return o.a.base && o.b.base ? ((o.a.c / o.a.base - o.b.c / o.b.base) - (o.a.n / o.a.base - o.b.n / o.b.base)) : -1e9; }
+              return d(z) - d(x);
+            });
+            sub.forEach(function (s) {
+              body += '<tr class="ch-subline"><td title="' + esc(s.p.name) + '">' + esc(s.p.name) +
+                (chOverrides[s.p.name] ? ' <span class="ch-moved">вручную</span>' : "") + "</td>" +
+                chCells(s.a, s.b).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+                '<td class="gstart">' + chVerdict(s.a, s.b) + "</td></tr>";
+            });
+            if (inCh.length > 25) {
+              body += '<tr class="ch-subline"><td colspan="13" class="muted">…и ещё ' + fmtNum(inCh.length - 25) +
+                " партнёров в этом канале</td></tr>";
+            }
+          }
+        });
+        body += '<tr class="ch-total"><td><strong>Итого</strong></td>' +
+          chCells(T26, T25).map(function (v, i2) { return '<td class="num' + (i2 === 0 || i2 === 1 || i2 === 3 || i2 === 5 || i2 === 7 || i2 === 9 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
+          '<td class="gstart">' + chVerdict(T26, T25) + "</td></tr>";
+        var tblWrap = el('<div class="table-scroll"><table class="wtable ch-table"><thead>' + thead + "</thead><tbody>" + body + "</tbody></table></div>");
+        tblWrap.querySelectorAll(".ch-line").forEach(function (tr) {
+          tr.addEventListener("click", function () {
+            var ch = tr.dataset.ch;
+            st.open[ch] = !st.open[ch];
+            draw();
+          });
+        });
+        wrap.appendChild(tblWrap);
+        wrap.appendChild(el('<div class="muted" style="margin-top:6px">База — на начало первого месяца; новые, отток и вернувшиеся — сумма за период; ' +
+          "% оттока и % притока — в среднем за месяц, поэтому месяц и квартал сравнимы напрямую. " +
+          "Клик по каналу раскрывает его партнёров, сверху — у кого год к году хуже всего.</div>"));
       }
       draw();
       CH_REFRESHERS[instanceId] = draw;
       return wrap;
     },
-    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_GROWTH_SEL.delete(instanceId); },
+    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_GROWTH.delete(instanceId); },
   };
+
 
   // ---- Выгрузка для прозвона по обмену с 1С (Дима, 2026-10-01) ----------------------
   // Строка = КАССА (цепочка тарифов по заводскому номеру), НЕ клиент: у одного клиента

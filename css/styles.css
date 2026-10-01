@@ -393,3 +393,83 @@ table.wtable tbody tr:hover { background: var(--paper); }
 @media (prefers-reduced-motion: no-preference) {
   .widget { transition: border-color .12s; }
 }
+
+/* ---- B9 «Каналы продаж» (2026-10-01) — состав, динамика, прирост базы ---------------
+   Партнёры внутри канала должны ЧИТАТЬСЯ как вложенные строки, а не как ещё один канал:
+   отступ, каретка у канала, подсветка раскрытой строки, более мелкий шрифт у партнёров. */
+.ch-pane { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(260px, 2fr); gap: 12px; margin-top: 8px; }
+.ch-col { min-width: 0; }
+.ch-colhead { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 700; margin-bottom: 8px; }
+.ch-row { font: inherit; font-size: 13px; width: 100%; text-align: left; cursor: pointer; display: flex;
+  justify-content: space-between; gap: 10px; align-items: center; padding: 7px 10px; margin-bottom: 4px;
+  border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); }
+.ch-row:hover { border-color: var(--brand); }
+.ch-row.on { border-color: var(--brand); color: var(--brand); font-weight: 600; }
+.ch-row.warn { border-color: var(--warn); }
+.ch-search { font: inherit; font-size: 13px; width: 100%; margin-bottom: 8px; background: var(--paper);
+  color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.ch-prlist { max-height: 300px; overflow-y: auto; }
+.ch-pr { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px 6px; border-radius: 7px; }
+.ch-pr .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-pr .ch-move { font: inherit; font-size: 12px; max-width: 160px; background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 7px; padding: 2px 5px; }
+.ch-moved { font-size: 10px; color: var(--brand); border: 1px solid var(--brand); border-radius: 100px; padding: 0 6px; white-space: nowrap; }
+.ch-rule { margin-top: 12px; }
+.ch-rule summary { cursor: pointer; font-size: 12px; color: var(--muted); padding: 6px 0; }
+
+.ch-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.ch-tab { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--line); background: transparent;
+  color: var(--ink); border-radius: 100px; padding: 4px 11px; }
+.ch-tab:hover { border-color: var(--brand); }
+.ch-tab.on { border-color: var(--brand); color: var(--brand); font-weight: 600; }
+.ch-legend { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.ch-sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.ch-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; margin-left: auto; }
+.ch-segopt { font-size: 12px; padding: 5px 12px; cursor: pointer; color: var(--muted); border-right: 1px solid var(--line); }
+.ch-segopt:last-child { border-right: none; }
+.ch-segopt.on { background: var(--brand); color: #fff; font-weight: 600; }
+.ch-chart svg { width: 100%; height: auto; display: block; }
+.ch-ctitle { margin: 2px 0 4px; font-size: 12px; font-weight: 650; }
+.ch-verdict { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ch-verdict > div { flex: 1 1 150px; }
+.ch-vlabel { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.ch-vbig { font-size: 19px; margin-top: 3px; }
+.ch-vsub { font-size: 11px; color: var(--muted); }
+.ch-delta { font-size: 11px; font-weight: 600; }
+.ch-delta.up { color: var(--good); }
+.ch-delta.down { color: var(--crit); }
+
+.ch-monthbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 10px; }
+.ch-months { display: flex; flex-wrap: wrap; gap: 4px; }
+.ch-mo { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid var(--line); background: transparent;
+  color: var(--ink); border-radius: 7px; padding: 3px 9px; min-width: 42px; }
+.ch-mo:hover:not(:disabled) { border-color: var(--brand); }
+.ch-mo:disabled { color: var(--muted); opacity: .45; cursor: default; }
+.ch-mo.in { border-color: var(--brand); color: var(--brand); }
+.ch-mo.edge { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+.ch-mo.grace { border-style: dashed; }
+.ch-gdot { font-size: 9px; margin-left: 2px; vertical-align: super; }
+.ch-presets { display: inline-flex; gap: 5px; }
+.chip-inline { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 100px; padding: 2px 9px; }
+.ch-gracebar { display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; margin-bottom: 10px;
+  font-size: 12px; border-radius: 8px; border: 1px solid var(--warn); }
+.ch-gico { font-size: 14px; }
+.ch-gtag { font-size: 10px; font-weight: 600; color: var(--warn); border: 1px solid var(--warn);
+  border-radius: 100px; padding: 0 6px; text-transform: none; letter-spacing: 0; }
+.ch-grace-sub { display: block; font-size: 10px; color: var(--warn); }
+.ch-sub { font-size: 10px; }
+.ch-table th.grp { text-align: center; border-left: 2px solid var(--line); }
+.ch-table td.gstart, .ch-table th.gstart { border-left: 2px solid var(--line); }
+.ch-line { cursor: pointer; }
+.ch-line > td:first-child { font-weight: 650; }
+.ch-line.open > td { background: color-mix(in oklab, var(--brand) 8%, transparent); }
+.ch-caret { display: inline-block; width: 14px; color: var(--muted); }
+.ch-subline > td { font-size: 12px; background: color-mix(in oklab, var(--ink) 3%, transparent); }
+.ch-subline > td:first-child { padding-left: 34px; max-width: 280px; overflow: hidden;
+  text-overflow: ellipsis; color: var(--muted); }
+.ch-total > td { border-top: 2px solid var(--line); font-weight: 650; }
+.ch-pill { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 100px; padding: 1px 8px; }
+.ch-pill.crit { background: color-mix(in oklab, var(--crit) 15%, transparent); color: var(--crit); }
+.ch-pill.warn { background: color-mix(in oklab, var(--warn) 22%, transparent); color: var(--warn); }
+.ch-pill.good { background: color-mix(in oklab, var(--good) 15%, transparent); color: var(--good); }
+@media (max-width: 760px) { .ch-pane { grid-template-columns: 1fr; } }
