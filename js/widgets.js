@@ -6272,14 +6272,15 @@
         wrap.appendChild(tabs);
         var f = function (c) { return chClientChannel(c) === st.ch; };
         var cur = chSeries(model, ctx, yNow, f), prev = chSeries(model, ctx, yNow - 1, f);
-        var MN = { N: "Новые клиенты", C: "Отток клиентов", S: "Разница (новые − отток)" };
+        var MN = { N: "Новые клиенты", C: "Отток клиентов", R: "Возвращённые клиенты", S: "Разница (новые − отток)" };
+        var MLBL = { N: "новые", C: "отток", R: "возвращённые", S: "разница" };
         var legend = el('<div class="ch-legend">' +
           '<span><i class="ch-sw" style="background:var(--s2)"></i>' + yNow + "</span>" +
           '<span><i class="ch-sw" style="background:var(--s1)"></i>' + (yNow - 1) + "</span>" +
           '<span class="ch-seg">' +
-          ["N", "C", "S"].map(function (k) {
+          ["N", "C", "R", "S"].map(function (k) {
             return '<span class="ch-segopt' + (k === st.metric ? " on" : "") + '" data-k="' + k +
-              '">' + (k === "N" ? "новые" : k === "C" ? "отток" : "разница") + "</span>";
+              '">' + MLBL[k] + "</span>";
           }).join("") + "</span></div>");
         legend.querySelectorAll(".ch-segopt").forEach(function (o) {
           o.addEventListener("click", function () { st.metric = o.dataset.k; draw(); });
@@ -6296,25 +6297,37 @@
         }));
         wrap.appendChild(legend);
         function vals(s, k) {
-          return s.map(function (m) { return k === "N" ? m.newClients : k === "C" ? m.churned : m.newClients - m.churned; });
+          return s.map(function (m) {
+            return k === "N" ? m.newClients : k === "C" ? m.churned : k === "R" ? m.returned : m.newClients - m.churned;
+          });
         }
         var a26 = vals(cur, st.metric), a25 = vals(prev, st.metric);
-        // Грейс: по незрелым месяцам подтверждённый отток занижен — пунктир ведёт к худшему
-        // случаю (все pending уйдут в отток), сплошная линия обрывается на последнем зрелом.
+        // Месяц as-of может быть НЕ закончен (as-of = сегодня, а данные кончаются вчера): в нём
+        // почти нули, график рисовал обрыв вниз, а итоги сравнивали 9 месяцев 2026 с 10
+        // месяцами 2025 (Корп, «вернулись»: -9,6% вместо честных +19,6%). Месяц законченный,
+        // если as-of не раньше его последнего дня.
+        var asOfMonth = ctx.asOf.getMonth();
+        var asOfMonthDone = ctx.asOf >= new Date(yNow, asOfMonth + 1, 0);
+        var plotTo = asOfMonthDone ? asOfMonth : asOfMonth - 1; // последний рисуемый месяц
+        // Грейс есть только у оттока (и у «разницы», куда отток входит). Новые и возвращённые
+        // от него не зависят: линия сплошная, без пунктира и без «грейса» (Дима, 2026-10-01).
+        var graceAware = st.metric === "C" || st.metric === "S";
+        // По незрелым месяцам подтверждённый отток занижен: пунктир ведёт к худшему случаю
+        // (все pending уйдут в отток), сплошная линия обрывается на последнем зрелом месяце.
         var worst = cur.map(function (m, i) {
+          if (!graceAware) return a26[i];
           var add = m.ripe ? 0 : m.pending;
-          return st.metric === "N" ? a26[i] : st.metric === "C" ? a26[i] + add : a26[i] - add;
+          return st.metric === "C" ? a26[i] + add : a26[i] - add;
         });
-        var lastRipe = 0;
-        cur.forEach(function (m, i) { if (m.ripe && (m.newClients || m.churned)) lastRipe = i; });
-        var hasFuture = cur.map(function (m, i) { return i <= ctx.asOf.getMonth(); });
+        var lastRipe = -1;
+        cur.forEach(function (m, i) { if (i <= plotTo && m.ripe && (m.newClients || m.churned)) lastRipe = i; });
         var chartBox = el('<div class="ch-chart">' +
-          chDrawChart(a26, a25, worst, lastRipe, ctx.asOf.getMonth(), yNow, MN[st.metric], cur, prev, st.metric) +
+          chDrawChart(a26, a25, worst, lastRipe, plotTo, graceAware, yNow, MN[st.metric]) +
           '<div class="ch-tip"></div></div>');
         wrap.appendChild(chartBox);
-        chBindHover(chartBox, cur, prev, yNow, ctx.asOf.getMonth());
+        chBindHover(chartBox, cur, prev, yNow, asOfMonth, asOfMonthDone ? -1 : asOfMonth);
         // Вердикт за январь–as-of
-        var upto = ctx.asOf.getMonth() + 1;
+        var upto = plotTo + 1; // только законченные месяцы, иначе пустой октябрь тянет итог вниз
         function sum(arr, key) { var t = 0; for (var i = 0; i < upto; i++) t += arr[i][key]; return t; }
         var n26 = sum(cur, "newClients"), n25 = sum(prev, "newClients");
         var c26 = sum(cur, "churned"), c25 = sum(prev, "churned");
@@ -6325,8 +6338,8 @@
           return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1).replace(".", ",") + "%";
         }
         var net26 = n26 - c26, net25 = n25 - c25, good = net26 >= net25;
-        var per = "янв–" + CH_MON[ctx.asOf.getMonth()];
-        wrap.appendChild(el('<div class="ch-verdict">' +
+        var per = upto > 0 ? "янв–" + CH_MON[plotTo] : "—";
+        if (upto > 0) wrap.appendChild(el('<div class="ch-verdict">' +
           chVCell("Привели, " + per, fmtNum(n26), pc(n26, n25), n26 >= n25, (yNow - 1) + ": " + fmtNum(n25)) +
           chVCell("Потеряли, " + per, fmtNum(c26), pc(c26, c25), c26 <= c25, (yNow - 1) + ": " + fmtNum(c25)) +
           chVCell("Отток за " + per + ", % от базы на 1 января", b26 ? (100 * c26 / b26).toFixed(1).replace(".", ",") + "%" : "—", "", true,
@@ -6335,11 +6348,18 @@
           (good ? "--good" : "--crit") + ')">' + (good ? "▲ положительная" : "▼ отрицательная") +
           '</div><div class="ch-vsub">чистый прирост ' + fmtNum(net26) + " против " + fmtNum(net25) + "</div></div>" +
           "</div>"));
-        var grace = cur.filter(function (m, i) { return !m.ripe && i <= ctx.asOf.getMonth() && m.pending; });
-        if (grace.length) {
-          wrap.appendChild(el('<div class="muted" style="margin-top:8px">Пунктир ведёт к худшему случаю: ' +
-            fmtNum(grace.reduce(function (t, m) { return t + m.pending; }, 0)) +
-            " клиентов ещё в грейс-периоде, полая точка — уже подтверждённый отток.</div>"));
+        if (graceAware) {
+          var grace = cur.filter(function (m, i) { return !m.ripe && i <= plotTo && m.pending; });
+          if (grace.length) {
+            wrap.appendChild(el('<div class="muted" style="margin-top:8px">Пунктир ведёт к худшему случаю: ' +
+              fmtNum(grace.reduce(function (t, m) { return t + m.pending; }, 0)) +
+              " клиентов ещё в грейс-периоде, полая точка — уже подтверждённый отток.</div>"));
+          }
+        }
+        if (!asOfMonthDone) {
+          wrap.appendChild(el('<div class="muted" style="margin-top:8px">' +
+            CH_MONF[asOfMonth].charAt(0).toUpperCase() + CH_MONF[asOfMonth].slice(1) +
+            " ещё не закончился — на графике и в итогах его нет, цифры по нему видны в подсказке при наведении.</div>"));
         }
       }
       draw();
@@ -6349,12 +6369,12 @@
     onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_DYN.delete(instanceId); },
   };
 
-  function chBindHover(box, cur, prev, yNow, asOfMonth) {
+  function chBindHover(box, cur, prev, yNow, asOfMonth, partialMonth) {
     var svg = box.querySelector("svg"), tip = box.querySelector(".ch-tip");
     var hit = box.querySelector(".hit"), xh = box.querySelector(".xh");
     if (!svg || !hit) return;
     var W = 1100, L = 56, R = 52;
-    function row(m, year, color, future) {
+    function row(m, year, color, future, partial) {
       if (future) return '<span class="ch-sw" style="background:' + color + '"></span>' + year +
         ': <span class="muted">месяц ещё не наступил</span>';
       var grace = m.ripe ? 0 : m.pending;
@@ -6362,7 +6382,9 @@
         " · новые <b>" + fmtNum(m.newClients) + "</b>" +
         " · отток <b>" + fmtNum(m.churned) + "</b>" +
         (grace ? ' <span class="ch-gtag">+' + fmtNum(grace) + " в грейсе</span>" : "") +
-        " · разница <b>" + (m.newClients - m.churned >= 0 ? "+" : "−") + fmtNum(Math.abs(m.newClients - m.churned)) + "</b>";
+        " · возвращённые <b>" + fmtNum(m.returned) + "</b>" +
+        " · разница <b>" + (m.newClients - m.churned >= 0 ? "+" : "−") + fmtNum(Math.abs(m.newClients - m.churned)) + "</b>" +
+        (partial ? ' <span class="ch-gtag">месяц не закончен</span>' : "");
     }
     function show(i) {
       box.querySelectorAll(".hl").forEach(function (r) { r.setAttribute("opacity", +r.dataset.m === i ? "0.08" : "0"); });
@@ -6375,7 +6397,7 @@
       var x = L + (i + 0.5) * (W - L - R) / 12;
       if (xh) { xh.setAttribute("x1", x); xh.setAttribute("x2", x); xh.setAttribute("visibility", "visible"); }
       tip.innerHTML = "<strong>" + CH_MONF[i] + "</strong><br>" +
-        row(cur[i], yNow, "var(--s2)", i > asOfMonth) + "<br>" + row(prev[i], yNow - 1, "var(--s1)", false);
+        row(cur[i], yNow, "var(--s2)", i > asOfMonth, i === partialMonth) + "<br>" + row(prev[i], yNow - 1, "var(--s1)", false, false);
       tip.style.display = "block";
       var r = svg.getBoundingClientRect(), px = x * r.width / W + 14;
       if (px + tip.offsetWidth > r.width) px = x * r.width / W - tip.offsetWidth - 14;
@@ -6395,13 +6417,23 @@
       '</div><div class="ch-vsub">' + esc(sub) + "</div></div>";
   }
   // Один SVG: 2026 оранжевым, 2025 синим, 12 месяцев. Возвращает СТРОКУ (как lineChart).
-  function chDrawChart(a26, a25, worst, lastRipe, asOfMonth, yNow, title, cur, prev, metric) {
+  // plotTo -- последний рисуемый (законченный) месяц 2026; graceAware -- у метрики есть грейс
+  // (отток и разница): только тогда рисуется пунктир к худшему случаю и полая точка.
+  function chDrawChart(a26, a25, worst, lastRipe, plotTo, graceAware, yNow, title) {
     var W = 1100, H = 280, L = 56, R = 52, T = 18, Bm = 30;
-    var shown26 = a26.slice(0, asOfMonth + 1), shownW = worst.slice(0, asOfMonth + 1);
+    var shown26 = a26.slice(0, plotTo + 1), shownW = worst.slice(0, plotTo + 1);
     var all = shown26.concat(a25, shownW);
     var lo = Math.min.apply(null, all.concat([0])), hi = Math.max.apply(null, all.concat([1]));
     var pad = (hi - lo) * 0.15 || 10;
-    var y0 = Math.min(0, lo - pad), y1 = hi + pad;
+    // «Круглые» ЦЕЛЫЕ деления оси (1/2/5 x 10^n, не меньше 1): клиенты считаются штуками.
+    // Раньше шаг был (max-min)/4 с округлением подписи: на малых числах получалось
+    // «1, 1, 0, 0, -0», на больших -- «282, 202, 123, 43, -37».
+    var rawStep = (hi + pad - Math.min(0, lo - pad)) / 4;
+    var mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    var nrm = rawStep / mag;
+    var stepV = Math.max(1, (nrm <= 1 ? 1 : nrm <= 2 ? 2 : nrm <= 5 ? 5 : 10) * mag);
+    var y0 = lo >= 0 ? 0 : Math.floor((lo - pad) / stepV) * stepV;
+    var y1 = Math.ceil((hi + pad) / stepV) * stepV;
     var x = function (i) { return L + (i + 0.5) * (W - L - R) / 12; };
     var y = function (v) { return T + (H - T - Bm) * (1 - (v - y0) / (y1 - y0)); };
     var g = "";
@@ -6409,9 +6441,7 @@
       g += '<rect class="hl" data-m="' + i + '" x="' + (x(i) - (W - L - R) / 24) + '" y="' + T +
         '" width="' + ((W - L - R) / 12) + '" height="' + (H - T - Bm) + '" fill="var(--brand)" opacity="0"/>';
     }
-    var step = (y1 - y0) / 4;
-    for (var t = 0; t <= 4; t++) {
-      var tv = y0 + step * t;
+    for (var tv = y0; tv <= y1 + 1e-9; tv += stepV) {
       g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(tv) + '" y2="' + y(tv) +
         '" stroke="' + (Math.abs(tv) < 0.5 ? "var(--muted)" : "var(--viz-grid)") + '" stroke-width="1"/>' +
         '<text x="' + (L - 8) + '" y="' + (y(tv) + 4) + '" text-anchor="end" font-size="11" fill="var(--muted)">' +
@@ -6421,27 +6451,32 @@
       g += '<text class="ml" data-m="' + i + '" x="' + x(i) + '" y="' + (H - 9) +
         '" text-anchor="middle" font-size="11.5" fill="var(--muted)">' + CH_MON[i] + "</text>";
     }
-    function path(arr, n, col) {
+    function path(arr, n) {
       return arr.slice(0, n).map(function (v, i2) { return (i2 ? "L" : "M") + x(i2).toFixed(1) + " " + y(v).toFixed(1); }).join(" ");
     }
     g += '<path d="' + path(a25, 12) + '" fill="none" stroke="var(--s1)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
     g += a25.map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s1)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
     g += '<text x="' + (x(11) + 9) + '" y="' + (y(a25[11]) + 4) + '" font-size="11" font-weight="600" fill="var(--ink)">' + (yNow - 1) + "</text>";
-    var solidTo = Math.min(lastRipe, asOfMonth) + 1;
-    g += '<path d="' + path(a26, solidTo) + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
-    // Хвост от последнего зрелого месяца к худшему случаю — пунктиром.
-    if (solidTo <= asOfMonth) {
-      var seg = [];
-      for (var k = solidTo - 1; k <= asOfMonth; k++) if (k >= 0) seg.push((seg.length ? "L" : "M") + x(k).toFixed(1) + " " + y(worst[k]).toFixed(1));
-      g += '<path d="' + seg.join(" ") + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-dasharray="5 4" stroke-linecap="round"/>';
-      g += '<text x="' + x(asOfMonth) + '" y="' + (y(worst[asOfMonth]) - 12) + '" text-anchor="middle" font-size="10" fill="var(--muted)">грейс</text>';
-      g += '<line x1="' + x(asOfMonth) + '" x2="' + x(asOfMonth) + '" y1="' + y(worst[asOfMonth]) + '" y2="' + y(a26[asOfMonth]) +
-        '" stroke="var(--s2)" stroke-width="1.5" stroke-dasharray="2 3"/>';
-      g += '<circle cx="' + x(asOfMonth) + '" cy="' + y(a26[asOfMonth]) + '" r="4.5" fill="var(--card-bg)" stroke="var(--s2)" stroke-width="2"/>';
-      g += '<text x="' + (x(asOfMonth) - 9) + '" y="' + (y(a26[asOfMonth]) + 4) + '" text-anchor="end" font-size="10" fill="var(--muted)">подтверждено</text>';
+    if (plotTo >= 0) {
+      // Без грейса (новые, возвращённые) линия сплошная до последнего законченного месяца.
+      var solidTo = graceAware ? Math.min(lastRipe, plotTo) + 1 : plotTo + 1;
+      if (solidTo > 0) {
+        g += '<path d="' + path(a26, solidTo) + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+      }
+      // Хвост от последнего зрелого месяца к худшему случаю -- пунктиром, ТОЛЬКО для оттока.
+      if (graceAware && solidTo <= plotTo) {
+        var seg = [];
+        for (var k = solidTo - 1; k <= plotTo; k++) if (k >= 0) seg.push((seg.length ? "L" : "M") + x(k).toFixed(1) + " " + y(worst[k]).toFixed(1));
+        g += '<path d="' + seg.join(" ") + '" fill="none" stroke="var(--s2)" stroke-width="2.5" stroke-dasharray="5 4" stroke-linecap="round"/>';
+        g += '<text x="' + x(plotTo) + '" y="' + (y(worst[plotTo]) - 12) + '" text-anchor="middle" font-size="10" fill="var(--muted)">грейс</text>';
+        g += '<line x1="' + x(plotTo) + '" x2="' + x(plotTo) + '" y1="' + y(worst[plotTo]) + '" y2="' + y(a26[plotTo]) +
+          '" stroke="var(--s2)" stroke-width="1.5" stroke-dasharray="2 3"/>';
+        g += '<circle cx="' + x(plotTo) + '" cy="' + y(a26[plotTo]) + '" r="4.5" fill="var(--card-bg)" stroke="var(--s2)" stroke-width="2"/>';
+        g += '<text x="' + (x(plotTo) - 9) + '" y="' + (y(a26[plotTo]) + 4) + '" text-anchor="end" font-size="10" fill="var(--muted)">подтверждено</text>';
+      }
+      g += a26.slice(0, solidTo).map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s2)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
+      g += '<text x="' + (x(plotTo) + 9) + '" y="' + (y(a26[plotTo]) - 10) + '" font-size="11" font-weight="600" fill="var(--ink)">' + yNow + "</text>";
     }
-    g += a26.slice(0, solidTo).map(function (v, i2) { return '<circle class="pt" data-m="' + i2 + '" cx="' + x(i2) + '" cy="' + y(v) + '" r="3" fill="var(--s2)" stroke="var(--card-bg)" stroke-width="2"/>'; }).join("");
-    g += '<text x="' + (x(asOfMonth) + 9) + '" y="' + (y(a26[asOfMonth]) - 10) + '" font-size="11" font-weight="600" fill="var(--ink)">' + yNow + "</text>";
     g += '<line class="xh" x1="0" x2="0" y1="' + T + '" y2="' + (H - Bm) + '" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>';
     g += '<rect class="hit" x="' + L + '" y="0" width="' + (W - L - R) + '" height="' + H + '" fill="transparent"/>';
     return '<h4 class="ch-ctitle">' + esc(title) + ' по месяцам</h4><svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' +
