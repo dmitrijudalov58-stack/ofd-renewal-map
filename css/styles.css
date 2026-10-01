@@ -487,10 +487,12 @@ table.wtable tbody tr:hover { background: var(--paper); }
    росла пустота под таблицей, а не число видимых строк. Меняем только внутри B9 --
    у .table-scroll девять потребителей в других бордах, их потолок трогать нельзя.
    Цепочка: .widget (flex-колонка) -> .widget-body (flex:1) -> .ch-wrap -> .ch-tablebox. */
-.widget:has(.ch-wrap) { min-height: 0; }
 .widget-body:has(> .ch-wrap) { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .ch-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.ch-tablebox { flex: 1; min-height: 120px; overflow: auto; }
+.ch-tablebox { flex: 1; min-height: 250px; overflow: auto; }
 .ch-tablebox { position: relative; }
 .ch-tablebox .table-scroll { max-height: none; position: absolute; inset: 0; overflow: auto; }
+/* ячейки данных не переносятся: дельты («−2,23 п.п.») и плашки в две строки делали строку вдвое
+   выше, и в карточке умещалось 3 строки вместо 6. Не влезло по ширине -- горизонтальный скролл. */
+.ch-table td { white-space: nowrap; }
 .ch-table thead th { position: sticky; top: 0; z-index: 2; background: var(--card-bg); }

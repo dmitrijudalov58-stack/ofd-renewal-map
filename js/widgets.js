@@ -6490,16 +6490,18 @@
       chP2(ci), chDelta(chPP(ci, ci5), ci >= ci5),
     ];
   }
-  function chVerdict(a, b) {
+  function chVerdict(a, b, asOfYear) {
     if (!a.base || !b.base) return "";
     var d = ((a.c / a.base - b.c / b.base) - (a.n / a.base - b.n / b.base)) / a.k * 100;
     if (d >= 0.35) return '<span class="ch-pill crit">провал</span>';
-    if (d <= 0) return '<span class="ch-pill good">лучше ' + "прошлого года" + "</span>";
-    return '<span class="ch-pill warn">хуже прошлого года</span>';
+    // Тексты как в утверждённом драфте («лучше 2025» / «хуже 2025»): длинное «…прошлого года»
+    // переносилось внутри плашки на вторую строку и раздувало строку таблицы вдвое.
+    if (d <= 0) return '<span class="ch-pill good">лучше ' + (asOfYear - 1) + "</span>";
+    return '<span class="ch-pill warn">хуже ' + (asOfYear - 1) + "</span>";
   }
 
   WIDGETS["b9-channels-growth"] = {
-    title: "Каналы продаж — прирост базы", type: "таблица", scope: "as-of", span: true,
+    title: "Каналы продаж — прирост базы", type: "таблица", scope: "as-of", span: true, defaultH: 12,
     render: function (model, ctx, instanceId) {
       var wrap = el('<div class="ch-wrap"></div>');
       function draw() {
@@ -6605,7 +6607,7 @@
             '<td><span class="ch-caret">' + (open ? "▾" : "▸") + "</span>" + esc(ch) +
             ' <span class="cnt">' + inCh.length + "</span></td>" +
             chCells(a, b).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
-            '<td class="gstart">' + chVerdict(a, b) + "</td></tr>";
+            '<td class="gstart">' + chVerdict(a, b, yNow) + "</td></tr>";
           if (open) {
             var sub = inCh.slice(0, 25).map(function (p) {
               var pf = function (c) { return chClientChannel(c) === ch && chPartnerOf(c) === p.name; };
@@ -6620,7 +6622,7 @@
               body += '<tr class="ch-subline"><td title="' + esc(s.p.name) + '">' + esc(s.p.name) +
                 (chOverrides[s.p.name] ? ' <span class="ch-moved">вручную</span>' : "") + "</td>" +
                 chCells(s.a, s.b).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
-                '<td class="gstart">' + chVerdict(s.a, s.b) + "</td></tr>";
+                '<td class="gstart">' + chVerdict(s.a, s.b, yNow) + "</td></tr>";
             });
             if (inCh.length > 25) {
               body += '<tr class="ch-subline"><td colspan="14" class="muted">…и ещё ' + fmtNum(inCh.length - 25) +
@@ -6630,7 +6632,7 @@
         });
         body += '<tr class="ch-total"><td><strong>Итого</strong></td>' +
           chCells(T26, T25).map(function (v, i2) { return '<td class="num' + (i2 % 2 === 0 ? " gstart" : "") + '">' + v + "</td>"; }).join("") +
-          '<td class="gstart">' + chVerdict(T26, T25) + "</td></tr>";
+          '<td class="gstart">' + chVerdict(T26, T25, yNow) + "</td></tr>";
         var tblWrap = el('<div class="table-scroll"><table class="wtable ch-table"><thead>' + thead + "</thead><tbody>" + body + "</tbody></table></div>");
         tblWrap.querySelectorAll(".ch-line").forEach(function (tr) {
           tr.addEventListener("click", function () {

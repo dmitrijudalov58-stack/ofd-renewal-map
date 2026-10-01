@@ -33,7 +33,9 @@
   function defaultSizeFor(def) {
     if (!def.span) return { w: 3, h: 3, minW: 2, minH: 2 };
     var isTable = (def.type || "").indexOf("таблица") !== -1 || (def.type || "").indexOf("раскрывается") !== -1;
-    return { w: 8, h: isTable ? 8 : 6, minW: 4, minH: 3 };
+    // def.defaultH -- стартовая высота, если типовых 8 ячеек мало (B9 «Прирост базы»: шапка,
+    // плашка грейса и подпись съедают ~350px, на таблицу при h:8 оставалось 0 строк).
+    return { w: 8, h: def.defaultH || (isTable ? 8 : 6), minW: 4, minH: 3 };
   }
 
   function toggleEmpty() {
