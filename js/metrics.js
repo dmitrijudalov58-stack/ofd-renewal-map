@@ -38,11 +38,65 @@
     'ООО "Псков.Ком"',
   ]);
 
-  function classifyChannel(partner) {
-    if (OLYA_PARTNERS.has(partner || "")) return "Ольга Зибер";
-    if (LARISA_PARTNERS.has(partner || "")) return "Лариса Пенигина";
+  // Корпоративные продажи -- отдельный канал (Оксана, 2026-10-01: "Атол находится в Корпах,
+  // не в партнёрах"). Раньше АТОЛ молча падал в catch-all "Партнёры".
+  var KORP_PARTNERS = new Set(['ООО "АТОЛ" (ОФД)']);
+
+  // Центры продаж -- представительства Ларисы (поле "Центр продаж", колонка 22). В выгрузке
+  // они пишутся НЕ так, как те же офисы в поле "Партнёр": суффикс " ЦП", "в г.Новосибирске"
+  // без пробела, "Саратов ЦП" против "Саратов П". Поэтому сверка идёт по нормализованному
+  // виду, а не по сырой строке -- точное сравнение списков давало 0 совпадений и привело
+  // 2026-09-02 к ошибочному выводу, что поля "Центр продаж" для этого вообще нет.
+  function normCenter(s) {
+    return String(s || "").toLowerCase()
+      .replace(/[«»""''"]/g, "")
+      .replace(/\s*\(.*?\)\s*/g, " ")
+      .replace(/г\./g, "г ")
+      .replace(/\s+/g, " ")
+      .replace(/\s+(цп|п)$/, "")
+      .trim();
+  }
+  var LARISA_CENTERS_NORM = new Set([
+    'Представительство АО "Калуга Астрал" в г. Волгоград',
+    'Представительство АО "Калуга Астрал" в г. Воронеж',
+    "ОП ООО АСТРАЛ-СОФТ г. Екатеринбург",
+    "ОП АСТРАЛ-СОФТ г. Екатеринбург",
+    "Представительство АО Калуга Астрал в г. Краснодар",
+    'Представительство АО "Калуга Астрал" в г. Краснодар',
+    'Представительство АО "Калуга Астрал" в г.Новосибирске',
+    'Представительство АО "Калуга Астрал" в г. Новосибирске',
+    'Представительство АО "Калуга Астрал" в г. Омск',
+    'Представительство АО "Калуга Астрал" в г. Саратов',
+    'Представительство ООО "АСТРАЛ-СОФТ" в г. Санкт-Петербург',
+    'Представительство АО "Калуга Астрал" в г. Уфа',
+  ].map(normCenter));
+
+  // Пять каналов (Дима+Оксана, 2026-10-01). Проверяется сверху вниз, первое совпадение.
+  // Правила 1-2 намеренно ВЫШЕ "Центра продаж": "ЛК ОФД" и АТОЛ сидят в общем ЦП и иначе
+  // ушли бы в catch-all. Правило 3 -- точный список Оксаны (прямые продажи представительств,
+  // включая безгородные вроде 'АО "Калуга Астрал" Партнер' -- 17 тыс касс, которые при
+  // поиске "по городу в названии" молча утекали в "Партнёры").
+  function classifyChannel(partner, salesCenter) {
+    var p = partner || "";
+    if (KORP_PARTNERS.has(p)) return "Корп";
+    if (OLYA_PARTNERS.has(p)) return "Ольга Зибер";
+    if (LARISA_PARTNERS.has(p)) return "Пенигина — прямые";
+    if (LARISA_CENTERS_NORM.has(normCenter(salesCenter))) return "Пенигина — ОП";
     return "Партнёры";
   }
+  var CHANNELS = ["Корп", "Ольга Зибер", "Пенигина — прямые", "Пенигина — ОП", "Партнёры"];
+  // Укрупнение для гейта: "собственный против партнёрского" (Оксана просила двумя блоками).
+  // Пенигина-ОП -- внешние агенты ПРИ наших представительствах, поэтому партнёрский.
+  var CHANNEL_SIDE = {
+    "Корп": "Партнёрский", "Ольга Зибер": "Собственный", "Пенигина — прямые": "Собственный",
+    "Пенигина — ОП": "Партнёрский", "Партнёры": "Партнёрский",
+  };
+  // Старые три канала -- b3-channels и computeChannels ждут именно их, не ломаем.
+  var CHANNEL_LEGACY = {
+    "Корп": "Партнёры", "Ольга Зибер": "Ольга Зибер", "Пенигина — прямые": "Лариса Пенигина",
+    "Пенигина — ОП": "Лариса Пенигина", "Партнёры": "Партнёры",
+  };
+  function legacyChannel(ch) { return CHANNEL_LEGACY[ch] || "Партнёры"; }
 
   function parseTariffMonths(str) {
     var m = /(\d+)/.exec(str || "");
@@ -115,7 +169,7 @@
         org: last.org,
         phone: last.phone,
         email: last.email,
-        channel: classifyChannel(last.partner),
+        channel: classifyChannel(last.partner, last.salesCenter),
       });
     });
 
@@ -1193,10 +1247,11 @@
     });
     model.reserveRows.forEach(function (r) {
       var pn = r.partner || "—";
-      if (!partnerChannel.has(pn)) partnerChannel.set(pn, classifyChannel(r.partner));
+      if (!partnerChannel.has(pn)) partnerChannel.set(pn, classifyChannel(r.partner, r.salesCenter));
     });
+    // Старые борды (b3-channels) ждут три канала, поэтому наружу отдаём legacy-имена.
     return computePartners(model, asOf, opts).map(function (p) {
-      return { name: p.name, channel: partnerChannel.get(p.name) || classifyChannel(p.name), clients: p.clients, kassas: p.kassas, reserve: p.reserve };
+      return { name: p.name, channel: legacyChannel(partnerChannel.get(p.name) || classifyChannel(p.name, null)), clients: p.clients, kassas: p.kassas, reserve: p.reserve };
     });
   }
 
@@ -1204,8 +1259,74 @@
     var out = { "Ольга Зибер": 0, "Лариса Пенигина": 0, "Партнёры": 0 };
     model.clients.forEach(function (c) {
       if (c.phys || clientLapsedAt(c, asOf)) return;
-      var ch = classifyChannel(c.kassas[c.kassas.length - 1].partner);
-      out[ch]++;
+      out[legacyChannel(clientChannel(c))]++;
+    });
+    return out;
+  }
+
+  // Канал КЛИЕНТА -- по самой свежей кассе (Дима, 2026-10-01). 11,2% клиентов (20 851 ИНН)
+  // имеют кассы в разных каналах, поэтому однозначного ответа «из данных» нет; берём тот же
+  // принцип, что уже работает для c.partner. Оксана просила считать людей, а не кассы.
+  function clientChannel(c) {
+    if (!c.kassas || !c.kassas.length) return "Партнёры";
+    return c.kassas[c.kassas.length - 1].channel || "Партнёры";
+  }
+
+  // Раскладка клиентов по пяти каналам на as-of + укрупнение собственный/партнёрский.
+  function computeChannels5(model, asOf, opts) {
+    var byChannel = {}, bySide = { "Собственный": 0, "Партнёрский": 0 };
+    CHANNELS.forEach(function (ch) { byChannel[ch] = 0; });
+    var total = 0;
+    model.clients.forEach(function (c) {
+      if (c.phys || clientLapsedAt(c, asOf)) return;
+      var ch = clientChannel(c);
+      byChannel[ch] = (byChannel[ch] || 0) + 1;
+      bySide[CHANNEL_SIDE[ch]]++;
+      total++;
+    });
+    return { byChannel: byChannel, bySide: bySide, total: total };
+  }
+
+  // Помесячный ряд по ОДНОМУ каналу за год: новые, отток, вернувшиеся, pending и база.
+  // Формулы те же, что в computeFlow -- interval-based, с грейс-периодом: событие относится
+  // к месяцу ДАТЫ ОКОНЧАНИЯ, но пока с неё не прошёл 31 день от asOf, статус "pending" и в
+  // отток НЕ засчитывается. Это важно показать в UI: на as-of 30.09.2026 весь сентябрь ещё
+  // pending (0 подтверждённого оттока при 1 815 висящих), и без пометки борд читается как
+  // "отток упал до нуля".
+  function computeChannelMonthly(model, year, asOf, opts, filterFn) {
+    var months = [];
+    for (var m = 0; m < 12; m++) {
+      months.push({
+        month: m, label: MONTHS_SHORT[m],
+        newClients: 0, churned: 0, pending: 0, returned: 0, baseAtStart: 0,
+        ripe: asOf >= addDays(new Date(year, m + 1, 0, 23, 59, 59), REANIM_WINDOW_START_DAYS),
+      });
+    }
+    var yStart = new Date(year, 0, 1), yEnd = new Date(year, 11, 31, 23, 59, 59);
+    model.clients.forEach(function (c) {
+      if (c.phys) return;
+      if (filterFn && !filterFn(c)) return;
+      if (c.appearance && c.appearance >= yStart && c.appearance <= yEnd) months[c.appearance.getMonth()].newClients++;
+      if (c.currentEnd && c.currentEnd >= yStart && c.currentEnd <= yEnd) {
+        var st = clientChurnStatus(c, asOf);
+        if (st === "churned") months[c.currentEnd.getMonth()].churned++;
+        else if (st === "pending") months[c.currentEnd.getMonth()].pending++;
+      }
+      var ret = clientReturnInfo(c);
+      if (ret && ret.returnDate >= yStart && ret.returnDate <= yEnd) months[ret.returnDate.getMonth()].returned++;
+      for (var m2 = 0; m2 < 12; m2++) {
+        if (!clientLapsedAt(c, new Date(year, m2, 1))) months[m2].baseAtStart++;
+      }
+    });
+    return months;
+  }
+  var MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+
+  // Та же раскладка, но сразу по всем пяти каналам -- чтобы не гонять clients.forEach пять раз.
+  function computeChannelsMonthly(model, year, asOf, opts) {
+    var out = {};
+    CHANNELS.forEach(function (ch) {
+      out[ch] = computeChannelMonthly(model, year, asOf, opts, function (c) { return clientChannel(c) === ch; });
     });
     return out;
   }
@@ -1883,6 +2004,13 @@
     computePartners: computePartners,
     computePartnersByChannel: computePartnersByChannel,
     computeChannels: computeChannels,
+    computeChannels5: computeChannels5,
+    computeChannelMonthly: computeChannelMonthly,
+    computeChannelsMonthly: computeChannelsMonthly,
+    clientChannel: clientChannel,
+    CHANNELS: CHANNELS,
+    CHANNEL_SIDE: CHANNEL_SIDE,
+    legacyChannel: legacyChannel,
     computeReserve: computeReserve,
     computeReserveDetail: computeReserveDetail,
     computeReservePartnersForMonth: computeReservePartnersForMonth,

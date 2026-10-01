@@ -6063,6 +6063,358 @@
     { label: "ИНН партнёра", key: "partnerInn" }, { label: "Наименование партнёра", key: "partner" },
   ];
 
+  // ================= B9: Каналы продаж (Дима, 2026-10-01) ===========================
+  // Пять каналов вместо трёх: Корп (АТОЛ), Ольга Зибер, Пенигина — прямые, Пенигина — ОП,
+  // Партнёры. Разнесение в metrics.classifyChannel по паре «Партнёр» + «Центр продаж»;
+  // здесь поверх него живут РУЧНЫЕ перезакрепления — правило даёт стартовую раскладку,
+  // рука всегда важнее. Хранятся в localStorage по имени партнёра, как ccOverrides у B5.
+  var CH_OVERRIDE_KEY = "ofd.channelOverrides.v1";
+  var CH_REFRESHERS = {};
+  function chLoadOverrides() {
+    try { return JSON.parse(localStorage.getItem(CH_OVERRIDE_KEY) || "{}"); } catch (e) { return {}; }
+  }
+  var chOverrides = chLoadOverrides();
+  function chSaveOverrides() {
+    try { localStorage.setItem(CH_OVERRIDE_KEY, JSON.stringify(chOverrides)); } catch (e) { /* приватный режим */ }
+  }
+  function chBroadcast() { Object.keys(CH_REFRESHERS).forEach(function (k) { CH_REFRESHERS[k](); }); }
+  function chChannels() { return root.OFDMetrics.CHANNELS.concat(["Без канала"]); }
+  // Канал клиента: берётся по САМОЙ СВЕЖЕЙ кассе (Дима, 2026-10-01 — 11,2% клиентов имеют
+  // кассы в разных каналах, однозначного ответа из данных нет), поверх — ручной override.
+  function chClientChannel(c) {
+    if (!c.kassas || !c.kassas.length) return "Партнёры";
+    var last = c.kassas[c.kassas.length - 1];
+    var ov = chOverrides[last.partner || "—"];
+    return ov || last.channel || "Партнёры";
+  }
+  function chPartnerChannel(partnerName, baseChannel) {
+    return chOverrides[partnerName] || baseChannel;
+  }
+  // Партнёры с их каналом и числом действующих клиентов — основа борда 1 и раскрытия в борде 3.
+  function chPartnerRows(model, asOf) {
+    var byPartner = new Map();
+    model.clients.forEach(function (c) {
+      if (c.phys || !c.kassas.length) return;
+      var last = c.kassas[c.kassas.length - 1];
+      var name = last.partner || "—";
+      var row = byPartner.get(name);
+      if (!row) { row = { name: name, base: last.channel || "Партнёры", clients: 0, alive: 0 }; byPartner.set(name, row); }
+      row.clients++;
+      if (!root.OFDMetrics.clientLapsedAt(c, asOf)) row.alive++;
+    });
+    var out = [];
+    byPartner.forEach(function (r) { r.channel = chPartnerChannel(r.name, r.base); out.push(r); });
+    out.sort(function (a, b) { return b.alive - a.alive; });
+    return out;
+  }
+
+  var CH_SETUP_SEL = new Map(); // instanceId -> выбранный канал
+  WIDGETS["b9-channels-setup"] = {
+    title: "Каналы продаж — состав", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function draw() {
+        wrap.innerHTML = "";
+        var rows = chPartnerRows(model, ctx.asOf);
+        var sel = CH_SETUP_SEL.get(instanceId) || "Ольга Зибер";
+        var counts = {};
+        chChannels().forEach(function (ch) { counts[ch] = { p: 0, c: 0 }; });
+        rows.forEach(function (r) {
+          if (!counts[r.channel]) counts[r.channel] = { p: 0, c: 0 };
+          counts[r.channel].p++; counts[r.channel].c += r.alive;
+        });
+        var edits = Object.keys(chOverrides).filter(function (k) { return chOverrides[k]; }).length;
+        var head = el('<div class="threshold-row" style="justify-content:space-between">' +
+          '<span class="muted">Правило даёт стартовую раскладку, ручные правки важнее. Правок: ' + edits + "</span>" +
+          '<button type="button" class="refresh-chart-btn ch-reset">Сбросить к правилу</button></div>');
+        wrap.appendChild(head);
+        head.querySelector(".ch-reset").addEventListener("click", function () {
+          chOverrides = {}; chSaveOverrides(); chBroadcast();
+        });
+        var pane = el('<div style="display:grid;grid-template-columns:minmax(190px,1fr) minmax(260px,2fr);gap:12px"></div>');
+        var left = el("<div></div>"), right = el("<div></div>");
+        chChannels().forEach(function (ch) {
+          var n = counts[ch] || { p: 0, c: 0 };
+          if (ch === "Без канала" && !n.p) return;
+          var b = el('<button type="button" class="refresh-chart-btn" style="display:flex;width:100%;justify-content:space-between;margin-bottom:4px' +
+            (ch === sel ? ";border-color:var(--brand);color:var(--brand);font-weight:600" : "") + '">' +
+            esc(ch) + "<span>" + fmtNum(n.c) + " кл · " + n.p + " п</span></button>");
+          b.addEventListener("click", function () { CH_SETUP_SEL.set(instanceId, ch); draw(); });
+          left.appendChild(b);
+        });
+        var inChannel = rows.filter(function (r) { return r.channel === sel; });
+        right.appendChild(el('<div class="muted" style="margin-bottom:6px">Партнёры канала «' + esc(sel) + '» — ' + inChannel.length + "</div>"));
+        var list = el('<div style="max-height:320px;overflow:auto"></div>');
+        inChannel.slice(0, 200).forEach(function (r) {
+          var moved = chOverrides[r.name] ? ' <span class="muted">(вручную)</span>' : "";
+          var row = el('<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:3px 0">' +
+            '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(r.name) + '">' +
+            esc(r.name) + moved + '</span><span class="muted">' + fmtNum(r.alive) + "</span></div>");
+          var sl = el('<select style="max-width:170px"><option value="">Перенести в…</option>' +
+            chChannels().filter(function (x) { return x !== r.channel; })
+              .map(function (x) { return '<option value="' + esc(x) + '">' + esc(x) + "</option>"; }).join("") + "</select>");
+          sl.addEventListener("change", function () {
+            if (!sl.value) return;
+            chOverrides[r.name] = sl.value; chSaveOverrides(); chBroadcast();
+          });
+          row.appendChild(sl);
+          list.appendChild(row);
+        });
+        if (inChannel.length > 200) list.appendChild(el('<div class="muted">Показаны первые 200 из ' + inChannel.length + "</div>"));
+        right.appendChild(list);
+        pane.appendChild(left); pane.appendChild(right);
+        wrap.appendChild(pane);
+      }
+      draw();
+      CH_REFRESHERS[instanceId] = draw;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_SETUP_SEL.delete(instanceId); },
+  };
+
+  var CH_DYN_SEL = new Map();
+  WIDGETS["b9-channels-dynamics"] = {
+    title: "Каналы продаж — динамика год к году", type: "график", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function draw() {
+        wrap.innerHTML = "";
+        var M = root.OFDMetrics;
+        var sel = CH_DYN_SEL.get(instanceId) || "Ольга Зибер";
+        var yNow = ctx.asOf.getFullYear();
+        var tabs = el('<div class="threshold-row" style="flex-wrap:wrap"></div>');
+        M.CHANNELS.forEach(function (ch) {
+          var b = el('<button type="button" class="refresh-chart-btn"' +
+            (ch === sel ? ' style="border-color:var(--brand);color:var(--brand);font-weight:600"' : "") + ">" + esc(ch) + "</button>");
+          b.addEventListener("click", function () { CH_DYN_SEL.set(instanceId, ch); draw(); });
+          tabs.appendChild(b);
+        });
+        wrap.appendChild(tabs);
+        var f = function (c) { return chClientChannel(c) === sel; };
+        var cur = M.computeChannelMonthly(model, yNow, ctx.asOf, ctx.opts, f);
+        var prev = M.computeChannelMonthly(model, yNow - 1, ctx.asOf, ctx.opts, f);
+        var metricSel = el('<div class="threshold-row"><label>Показатель ' +
+          '<select class="ch-metric"><option value="churned">Отток</option><option value="newClients">Новые</option>' +
+          '<option value="returned">Вернувшиеся</option></select></label>' +
+          '<span class="muted">' + yNow + " — оранжевый, " + (yNow - 1) + " — синий</span></div>");
+        wrap.appendChild(metricSel);
+        var metric = CH_DYN_SEL.get(instanceId + ":m") || "churned";
+        metricSel.querySelector(".ch-metric").value = metric;
+        metricSel.querySelector(".ch-metric").addEventListener("change", function (e) {
+          CH_DYN_SEL.set(instanceId + ":m", e.target.value); draw();
+        });
+        // lineChart ждёт массив Date (сам форматирует подписи по getMonth), не строки-метки.
+        var months = cur.map(function (m, i) { return new Date(yNow, i, 1); });
+        // Незрелые месяцы (с даты окончания не прошёл 31 день) обрываем, а не рисуем нулём —
+        // иначе линия падает в ноль и читается как «оттока нет».
+        var curVals = cur.map(function (m) { return m.ripe ? m[metric] : null; });
+        // lineChart отдаёт HTML-СТРОКУ, не Node — оборачиваем, иначе appendChild падает.
+        var chart = lineChart(months, [
+          { label: String(yNow - 1), values: prev.map(function (m) { return m[metric]; }), color: "var(--s1)" },
+          { label: String(yNow), values: curVals.map(function (v) { return v == null ? 0 : v; }), color: "var(--s2)" },
+        ], { area: false });
+        wrap.appendChild(el('<div style="margin-top:10px">' + chart + "</div>"));
+        var unripe = cur.filter(function (m) { return !m.ripe && (m.pending || m.churned); });
+        if (unripe.length) {
+          var pend = unripe.reduce(function (t, m) { return t + m.pending; }, 0);
+          wrap.appendChild(el('<div class="muted" style="margin-top:6px">Месяцы ' +
+            unripe.map(function (m) { return m.label; }).join(", ") +
+            " ещё не закрыты: " + fmtNum(pend) + " клиентов в грейс-периоде, отток по ним подтвердится позже.</div>"));
+        }
+      }
+      draw();
+      CH_REFRESHERS[instanceId] = draw;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_DYN_SEL.delete(instanceId); },
+  };
+
+  var CH_GROWTH_SEL = new Map();
+  WIDGETS["b9-channels-growth"] = {
+    title: "Каналы продаж — прирост базы", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function draw() {
+        wrap.innerHTML = "";
+        var M = root.OFDMetrics;
+        var yNow = ctx.asOf.getFullYear();
+        var mon = CH_GROWTH_SEL.has(instanceId) ? CH_GROWTH_SEL.get(instanceId) : ctx.asOf.getMonth();
+        var open = CH_GROWTH_SEL.get(instanceId + ":open") || null;
+        var ctl = el('<div class="threshold-row"><label>Месяц <select class="ch-month">' +
+          ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+            .map(function (l, i) { return '<option value="' + i + '"' + (i === mon ? " selected" : "") + ">" + l + " " + yNow + "</option>"; }).join("") +
+          "</select></label></div>");
+        wrap.appendChild(ctl);
+        ctl.querySelector(".ch-month").addEventListener("change", function (e) {
+          CH_GROWTH_SEL.set(instanceId, +e.target.value); draw();
+        });
+        function rowFor(label, filterFn) {
+          var a = M.computeChannelMonthly(model, yNow, ctx.asOf, ctx.opts, filterFn)[mon];
+          var b = M.computeChannelMonthly(model, yNow - 1, ctx.asOf, ctx.opts, filterFn)[mon];
+          function d(now, was) {
+            if (!was) return "—";
+            var v = (now / was - 1) * 100;
+            var cls = v >= 0 ? "good" : "crit";
+            return '<span style="color:var(--' + cls + ')">' + (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1) + "%</span>";
+          }
+          var churnTxt = fmtNum(a.churned) + (a.ripe ? "" : ' <span class="muted">+' + fmtNum(a.pending) + " в грейсе</span>");
+          return [label, fmtNum(a.baseAtStart), fmtNum(a.newClients) + " " + d(a.newClients, b.newClients),
+            churnTxt + " " + d(a.churned, b.churned), fmtNum(a.returned),
+            a.baseAtStart ? (100 * a.churned / a.baseAtStart).toFixed(2) + "%" : "—"];
+        }
+        var hdr = [{ label: "Канал" }, { label: "Клиентов на 1-е", num: true }, { label: "Новые", html: true },
+          { label: "Отток", html: true }, { label: "Вернувшиеся", num: true }, { label: "% оттока", num: true }];
+        var body = [];
+        M.CHANNELS.forEach(function (ch) {
+          body.push(rowFor(ch, function (c) { return chClientChannel(c) === ch; }));
+          if (open === ch) {
+            chPartnerRows(model, ctx.asOf).filter(function (p) { return p.channel === ch; }).slice(0, 25).forEach(function (p) {
+              body.push(rowFor("    " + p.name, function (c) {
+                return chClientChannel(c) === ch && c.kassas.length && (c.kassas[c.kassas.length - 1].partner || "—") === p.name;
+              }));
+            });
+          }
+        });
+        var tbl = makeSortableTable(hdr, body);
+        tbl.querySelectorAll("tbody tr").forEach(function (tr) {
+          var name = tr.cells[0].textContent;
+          if (M.CHANNELS.indexOf(name) === -1) return;
+          tr.style.cursor = "pointer";
+          tr.addEventListener("click", function () {
+            CH_GROWTH_SEL.set(instanceId + ":open", open === name ? null : name); draw();
+          });
+        });
+        wrap.appendChild(tbl);
+        wrap.appendChild(el('<div class="muted" style="margin-top:6px">Клик по каналу — его партнёры (топ-25). ' +
+          "Процент считается к числу клиентов на 1-е число месяца. Дельта — к тому же месяцу " + (yNow - 1) + ".</div>"));
+      }
+      draw();
+      CH_REFRESHERS[instanceId] = draw;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_GROWTH_SEL.delete(instanceId); },
+  };
+
+  // ---- Выгрузка для прозвона по обмену с 1С (Дима, 2026-10-01) ----------------------
+  // Строка = КАССА (цепочка тарифов по заводскому номеру), НЕ клиент: у одного клиента
+  // может истечь несколько кодов 1С, и менеджеру нужна строка на каждую кассу отдельно —
+  // схлопывать в одну строку Дима явно не захотел. Строки одного клиента идут подряд.
+  // Колонка «Касс» — сколько касс ЭТОГО клиента попало в ЭТУ таблицу (просроченных или
+  // заканчивающихся), НЕ общее число касс клиента.
+  // Окно скользит от as-of: верхняя таблица — месяц as-of минус 1, нижняя — месяц as-of.
+  var OFD1C_CALLOUT_LIMIT = 300; // на экране; в Excel уходит всё
+
+  function ofd1cMonthBounds(d, offset) {
+    return {
+      start: new Date(d.getFullYear(), d.getMonth() + offset, 1),
+      end: new Date(d.getFullYear(), d.getMonth() + offset + 1, 0, 23, 59, 59),
+    };
+  }
+  // currentEnd — максимум по всей цепочке, поэтому «конец в прошлом месяце» само по себе
+  // означает «не продлили»: было бы продление — максимум сдвинулся бы вперёд.
+  function ofd1cCalloutRows(model, asOf, monthOffset) {
+    if (!OFD1C_STATE.records) return [];
+    var b = ofd1cMonthBounds(asOf, monthOffset);
+    var hits = ofd1cGroupBySerial(model).filter(function (ch) {
+      return ch.currentEnd && ch.currentEnd >= b.start && ch.currentEnd <= b.end;
+    });
+    var perClient = new Map();
+    hits.forEach(function (ch) { perClient.set(ch.inn, (perClient.get(ch.inn) || 0) + 1); });
+    hits.forEach(function (ch) {
+      ch._inWindow = perClient.get(ch.inn);
+      ch._org = (ch.client && ch.client.org) || "";
+      ch._days = Math.round((ch.currentEnd - asOf) / 86400000);
+    });
+    hits.sort(function (a, c) {
+      if (a._org !== c._org) return a._org.localeCompare(c._org, "ru");
+      return a.currentEnd - c.currentEnd;
+    });
+    return hits;
+  }
+  function ofd1cCalloutCells(ch, model, overdue) {
+    var contacts = ch.client ? ofd1cClientContacts(ch.client) : { phones: [], emails: [] };
+    return [
+      ch.inn, ch._org, ch._inWindow, ch.kktSerial || "—", fmtDate(ch.currentEnd),
+      overdue ? Math.abs(ch._days) : ch._days,
+      contacts.phones.join(", "), contacts.emails.join(", "),
+      (ch.client && ch.client.partner) || "—",
+    ];
+  }
+  var OFD1C_CALLOUT_HEADERS = [
+    { label: "ИНН" }, { label: "Наименование" }, { label: "Касс", num: true },
+    { label: "Заводской № ККТ" }, { label: "Конец тарифа" }, { label: "Дней", num: true },
+    { label: "Телефоны" }, { label: "Email" }, { label: "Партнёр" },
+  ];
+  function ofd1cCalloutExportSpec(rows, model, overdue, label) {
+    return {
+      sheetName: overdue ? "Просрочены" : "Заканчиваются",
+      headers: OFD1C_CALLOUT_HEADERS.map(function (h) { return h.label; })
+        .map(function (l, i) { return i === 5 ? (overdue ? "Дней просрочки" : "Дней осталось") : l; })
+        .concat(["Статус звонка"]),
+      colWidths: [14, 44, 7, 20, 14, 9, 34, 34, 34, 30],
+      textCols: [0, 3],
+      rows: rows.map(function (ch) { return ofd1cCalloutCells(ch, model, overdue).concat([""]); }),
+      listColumn: { index: 9, options: OFD1C_CALL_STATUSES, sheetName: "Статусы" },
+    };
+  }
+  function ofd1cCalloutBlock(model, asOf, monthOffset, overdue) {
+    var box = el('<div style="margin-bottom:18px"></div>');
+    var b = ofd1cMonthBounds(asOf, monthOffset);
+    var monthLabel = b.start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+    var rows = ofd1cCalloutRows(model, asOf, monthOffset);
+    var clients = new Set(rows.map(function (ch) { return ch.inn; })).size;
+    var head = el(
+      '<div class="threshold-row" style="justify-content:space-between;align-items:baseline">' +
+      "<div><strong>" + (overdue ? "Просрочены — закончились и не продлились" : "Заканчиваются — предстоящие") +
+      '</strong> <span class="muted">' + esc(monthLabel) + " · " + rows.length + " касс у " + clients + " клиентов</span></div>" +
+      '<button type="button" class="refresh-chart-btn callout-dl">Скачать Excel</button>' +
+      "</div>"
+    );
+    box.appendChild(head);
+    if (!rows.length) {
+      box.appendChild(el('<div class="placeholder-body">За этот месяц ничего нет.</div>'));
+      return box;
+    }
+    var hdr = OFD1C_CALLOUT_HEADERS.map(function (h, i) {
+      return i === 5 ? { label: overdue ? "Дней просрочки" : "Дней осталось", num: true } : h;
+    });
+    box.appendChild(makeSortableTable(hdr, rows.slice(0, OFD1C_CALLOUT_LIMIT).map(function (ch) {
+      return ofd1cCalloutCells(ch, model, overdue);
+    })));
+    if (rows.length > OFD1C_CALLOUT_LIMIT) {
+      box.appendChild(el('<div class="muted" style="margin-top:6px">Показаны первые ' +
+        OFD1C_CALLOUT_LIMIT + " из " + rows.length + " — в Excel уходят все.</div>"));
+    }
+    head.querySelector(".callout-dl").addEventListener("click", function () {
+      if (!root.OFDExport || !root.OFDExport.downloadXlsx) return;
+      root.OFDExport.downloadXlsx(
+        (overdue ? "Просрочены 1С " : "Заканчиваются 1С ") + monthLabel,
+        ofd1cCalloutExportSpec(rows, model, overdue, monthLabel)
+      );
+    });
+    return box;
+  }
+
+  WIDGETS["b7-1c-callout"] = {
+    title: "Выгрузка для прозвона (Обмен с 1С)", type: "таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var wrap = el("<div></div>");
+      function renderBody() {
+        wrap.innerHTML = "";
+        if (!OFD1C_STATE.records) {
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл «Обмен с 1С» кнопкой в шапке — здесь появятся две таблицы для продажников: просроченные за прошлый месяц и заканчивающиеся в текущем.</div>'));
+          return;
+        }
+        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, -1, true));
+        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, 0, false));
+      }
+      renderBody();
+      OFD1C_REFRESHERS[instanceId] = renderBody;
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete OFD1C_REFRESHERS[instanceId]; },
+  };
+
   WIDGETS["b8-1c-renewal-calendar"] = {
     title: "Календарь продлений (Обмен с 1С)", type: "график + таблица", scope: "as-of", span: true,
     render: function (model, ctx, instanceId) {
