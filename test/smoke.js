@@ -50,3 +50,27 @@ console.log("revoked in 2025:", revokedPeriod);
 
 const reserveShare = Metrics.computeReserveShare(model, periodStart, periodEnd);
 console.log("reserve share 2025:", (reserveShare*100).toFixed(1) + "%");
+
+// Сверка «Каналы — динамика»: на зрелых месяцах (грейс закрыт) разница = новые − отток + возвращённые
+// должна равняться реальному изменению базы (baseAtStart след. месяца минус baseAtStart января) по
+// каждому каналу. Без возвращённых расходится (Партнёры, янв–авг 2026: −1 944 против 0), 2026-10-13.
+let channelNetMismatches = 0;
+[asOf.getFullYear(), asOf.getFullYear() - 1].forEach((year) => {
+  const perChannel = Metrics.computeChannelsMonthly(model, year, asOf, {});
+  Metrics.CHANNELS.forEach((ch) => {
+    const series = perChannel[ch];
+    let last = -1;
+    while (last + 1 < 11 && series[last + 1].ripe) last++;   // последний зрелый месяц; база на 1-е след. месяца нужна, поэтому не дальше ноября
+    if (last < 0) return;
+    let net = 0;
+    for (let m = 0; m <= last; m++) net += series[m].newClients - series[m].churned + series[m].returned;
+    const realDelta = series[last + 1].baseAtStart - series[0].baseAtStart;
+    const ok = net === realDelta;
+    if (!ok) channelNetMismatches++;
+    console.log(`channel net ${year} ${ch} янв–${last + 1} мес.: разница ${net}, реальный Δ базы ${realDelta}`, ok ? "OK" : "FAIL");
+  });
+});
+if (channelNetMismatches) {
+  console.error("FAIL: разница по каналам не сходится с реальным изменением базы:", channelNetMismatches);
+  process.exitCode = 1;
+}

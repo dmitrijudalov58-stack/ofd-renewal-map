@@ -6246,6 +6246,11 @@
   function chSeries(model, ctx, year, filterFn) {
     return root.OFDMetrics.computeChannelMonthly(model, year, ctx.asOf, ctx.opts, filterFn);
   }
+  // «Разница» месяца = новые − отток + возвращённые. Возвращённые -- не «новые» (новые считаются
+  // по первому появлению клиента), и без них разница расходится с реальным изменением базы
+  // (Партнёры, янв–авг 2026: −1 944 против 0). С ними сходится до единицы на зрелых месяцах
+  // (сверка на выгрузке 2026-10-13, см. HISTORY.md).
+  function chNet(m) { return m.newClients - m.churned + m.returned; }
   function chGraceEnd(year, m) {
     var d = new Date(year, m + 1, 0);
     return new Date(d.getTime() + 31 * 86400000).toLocaleDateString("ru-RU");
@@ -6272,7 +6277,7 @@
         wrap.appendChild(tabs);
         var f = function (c) { return chClientChannel(c) === st.ch; };
         var cur = chSeries(model, ctx, yNow, f), prev = chSeries(model, ctx, yNow - 1, f);
-        var MN = { N: "Новые клиенты", C: "Отток клиентов", R: "Возвращённые клиенты", S: "Разница (новые − отток)" };
+        var MN = { N: "Новые клиенты", C: "Отток клиентов", R: "Возвращённые клиенты", S: "Разница (новые + возвращённые − отток)" };
         var MLBL = { N: "новые", C: "отток", R: "возвращённые", S: "разница" };
         var legend = el('<div class="ch-legend">' +
           '<span><i class="ch-sw" style="background:var(--s2)"></i>' + yNow + "</span>" +
@@ -6290,7 +6295,7 @@
           [[yNow, cur], [yNow - 1, prev]].forEach(function (pair) {
             pair[1].forEach(function (m, i) {
               out.push([st.ch, CH_MON[i], pair[0], m.newClients, m.churned, m.ripe ? 0 : m.pending,
-                m.returned, m.newClients - m.churned, m.baseAtStart]);
+                m.returned, chNet(m), m.baseAtStart]);
             });
           });
           return out;
@@ -6298,7 +6303,7 @@
         wrap.appendChild(legend);
         function vals(s, k) {
           return s.map(function (m) {
-            return k === "N" ? m.newClients : k === "C" ? m.churned : k === "R" ? m.returned : m.newClients - m.churned;
+            return k === "N" ? m.newClients : k === "C" ? m.churned : k === "R" ? m.returned : chNet(m);
           });
         }
         var a26 = vals(cur, st.metric), a25 = vals(prev, st.metric);
@@ -6331,13 +6336,14 @@
         function sum(arr, key) { var t = 0; for (var i = 0; i < upto; i++) t += arr[i][key]; return t; }
         var n26 = sum(cur, "newClients"), n25 = sum(prev, "newClients");
         var c26 = sum(cur, "churned"), c25 = sum(prev, "churned");
+        var r26 = sum(cur, "returned"), r25 = sum(prev, "returned");
         var b26 = cur[0].baseAtStart, b25 = prev[0].baseAtStart;
         function pc(a, b) {
           if (!b) return "—";
           var v = (a / b - 1) * 100;
           return (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(1).replace(".", ",") + "%";
         }
-        var net26 = n26 - c26, net25 = n25 - c25, good = net26 >= net25;
+        var net26 = n26 - c26 + r26, net25 = n25 - c25 + r25, good = net26 >= net25;
         var per = upto > 0 ? "янв–" + CH_MON[plotTo] : "—";
         if (upto > 0) wrap.appendChild(el('<div class="ch-verdict">' +
           chVCell("Привели, " + per, fmtNum(n26), pc(n26, n25), n26 >= n25, (yNow - 1) + ": " + fmtNum(n25)) +
@@ -6383,7 +6389,7 @@
         " · отток <b>" + fmtNum(m.churned) + "</b>" +
         (grace ? ' <span class="ch-gtag">+' + fmtNum(grace) + " в грейсе</span>" : "") +
         " · возвращённые <b>" + fmtNum(m.returned) + "</b>" +
-        " · разница <b>" + (m.newClients - m.churned >= 0 ? "+" : "−") + fmtNum(Math.abs(m.newClients - m.churned)) + "</b>" +
+        " · разница <b>" + (chNet(m) >= 0 ? "+" : "−") + fmtNum(Math.abs(chNet(m))) + "</b>" +
         (partial ? ' <span class="ch-gtag">месяц не закончен</span>' : "");
     }
     function show(i) {
