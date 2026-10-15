@@ -14,6 +14,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧾</text></svg>">
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=28">
 <link rel="stylesheet" href="css/styles.css?v=28">
+<link rel="stylesheet" href="css/glass.css?v=1">
 </head>
 <body>
 
@@ -61,6 +62,11 @@
   <label class="btn" style="cursor:pointer;background:var(--s3);border-color:var(--s3);color:#fff;" title="dadata-cache.json — результат офлайн-обогащения отраслью/регионом через DaData">
     DaData
     <input type="file" id="dadataFileInput" accept=".json" style="display:none;">
+  </label>
+  <span class="file-loader" id="portraitFileLoader" aria-hidden="true"></span>
+  <label class="btn" style="cursor:pointer;" title="portrait-data.json: данные раздела «Портрет клиента» (готовит scripts/build-portrait-data.js; в файле контакты клиентов, на сайт он не кладётся)">
+    <span id="portraitBtnLabel">Портрет</span>
+    <input type="file" id="portraitFileInput" accept=".json" style="display:none;">
   </label>
   <button class="btn" id="dataInfoBtn" type="button" title="Подробности по загруженным данным (строки, клиенты, кассы, дубли, обогащение)">ⓘ</button>
 </div>
@@ -144,6 +150,22 @@
     <!-- Видимо ТОЛЬКО учётной записи u5yhjzlpy (Дима, 2026-09-04) -- скрыто по умолчанию,
          открывается JS в app.js после /api/whoami. Клиентская проверка (закрыто "тоглом"),
          не серверная -- см. предупреждение в чате при сдаче фичи. -->
+    <details class="board-group">
+      <summary><span class="code">B10</span>Портрет клиента</summary>
+      <div class="lib-item" data-widget="b10-summary"><span class="grip">⋮⋮</span>Сводка действующих клиентов<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-segments"><span class="grip">⋮⋮</span>Сегменты A/B/C/D<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-portraits"><span class="grip">⋮⋮</span>Портреты сегментов<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-okved"><span class="grip">⋮⋮</span>Топ-10 видов деятельности<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-form"><span class="grip">⋮⋮</span>Форма бизнеса (ИП / ЮЛ)<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-bizage"><span class="grip">⋮⋮</span>Возраст бизнеса<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-tariffs"><span class="grip">⋮⋮</span>Тарифы (срок кода)<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-life"><span class="grip">⋮⋮</span>Срок жизни по типу продаж<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-top"><span class="grip">⋮⋮</span>Крупнейшие клиенты сегмента<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-regions"><span class="grip">⋮⋮</span>Регионы: как мы представлены<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-return"><span class="grip">⋮⋮</span>Кого можно вернуть<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-model"><span class="grip">⋮⋮</span>Как посчитан шанс вернуться<span class="lchip">as-of</span></div>
+    </details>
+
     <details class="board-group hidden-1c" id="board1cGroup">
       <summary><span class="code">B8</span>Обмен с 1С</summary>
       <div class="lib-item" data-widget="b8-1c-growth"><span class="grip">⋮⋮</span>Прирост базы (Обмен с 1С)<span class="lchip">период</span></div>
@@ -181,6 +203,7 @@
 <script src="js/parser.js?v=28"></script>
 <script src="js/metrics.js?v=28"></script>
 <script src="js/widgets.js?v=28"></script>
+<script src="js/portrait.js?v=1"></script>
 <script src="js/dnd.js?v=28"></script>
 <script src="js/export.js?v=28"></script>
 <script src="js/app.js?v=28"></script>
