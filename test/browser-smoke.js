@@ -1847,6 +1847,37 @@ async function main() {
     const olyaReset = sumLabels(win.document.querySelector('[data-widget-id="' + chcId + '"]'));
     console.log("chc: «Сбросить к правилу» возвращает срез Ольги:", Math.abs(olyaReset - olyaBefore) < 0.01 ? "OK" : "FAIL");
     if (!(Math.abs(olyaReset - olyaBefore) < 0.01)) ok = false;
+
+    // Excel-выгрузка: лист «Сводка» + лист на канал, под месяцем строки по тарифам, суммы
+    // каналов сходятся со сводкой, настройки (исключение ликвидированных) учтены.
+    let xlsxCaptured = null;
+    const origWriteFile = win.XLSX.writeFile;
+    win.XLSX.writeFile = (wb, name) => { xlsxCaptured = { wb, name }; };
+    win.document.querySelector('[data-widget-id="' + chcId + '"] .chc-xlsx').dispatchEvent(new win.Event("click", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 200));
+    win.XLSX.writeFile = origWriteFile;
+    const xlsxOk = !!xlsxCaptured;
+    console.log("chc: «Скачать Excel» собирает файл:", xlsxOk ? "OK" : "FAIL", xlsxCaptured && xlsxCaptured.name);
+    if (!xlsxOk) ok = false;
+    if (xlsxOk) {
+      const names = xlsxCaptured.wb.SheetNames;
+      const sheetRows = (n) => win.XLSX.utils.sheet_to_json(xlsxCaptured.wb.Sheets[n], { header: 1 });
+      const sumCol = (n, col, onlyTotals) => sheetRows(n).slice(4).filter((r) => !onlyTotals || r[1] === "Итого").reduce((a, r) => a + (r[col] || 0), 0);
+      const channelSheets = names.slice(1);
+      console.log("chc: Excel: первый лист «Сводка», затем лист на каждый канал:", names[0] === "Сводка" && channelSheets.includes("Ольга Зибер") && channelSheets.length >= 5 ? "OK" : "FAIL", names);
+      if (!(names[0] === "Сводка" && channelSheets.includes("Ольга Зибер") && channelSheets.length >= 5)) ok = false;
+      const sum = sheetRows("Сводка");
+      const headOk = JSON.stringify(sum[3]) === JSON.stringify(["Месяц", "Тариф", "Новые", "Продлилось", "Отток", "Грейс", "План (код истекает)", "Исключено ликвидированных"]);
+      const tariffUnderMonth = sum[4][1] === "Итого" && /^\d+ мес$/.test(sum[5][1]) && sum[4][0] === sum[5][0];
+      console.log("chc: Excel: шапка верна, под месяцем «Итого» идут строки по тарифам:", headOk && tariffUnderMonth ? "OK" : "FAIL", sum[4], sum[5]);
+      if (!(headOk && tariffUnderMonth)) ok = false;
+      const planSum = sumCol("Сводка", 6, true), planCh = channelSheets.reduce((a, n) => a + sumCol(n, 6, true), 0);
+      const exSum = sumCol("Сводка", 7, true), exCh = channelSheets.reduce((a, n) => a + sumCol(n, 7, true), 0);
+      console.log("chc: Excel: сумма плана по листам каналов = сводка; исключённые учтены:", planSum === planCh && exSum === exCh && exSum > 0 ? "OK" : "FAIL", planSum, planCh, exSum, exCh);
+      if (!(planSum === planCh && exSum === exCh && exSum > 0)) ok = false;
+      console.log("chc: Excel: в шапке указано исключение ликвидированных:", /исключены из плана/.test(sum[1][0]) ? "OK" : "FAIL");
+      if (!/исключены из плана/.test(sum[1][0])) ok = false;
+    }
     win.OFDWidgets.ofd1cDadataSetState({ records: null, fileName: null }); // не протекает дальше
     win.OFDCanvas.rerenderAll();
   }
