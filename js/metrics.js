@@ -1798,32 +1798,83 @@
     // такого фильтра на отток, значит и здесь он не должен ничего фильтровать).
     function isSurvivalGated(type) { return type === "new" || type === "renewedFirst" || type === "renewedRepeat"; }
 
+    // Срез по каналам и исключение ликвидированных (борд «Календарь продлений по каналам»,
+    // 2026-10-19). Все опции необязательны -- без них результат тот же, что у B7.
+    // excluded -- те же бакеты, но ТОЛЬКО для "forecast"-событий ликвидированных клиентов:
+    // они убраны из buckets (будущие месяцы), а сколько убрано -- видно по excluded.
+    var f = calendarFilters(opts);
+    // groupOf(k, client) -> ключ группы (канал): один проход раскладывает события сразу по
+    // группам, groups[ключ] = { buckets, excluded }. Без groupOf -- одна группа "" (она же
+    // buckets/excluded верхнего уровня), результат тот же, что у B7. ВНИМАНИЕ: при groupOf
+    // верхнеуровневые buckets/excluded -- пустая группа "", итог берётся только из groups.
+    var groups = {};
+    function groupFor(key) {
+      var g = groups[key];
+      if (!g) {
+        g = groups[key] = {
+          buckets: key === "" ? buckets : makeCalendarBuckets(months, tariffs),
+          excluded: f.isLiquidated ? makeCalendarBuckets(months, tariffs) : null,
+        };
+      }
+      return g;
+    }
+    var main = groupFor("");
+    function addOrExclude(g, ev, liquidated) {
+      if (liquidated && ev.type === "forecast") { addEventToBuckets(g.excluded, months, ev); return; }
+      addEventToBuckets(g.buckets, months, ev);
+    }
+
     if (unit === "kassa") {
       model.kassas.forEach(function (k) {
+        var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+        if (f.kassaFilter && !f.kassaFilter(k, client)) return;
+        var g = f.groupOf ? groupFor(String(f.groupOf(k, client))) : main;
+        var liquidated = !!(f.isLiquidated && k.clientKey && f.isLiquidated(k.clientKey));
         var alive = !kassaLapsedAt(k, asOf);
         collectKassaEvents(k, asOf).forEach(function (ev) {
           if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
-          addEventToBuckets(buckets, months, ev);
+          addOrExclude(g, ev, liquidated);
         });
       });
     } else {
       model.clients.forEach(function (c) {
         if (c.phys) return;
+        if (f.clientFilter && !f.clientFilter(c)) return;
+        var g = f.groupOf ? groupFor(String(f.groupOf(null, c))) : main;
+        var liquidated = !!(f.isLiquidated && f.isLiquidated(c.key));
         var alive = !clientLapsedAt(c, asOf);
         collectClientEvents(c, asOf).forEach(function (ev) {
           if (onlyActive && !alive && isSurvivalGated(ev.type)) return;
-          addEventToBuckets(buckets, months, ev);
+          addOrExclude(g, ev, liquidated);
         });
       });
     }
-    return { months: months, buckets: buckets, unit: unit, tariffs: tariffs };
+    return { months: months, buckets: buckets, excluded: main.excluded, groups: groups, unit: unit, tariffs: tariffs };
   }
+
+  // Общие необязательные опции календаря и его раскрытия: kassaFilter(k, client),
+  // clientFilter(c), isLiquidated(inn), groupOf(k, client) (для юнита "клиент" k = null).
+  // Нормализация в одном месте, чтобы расчёт и drill не разошлись.
+  function calendarFilters(opts) {
+    opts = opts || {};
+    function fn(x) { return typeof x === "function" ? x : null; }
+    return {
+      kassaFilter: fn(opts.kassaFilter), clientFilter: fn(opts.clientFilter),
+      isLiquidated: fn(opts.isLiquidated), groupOf: fn(opts.groupOf),
+    };
+  }
+
+  // Статусы DaData, при которых клиент уже не продлится (Дима, 2026-10-19): ликвидирован
+  // и в процессе ликвидации. Банкротство/реорганизацию не трогаем -- там продление возможно.
+  var LIQUIDATED_STATUSES = { LIQUIDATED: true, LIQUIDATING: true };
+  function isLiquidatedStatus(status) { return !!(status && LIQUIDATED_STATUSES[status]); }
 
   // Раскрытие по клику на сегмент "Календаря продлений" -- список клиентов/касс за
   // конкретный (месяц, тариф, тип события). tariffMonths -- число (13/15/36), не строка.
-  function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit, onlyActive) {
+  function renewalCalendarDrill(model, asOf, monthDate, tariffMonths, type, unit, onlyActive, filterOpts) {
     var y = monthDate.getFullYear(), m = monthDate.getMonth();
     var out = [];
+    var f = calendarFilters(filterOpts);
 
     // Клиент + отток/прогноз -- на уровне ЦЕЛОГО клиента (clientChurnStatus/currentEnd),
     // та же формула, что теперь строит buckets (см. collectClientEvents) -- НЕ по кассам.
@@ -1831,6 +1882,8 @@
     if (unit === "client" && (type === "churn" || type === "forecast")) {
       model.clients.forEach(function (c) {
         if (c.phys || !c.currentEnd) return;
+        if (f.clientFilter && !f.clientFilter(c)) return;
+        if (type === "forecast" && f.isLiquidated && f.isLiquidated(c.key)) return;
         if (c.currentEnd.getFullYear() !== y || c.currentEnd.getMonth() !== m) return;
         var isForecast = c.currentEnd > asOf;
         if (type === "forecast" && !isForecast) return;
@@ -1854,12 +1907,14 @@
     var seenClients = new Set();
     model.kassas.forEach(function (k) {
       if (survivalGated && unit !== "client" && kassaLapsedAt(k, asOf)) return;
+      var client = k.clientKey ? model.clients.get(k.clientKey) : null;
+      if (f.kassaFilter && !f.kassaFilter(k, client)) return;
+      if (type === "forecast" && f.isLiquidated && k.clientKey && f.isLiquidated(k.clientKey)) return;
       var events = collectKassaEvents(k, asOf);
       for (var i = 0; i < events.length; i++) {
         var ev = events[i];
         if (ev.tariff !== tariffMonths || ev.type !== type) continue;
         if (!ev.date || ev.date.getFullYear() !== y || ev.date.getMonth() !== m) continue;
-        var client = k.clientKey ? model.clients.get(k.clientKey) : null;
         if (unit === "client") {
           if (!client || seenClients.has(client.key)) break;
           if (survivalGated && clientLapsedAt(client, asOf)) break;
@@ -2113,6 +2168,7 @@
     computeChannelForecastKassas: computeChannelForecastKassas,
     computeRenewalCalendar: computeRenewalCalendar,
     renewalCalendarDrill: renewalCalendarDrill,
+    isLiquidatedStatus: isLiquidatedStatus,
     computeTariffTransitions: computeTariffTransitions,
     computeTariffTransitionsMonthly: computeTariffTransitionsMonthly,
     tariffTransitionDrill: tariffTransitionDrill,

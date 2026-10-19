@@ -74,3 +74,55 @@ if (channelNetMismatches) {
   console.error("FAIL: разница по каналам не сходится с реальным изменением базы:", channelNetMismatches);
   process.exitCode = 1;
 }
+
+// «Календарь продлений по каналам» (2026-10-19): разрез по каналам и исключение
+// ликвидированных не должны менять итог календаря. Статусы DaData здесь синтетические --
+// проверяется арифметика (сохранение суммы, история не тронута), не реальные ликвидации.
+{
+  const tariffs = Metrics.allTariffsSorted(model);
+  const calAsOf = asOf;
+  const chOf = (c) => (c && c.kassas.length ? c.kassas[c.kassas.length - 1].channel || "Партнёры" : "Партнёры");
+  const synthLiquidated = (inn) => parseInt(String(inn).slice(-1), 10) % 5 === 0;
+  const totalOf = (buckets, key) => buckets.total.reduce((a, m) => a + m[key], 0);
+  const KEYS = ["new", "renewedFirst", "renewedRepeat", "churn", "pending", "forecast"];
+  let calMismatches = 0;
+  ["kassa", "client"].forEach((unit) => {
+    const base = Metrics.computeRenewalCalendar(model, calAsOf, { unit, tariffs });
+    const grouped = Metrics.computeRenewalCalendar(model, calAsOf, {
+      unit, tariffs, groupOf: (k, c) => chOf(c), isLiquidated: synthLiquidated,
+    });
+    KEYS.forEach((key) => {
+      const groupsSum = Object.values(grouped.groups).reduce((a, g) => a + totalOf(g.buckets, key), 0);
+      const excluded = key === "forecast"
+        ? Object.values(grouped.groups).reduce((a, g) => a + totalOf({ total: g.excluded.total }, key), 0)
+        : 0;
+      const ok = totalOf(base.buckets, key) === groupsSum + excluded;
+      if (!ok) calMismatches++;
+      console.log(`calendar by channel ${unit} ${key}: B7 ${totalOf(base.buckets, key)} = каналы ${groupsSum}` + (excluded ? ` + исключено ${excluded}` : ""), ok ? "OK" : "FAIL");
+    });
+  });
+  // Раскрытие по клику обязано совпадать с бакетами (расчёт и drill не должны разойтись):
+  // канал «Партнёры», самый нагруженный будущий месяц самого крупного тарифа.
+  ["kassa", "client"].forEach((unit) => {
+    const cal = Metrics.computeRenewalCalendar(model, calAsOf, {
+      unit, tariffs, groupOf: (k, c) => chOf(c), isLiquidated: synthLiquidated,
+    });
+    const g = cal.groups["Партнёры"];
+    const t = tariffs[0];
+    let best = -1;
+    cal.months.forEach((m, i) => { if (m > calAsOf && (best < 0 || g.buckets[t][i].forecast > g.buckets[t][best].forecast)) best = i; });
+    const filterOpts = {
+      kassaFilter: (k, c) => (c ? chOf(c) : k.channel || "Партнёры") === "Партнёры",
+      clientFilter: (c) => chOf(c) === "Партнёры",
+      isLiquidated: synthLiquidated,
+    };
+    const drill = Metrics.renewalCalendarDrill(model, calAsOf, cal.months[best], t, "forecast", unit, false, filterOpts).length;
+    const ok = drill === g.buckets[t][best].forecast;
+    if (!ok) calMismatches++;
+    console.log(`calendar drill ${unit} Партнёры ${t} мес: раскрытие ${drill} = бакет ${g.buckets[t][best].forecast}`, ok ? "OK" : "FAIL");
+  });
+  if (calMismatches) {
+    console.error("FAIL: календарь по каналам не сходится с общим календарём:", calMismatches);
+    process.exitCode = 1;
+  }
+}

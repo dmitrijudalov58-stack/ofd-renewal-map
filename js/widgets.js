@@ -3008,12 +3008,12 @@
 
   // renewedFirst/renewedRepeat визуально объединены в один сегмент "продлилось" (число
   // впервые/повторно видно в подсказке при наведении) -- клик раскрывает ОБА подтипа разом.
-  function rcDrillRenewalCombined(model, ctx, monthDate, tariffMonths, type, unit, onlyActive) {
+  function rcDrillRenewalCombined(model, ctx, monthDate, tariffMonths, type, unit, onlyActive, filterOpts) {
     if (type === "renewed") {
-      return ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, "renewedFirst", unit, onlyActive)
-        .concat(ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, "renewedRepeat", unit, onlyActive));
+      return ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, "renewedFirst", unit, onlyActive, filterOpts)
+        .concat(ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, "renewedRepeat", unit, onlyActive, filterOpts));
     }
-    return ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, type, unit, onlyActive);
+    return ctx.M.renewalCalendarDrill(model, ctx.asOf, monthDate, tariffMonths, type, unit, onlyActive, filterOpts);
   }
 
   // Один блок борда 1 (Итого / 13 / 15 / 36): главная панель (новые + продлилось, стек;
@@ -3069,10 +3069,13 @@
 
   // Скроллящаяся часть -- бары + сетка (без текста, тот теперь в rcBuildCalendarAxis) +
   // подписи месяцев снизу. padL сведён к минимуму (числа больше не печатаются здесь).
-  function rcBuildCalendarChart(sc, buckets, tariffKeyOrNull, months, asOfIdx, allTariffs, showNew, showRenewed, onSegmentClick) {
+  // excludedBuckets (необязательно, борд «Календарь продлений по каналам») -- бакеты
+  // ликвидированных, убранных из прогноза: рисуются красным пунктиром над столбцом.
+  function rcBuildCalendarChart(sc, buckets, tariffKeyOrNull, months, asOfIdx, allTariffs, showNew, showRenewed, onSegmentClick, excludedBuckets) {
     var isTotal = tariffKeyOrNull == null;
     var color = isTotal ? "var(--ink)" : rcColorForTariff(tariffKeyOrNull, allTariffs);
     var series = isTotal ? buckets.total : buckets[tariffKeyOrNull];
+    var exSeries = excludedBuckets ? (isTotal ? excludedBuckets.total : excludedBuckets[tariffKeyOrNull]) : null;
     var visSeries = sc.visSeries, from = sc.from;
     var mainH = sc.mainH, churnH = sc.churnH, churnTop = sc.churnTop, H = sc.H, mainScale = sc.mainScale, churnScale = sc.churnScale;
 
@@ -3104,6 +3107,16 @@
         rcAttachTooltip(rect, function () { return "Ожидается продлений · " + rcMonthLabel(monthDate) + ": " + s.forecast; });
         rect.addEventListener("click", function () { onSegmentClick(monthDate, "forecast"); });
         svg.appendChild(rect);
+        var exN = exSeries ? exSeries[idx].forecast : 0;
+        if (exN > 0) {
+          var hEx = exN * mainScale;
+          var rEx = rcSvgEl("rect", { x: bx, y: y - hEx, width: barW, height: hEx, rx: 2, style: "fill:none;stroke:var(--crit);stroke-width:1.3;stroke-dasharray:2 2;pointer-events:all" });
+          rcAttachTooltip(rEx, function () { return "Исключено ликвидированных · " + rcMonthLabel(monthDate) + ": " + exN; });
+          svg.appendChild(rEx);
+          var exLbl = rcSvgEl("text", { x: cx + colW / 2, y: Math.max(9, y - hEx - 3), class: "tick-label", "text-anchor": "middle", style: "fill:var(--crit);font-weight:700" });
+          exLbl.textContent = "−" + exN;
+          svg.appendChild(exLbl);
+        }
       } else {
         var cursorY = mainH;
         if (showRenewed && (s.renewedFirst + s.renewedRepeat) > 0) {
@@ -6727,6 +6740,267 @@
       return wrap;
     },
     onRemove: function (instanceId) { delete CH_REFRESHERS[instanceId]; CH_GROWTH.delete(instanceId); },
+  };
+
+  // ---------- B9: «Календарь продлений по каналам» (Дима, 2026-10-19) ----------
+  // Тот же календарь, что B7 (buckets/collectKassaEvents те же), в разрезе каналов.
+  // Канал клиента -- chClientChannel (как во всех бордах B9), касса уходит в канал своего
+  // клиента: перенос партнёра в борде «Каналы продаж — состав» (chOverrides) перетаскивает
+  // за ним продления его клиентов. Состав здесь только читается, не редактируется.
+  // Тумблер «исключить ликвидированных»: только БУДУЩИЕ месяцы (прогноз), по статусу DaData
+  // на сегодня (даты ликвидации в данных нет), активен только при загруженном файле DaData.
+  var CH_CAL = new Map(); // instanceId -> { sel: Set каналов, excl, view, tariff }
+  var CH_CAL_CACHE = null; // { model, entries: { ключ -> результат computeRenewalCalendar } }
+  var CH_CAL_CACHE_MAX = 10; // единица × «только действующие» × тумблер, с запасом
+  var CH_CAL_ZERO = { new: 0, renewedFirst: 0, renewedRepeat: 0, churn: 0, pending: 0, forecast: 0 };
+
+  // Касса без клиента-юрлица (нет ИНН организации) -- канал по партнёру самой кассы.
+  function chCalChannelOf(k, client) {
+    if (client) return chClientChannel(client);
+    return chOverrides[k.partner || "—"] || k.channel || "Партнёры";
+  }
+  function chCalIsLiquidated(inn) {
+    var rec = ofd1cDadataInfo(inn);
+    return !!rec && root.OFDMetrics.isLiquidatedStatus(rec.status);
+  }
+  function chCalGet(model, ctx, unit, onlyActive, withLiq, tariffs) {
+    var dd = OFD1C_DADATA_STATE;
+    var key = [ctx.asOf.getTime(), unit, onlyActive, JSON.stringify(chOverrides), withLiq ? "liq" : "-"].join("|");
+    // Кэш живёт, пока те же model и тот же объект DaData-записей: повторная загрузка файла
+    // (даже с тем же именем и числом ИНН) даёт новый Map и сбрасывает кэш.
+    var records = withLiq ? dd.records : null;
+    if (!CH_CAL_CACHE || CH_CAL_CACHE.model !== model || CH_CAL_CACHE.records !== records) {
+      CH_CAL_CACHE = { model: model, records: records, entries: {} };
+    }
+    var cached = Object.keys(CH_CAL_CACHE.entries);
+    if (!CH_CAL_CACHE.entries[key] && cached.length >= CH_CAL_CACHE_MAX) delete CH_CAL_CACHE.entries[cached[0]]; // вытесняем самую старую
+    if (!CH_CAL_CACHE.entries[key]) {
+      CH_CAL_CACHE.entries[key] = ctx.M.computeRenewalCalendar(model, ctx.asOf, {
+        unit: unit, tariffs: tariffs, onlyActive: onlyActive,
+        groupOf: function (k, c) { return chCalChannelOf(k, c); },
+        isLiquidated: withLiq ? chCalIsLiquidated : null,
+      });
+    }
+    return CH_CAL_CACHE.entries[key];
+  }
+  // Сумма бакетов выбранных каналов: { buckets: {тариф|total: [счётчики по месяцам]}, excluded }.
+  function chCalMerge(cal, sel, tariffs, withEx) {
+    var keys = tariffs.concat(["total"]);
+    function sum(pick) {
+      var out = {};
+      keys.forEach(function (key) {
+        out[key] = cal.months.map(function (_, i) {
+          var acc = Object.assign({}, CH_CAL_ZERO);
+          Object.keys(cal.groups).forEach(function (ch) {
+            var src = pick(cal.groups[ch]);
+            if (!sel.has(ch) || !src) return;
+            Object.keys(acc).forEach(function (t) { acc[t] += src[key][i][t]; });
+          });
+          return acc;
+        });
+      });
+      return out;
+    }
+    return {
+      buckets: sum(function (g) { return g.buckets; }),
+      excluded: withEx ? sum(function (g) { return g.excluded; }) : null,
+    };
+  }
+  function chCalForecastSum(series) { return series.reduce(function (a, s) { return a + s.forecast; }, 0); }
+
+  WIDGETS["b9-renewal-calendar-channels"] = {
+    title: "Календарь продлений по каналам", type: "график + таблица", scope: "as-of", span: true,
+    render: function (model, ctx, instanceId) {
+      var M = ctx.M, asOf = ctx.asOf;
+      var wrap = el("<div></div>");
+      function draw() {
+        wrap.innerHTML = "";
+        var st = CH_CAL.get(instanceId);
+        if (!st) { st = { sel: new Set(chAllChannels()), excl: false, view: "chart", tariff: null }; CH_CAL.set(instanceId, st); }
+        var hasDadata = !!(OFD1C_DADATA_STATE.records && OFD1C_DADATA_STATE.records.size);
+        var useExcl = st.excl && hasDadata;
+        var tariffs = M.allTariffsSorted(model);
+        if (st.tariff != null && tariffs.indexOf(st.tariff) < 0) st.tariff = null; // после смены файла тарифа может не быть
+        var cal = chCalGet(model, ctx, RC_UNIT, RC_CAL_ONLY_ACTIVE, useExcl, tariffs);
+        var months = cal.months, asOfIdx = rcAsOfIndex(months, asOf);
+        var merged = chCalMerge(cal, st.sel, tariffs, useExcl);
+        var vp = RC_VIEWPORT.get(instanceId);
+        if (!vp) { vp = { from: Math.max(0, asOfIdx - 11), to: months.length - 1 }; RC_VIEWPORT.set(instanceId, vp); }
+        vp.from = Math.min(Math.max(vp.from, 0), months.length - 1);
+        vp.to = Math.min(Math.max(vp.to, vp.from), months.length - 1);
+        var unitName = RC_UNIT === "client" ? "клиентов" : "касс";
+
+        var unitRow = el(
+          '<div class="threshold-row">' +
+          '<span style="color:var(--muted)">Единица</span>' +
+          '<label><input type="radio" name="chc-unit-' + instanceId + '" value="kassa"' + (RC_UNIT === "kassa" ? " checked" : "") + '> РНМ (кассы)</label>' +
+          '<label><input type="radio" name="chc-unit-' + instanceId + '" value="client"' + (RC_UNIT === "client" ? " checked" : "") + '> ИНН (клиенты)</label>' +
+          '<span style="color:var(--muted);margin-left:10px">Кассы/клиенты</span>' +
+          '<label><input type="radio" name="chc-active-' + instanceId + '" value="all"' + (RC_CAL_ONLY_ACTIVE ? "" : " checked") + '> все</label>' +
+          '<label><input type="radio" name="chc-active-' + instanceId + '" value="active"' + (RC_CAL_ONLY_ACTIVE ? " checked" : "") + '> только действующие</label>' +
+          '<span style="color:var(--muted);margin-left:10px">вид</span>' +
+          '<label><input type="radio" name="chc-view-' + instanceId + '" value="chart"' + (st.view === "chart" ? " checked" : "") + '> график</label>' +
+          '<label><input type="radio" name="chc-view-' + instanceId + '" value="table"' + (st.view === "table" ? " checked" : "") + '> таблица</label>' +
+          '</div>');
+        var chRow = el('<div class="threshold-row"><span style="color:var(--muted)">Каналы</span><div class="ch-tabs" style="margin-bottom:0"></div></div>');
+        var tabs = chRow.querySelector(".ch-tabs");
+        function addTab(label, on, onClick) {
+          var b = el('<button type="button" class="ch-tab' + (on ? " on" : "") + '">' + esc(label) + "</button>");
+          b.addEventListener("click", onClick);
+          tabs.appendChild(b);
+        }
+        var allChannels = chAllChannels();
+        // «Без канала» показываем, только если в нём есть события (после «Открепить» в «Составе»)
+        var visible = allChannels.filter(function (ch) { return ch !== CH_NOCHANNEL || cal.groups[ch]; });
+        var allOn = visible.every(function (ch) { return st.sel.has(ch); });
+        addTab("Все", allOn, function () { st.sel = new Set(allChannels); draw(); });
+        visible.forEach(function (ch) {
+          addTab(ch, st.sel.has(ch) && !allOn, function () {
+            if (allOn) st.sel = new Set([ch]);
+            else if (st.sel.has(ch)) { if (st.sel.size > 1) st.sel.delete(ch); }
+            else st.sel.add(ch);
+            draw();
+          });
+        });
+
+        var liqRow = el(
+          '<div class="threshold-row">' +
+          '<label' + (hasDadata ? "" : ' style="opacity:.5"') + '><input type="checkbox" class="chc-liq"' + (useExcl ? " checked" : "") + (hasDadata ? "" : " disabled") + '> Исключить ликвидированных (будущие месяцы)</label>' +
+          '<span class="wchip">' + (hasDadata ? "DaData загружен" : "нужен файл DaData (кнопка в топбаре)") + '</span>' +
+          '<span class="wchip chc-badge" style="display:none;border-color:var(--crit);color:var(--crit)"></span>' +
+          '</div>');
+        if (useExcl) {
+          // оба юнита в бейдже: сколько касс и сколько клиентов убрано из прогноза
+          var other = RC_UNIT === "client" ? "kassa" : "client";
+          var otherCal = chCalGet(model, ctx, other, RC_CAL_ONLY_ACTIVE, true, tariffs);
+          var otherSum = chCalForecastSum(chCalMerge(otherCal, st.sel, tariffs, true).excluded.total);
+          var curSum = chCalForecastSum(merged.excluded.total);
+          var kassasN = RC_UNIT === "kassa" ? curSum : otherSum, clientsN = RC_UNIT === "kassa" ? otherSum : curSum;
+          var badge = liqRow.querySelector(".chc-badge");
+          badge.style.display = "";
+          badge.textContent = "исключено: " + fmtNum(kassasN) + " касс · " + fmtNum(clientsN) + " клиентов";
+        }
+        var rangeRow = el(
+          '<div class="threshold-row" style="margin-top:-4px">' +
+          '<span style="color:var(--muted)">видимый диапазон</span>' +
+          rcMonthSelectHTML("rc-from", months, vp.from) + ' <span>—</span> ' + rcMonthSelectHTML("rc-to", months, vp.to) +
+          '<button type="button" class="refresh-chart-btn rc-full-range">весь период</button></div>');
+        var legendRow = el(
+          '<div class="threshold-row" style="margin-top:-4px"><span style="color:var(--muted)">Новые (светлее) · Продлилось (темнее) · пунктир — плановое продление (код истекает) · ' +
+          'красный контур — исключено ликвидированных · отток/грейс — панель под графиком · канал клиента = канал партнёра его самой свежей кассы</span></div>');
+        var blocksHolder = el("<div></div>");
+        var tableHolder = el("<div></div>");
+        var drillHolder = el('<div style="margin-top:10px"></div>');
+
+        var filterOpts = {
+          kassaFilter: function (k, c) { return st.sel.has(chCalChannelOf(k, c)); },
+          clientFilter: function (c) { return st.sel.has(chClientChannel(c)); },
+          isLiquidated: useExcl ? chCalIsLiquidated : null,
+        };
+        function buildBlock(label, tariffKeyOrNull) {
+          var block = el('<div class="rc-block"></div>');
+          block.appendChild(el('<div class="rc-block-title"><b>' + esc(label) + "</b></div>"));
+          var isTotal = tariffKeyOrNull == null;
+          var series = isTotal ? merged.buckets.total : merged.buckets[tariffKeyOrNull];
+          var exS = useExcl ? (isTotal ? merged.excluded.total : merged.excluded[tariffKeyOrNull]) : null;
+          // шкала учитывает и исключённых: красный контур стоит НАД столбцом оставшихся
+          var scaleSeries = exS ? series.map(function (s, i) { return Object.assign({}, s, { forecast: s.forecast + exS[i].forecast }); }) : series;
+          var sc = rcCalcCalendarScale(scaleSeries, vp, asOfIdx, true, true);
+          var chartRow = el('<div style="display:flex;align-items:flex-start"></div>');
+          chartRow.appendChild(rcBuildCalendarAxis(sc));
+          var chartWrap = el('<div class="hscroll-chart"></div>');
+          chartWrap.appendChild(rcBuildCalendarChart(sc, merged.buckets, tariffKeyOrNull, months, asOfIdx, tariffs, true, true, function (monthDate, type) {
+            if (isTotal) {
+              drillHolder.innerHTML = '<div class="stat-label" style="margin-top:8px">На «Итого» клик не раскрывается (тарифы суммированы) — выбери конкретный тариф ниже.</div>';
+              return;
+            }
+            var list = rcDrillRenewalCombined(model, ctx, monthDate, tariffKeyOrNull, type, RC_UNIT, RC_CAL_ONLY_ACTIVE, filterOpts);
+            var columns = RC_UNIT === "client" ? RC_DRILL_COLUMNS_CLIENT : RC_DRILL_COLUMNS_KASSA;
+            renderDrillList(drillHolder, list, columns, rcTariffLabel(tariffKeyOrNull) + " · " + rcMonthLabel(monthDate) + " · " + RC_TYPE_LABEL[type]);
+          }, useExcl ? merged.excluded : null));
+          chartRow.appendChild(chartWrap);
+          block.appendChild(chartRow);
+          return block;
+        }
+        function renderBlocks() {
+          blocksHolder.innerHTML = "";
+          blocksHolder.appendChild(buildBlock("Итого", null));
+          tariffs.forEach(function (t) { blocksHolder.appendChild(buildBlock(rcTariffLabel(t), t)); });
+          rcLinkScroll(Array.from(blocksHolder.querySelectorAll(".hscroll-chart")));
+        }
+
+        // Таблица: плановые продления (будущие месяцы) × выбранные каналы, один тариф или итог.
+        function renderTable() {
+          tableHolder.innerHTML = "";
+          var tOptions = '<option value="">Все тарифы</option>' + tariffs.map(function (t) {
+            return '<option value="' + t + '"' + (String(st.tariff) === String(t) ? " selected" : "") + ">" + esc(rcTariffLabel(t)) + "</option>";
+          }).join("");
+          var pick = el('<div class="threshold-row"><span style="color:var(--muted)">Тариф</span><select class="chc-tariff">' + tOptions + "</select>" +
+            '<span style="color:var(--muted)">Плановые продления по месяцам и каналам. ' + (useExcl ? "Колонка «ликвид.» — исключено из плана." : "") + "</span></div>");
+          pick.querySelector(".chc-tariff").addEventListener("change", function (e) { st.tariff = e.target.value === "" ? null : parseInt(e.target.value, 10); draw(); });
+          tableHolder.appendChild(pick);
+          var tKey = st.tariff == null ? "total" : st.tariff;
+          var chans = allChannels.filter(function (ch) { return st.sel.has(ch) && cal.groups[ch]; });
+          var headers = [{ label: "Месяц" }].concat(chans.map(function (ch) { return { label: ch, num: true }; }), [{ label: "Итого", num: true }]);
+          if (useExcl) headers.push({ label: "ликвид.", num: true });
+          var rows = [];
+          for (var i = asOfIdx + 1; i < months.length; i++) {
+            var rowSum = 0, rowEx = 0;
+            var cells = chans.map(function (ch) {
+              var g = cal.groups[ch], v = g.buckets[tKey][i].forecast;
+              rowSum += v; if (useExcl) rowEx += g.excluded[tKey][i].forecast;
+              return fmtNum(v);
+            });
+            rows.push([rcMonthLabel(months[i])].concat(cells, [fmtNum(rowSum)], useExcl ? [fmtNum(rowEx)] : []));
+          }
+          var scrollWrap = el('<div class="table-scroll" style="max-height:420px"></div>');
+          scrollWrap.appendChild(makeSortableTable(headers, rows));
+          tableHolder.appendChild(scrollWrap);
+          tableHolder.appendChild(el('<div class="stat-label" style="margin-top:6px">Единица: ' + esc(unitName) + ". Ликвидированные убираются только из будущих месяцев, история не меняется. Статус — DaData на сегодня, даты ликвидации там нет.</div>"));
+        }
+
+        wrap.appendChild(unitRow);
+        wrap.appendChild(chRow);
+        wrap.appendChild(liqRow);
+        if (st.view === "chart") {
+          wrap.appendChild(rangeRow);
+          wrap.appendChild(legendRow);
+          wrap.appendChild(blocksHolder);
+          renderBlocks();
+        } else {
+          wrap.appendChild(tableHolder);
+          renderTable();
+        }
+        wrap.appendChild(drillHolder);
+
+        unitRow.querySelectorAll('input[name="chc-unit-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () { RC_UNIT = r.value; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
+        });
+        unitRow.querySelectorAll('input[name="chc-active-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () { RC_CAL_ONLY_ACTIVE = r.value === "active"; root.OFDCanvas && root.OFDCanvas.rerenderAll(); });
+        });
+        unitRow.querySelectorAll('input[name="chc-view-' + instanceId + '"]').forEach(function (r) {
+          r.addEventListener("change", function () { st.view = r.value; draw(); });
+        });
+        liqRow.querySelector(".chc-liq").addEventListener("change", function (e) { st.excl = e.target.checked; draw(); });
+        rangeRow.querySelector(".rc-from").addEventListener("change", function (e) {
+          vp.from = parseInt(e.target.value, 10); if (vp.to < vp.from) vp.to = vp.from; draw();
+        });
+        rangeRow.querySelector(".rc-to").addEventListener("change", function (e) {
+          vp.to = parseInt(e.target.value, 10); if (vp.from > vp.to) vp.from = vp.to; draw();
+        });
+        rangeRow.querySelector(".rc-full-range").addEventListener("click", function () { vp.from = 0; vp.to = months.length - 1; draw(); });
+      }
+      // чужие борды B9 (перенос партнёра) и загрузка DaData перерисовывают этот борд
+      CH_REFRESHERS[instanceId] = draw;
+      OFD1C_REFRESHERS[instanceId] = draw;
+      draw();
+      return wrap;
+    },
+    onRemove: function (instanceId) {
+      delete CH_REFRESHERS[instanceId]; delete OFD1C_REFRESHERS[instanceId];
+      CH_CAL.delete(instanceId); RC_VIEWPORT.delete(instanceId);
+    },
   };
 
 

@@ -1779,6 +1779,78 @@ async function main() {
     }
   }
 
+  // «Календарь продлений по каналам» (2026-10-19): тумблер ликвидированных неактивен без
+  // файла DaData, с файлом убирает прогноз и показывает счётчик; чипы каналов сужают срез.
+  {
+    win.OFDWidgets.ofd1cDadataSetState({ records: null, fileName: null });
+    win.OFDCanvas.rerenderAll();
+    const chcId = "b9-renewal-calendar-channels";
+    let chcNode = win.document.querySelector('[data-widget-id="' + chcId + '"]');
+    const chcChart = chcNode && chcNode.querySelector(".rc-block svg") != null;
+    console.log("chc: борд рендерит график:", chcChart ? "OK" : "FAIL");
+    if (!chcChart) ok = false;
+    const liqDisabled = chcNode && chcNode.querySelector(".chc-liq").disabled === true;
+    console.log("chc: без файла DaData тумблер неактивен:", liqDisabled ? "OK" : "FAIL");
+    if (!liqDisabled) ok = false;
+    const noBadge = chcNode && chcNode.querySelector(".chc-badge").style.display === "none";
+    console.log("chc: без файла DaData счётчика исключённых нет:", noBadge ? "OK" : "FAIL");
+    if (!noBadge) ok = false;
+
+    const sumLabels = (node) => Array.from(node.querySelectorAll(".rc-block:first-of-type svg rect"))
+      .reduce((a, r) => a + parseFloat(r.getAttribute("height") || 0), 0);
+    const heightAll = sumLabels(chcNode);
+    const tabs = Array.from(chcNode.querySelectorAll(".ch-tab"));
+    const oneChannel = tabs.find((t) => t.textContent === "Ольга Зибер");
+    oneChannel.dispatchEvent(new win.Event("click", { bubbles: true }));
+    chcNode = win.document.querySelector('[data-widget-id="' + chcId + '"]');
+    const heightOne = sumLabels(chcNode);
+    const tabOn = Array.from(chcNode.querySelectorAll(".ch-tab.on")).map((t) => t.textContent);
+    console.log("chc: выбор одного канала сужает срез и подсвечивает один чип:", heightOne !== heightAll && tabOn.length === 1 && tabOn[0] === "Ольга Зибер" ? "OK" : "FAIL", tabOn);
+    if (!(heightOne !== heightAll && tabOn.length === 1)) ok = false;
+    chcNode.querySelector(".ch-tab").dispatchEvent(new win.Event("click", { bubbles: true })); // «Все»
+
+    // синтетический DaData: ликвидированы все ИНН, оканчивающиеся на 0 или 5
+    const liqMap = new Map();
+    model.clients.forEach((c, inn) => { liqMap.set(inn, { status: /[05]$/.test(inn) ? "LIQUIDATED" : "ACTIVE" }); });
+    win.OFDWidgets.ofd1cDadataSetState({ records: liqMap, fileName: "synthetic-liq-test.json" });
+    win.OFDCanvas.rerenderAll();
+    chcNode = win.document.querySelector('[data-widget-id="' + chcId + '"]');
+    const liqEnabled = chcNode.querySelector(".chc-liq").disabled === false;
+    console.log("chc: с файлом DaData тумблер доступен:", liqEnabled ? "OK" : "FAIL");
+    if (!liqEnabled) ok = false;
+    const chcCb = chcNode.querySelector(".chc-liq");
+    chcCb.checked = true;
+    chcCb.dispatchEvent(new win.Event("change", { bubbles: true }));
+    chcNode = win.document.querySelector('[data-widget-id="' + chcId + '"]');
+    const badge = chcNode.querySelector(".chc-badge");
+    const badgeOk = badge.style.display !== "none" && /исключено: \d[\d\s\u00a0]* касс · \d[\d\s\u00a0]* клиентов/.test(badge.textContent);
+    console.log("chc: включённый тумблер показывает «исключено: N касс · M клиентов»:", badgeOk ? "OK" : "FAIL", badge.textContent);
+    if (!badgeOk) ok = false;
+    const redOutline = chcNode.querySelector('.rc-block svg rect[style*="var(--crit)"][style*="stroke-dasharray"]') != null;
+    console.log("chc: на плановых столбцах нарисован красный контур исключённых:", redOutline ? "OK" : "FAIL");
+    if (!redOutline) ok = false;
+
+    // Главный сценарий: перенос партнёра в борде «Каналы продаж — состав» перетягивает
+    // продления его клиентов в новый канал на этом борде (общий chOverrides + chBroadcast).
+    const setupNode = win.document.querySelector('[data-widget-id="b9-channels-setup"]');
+    chcNode = win.document.querySelector('[data-widget-id="' + chcId + '"]');
+    Array.from(chcNode.querySelectorAll(".ch-tab")).find((t) => t.textContent === "Ольга Зибер").dispatchEvent(new win.Event("click", { bubbles: true }));
+    const olyaBefore = sumLabels(win.document.querySelector('[data-widget-id="' + chcId + '"]'));
+    Array.from(setupNode.querySelectorAll(".ch-row")).find((r) => r.textContent.indexOf("Ольга Зибер") === 0).dispatchEvent(new win.Event("click", { bubbles: true }));
+    const mover = setupNode.querySelector(".ch-pr .ch-move");
+    mover.value = "Партнёры";
+    mover.dispatchEvent(new win.Event("change", { bubbles: true }));
+    const olyaAfter = sumLabels(win.document.querySelector('[data-widget-id="' + chcId + '"]'));
+    console.log("chc: перенос партнёра из «Ольга Зибер» в «Партнёры» в борде «Состав» уменьшает срез Ольги:", olyaAfter < olyaBefore ? "OK" : "FAIL", olyaBefore.toFixed(1), "->", olyaAfter.toFixed(1));
+    if (!(olyaAfter < olyaBefore)) ok = false;
+    win.document.querySelector('[data-widget-id="b9-channels-setup"] .ch-reset').dispatchEvent(new win.Event("click", { bubbles: true }));
+    const olyaReset = sumLabels(win.document.querySelector('[data-widget-id="' + chcId + '"]'));
+    console.log("chc: «Сбросить к правилу» возвращает срез Ольги:", Math.abs(olyaReset - olyaBefore) < 0.01 ? "OK" : "FAIL");
+    if (!(Math.abs(olyaReset - olyaBefore) < 0.01)) ok = false;
+    win.OFDWidgets.ofd1cDadataSetState({ records: null, fileName: null }); // не протекает дальше
+    win.OFDCanvas.rerenderAll();
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 
