@@ -15,6 +15,10 @@ cp "$REPO_ROOT/index.html" "$CF_DIR/public/"
 cp -R "$REPO_ROOT/css" "$CF_DIR/public/"
 cp -R "$REPO_ROOT/js" "$CF_DIR/public/"
 cp -R "$REPO_ROOT/docs" "$CF_DIR/public/" 2>/dev/null || true
+# PWA (2026-10-19): manifest, service worker и иконки. Эти пути worker.js отдаёт БЕЗ
+# пароля (PWA_PUBLIC_PATHS) -- браузер тянет их без логина, иначе установка не заработает.
+cp "$REPO_ROOT/manifest.webmanifest" "$REPO_ROOT/sw.js" "$CF_DIR/public/"
+cp -R "$REPO_ROOT/icons" "$CF_DIR/public/"
 
 # version.json -- баннер "есть обновление" (Дима, 2026-09-04) сверяет build с этим файлом,
 # перегенерируется на каждый деплой, чтобы клиент заметил разницу.

@@ -210,7 +210,44 @@ async function verifySiteUser(request, env) {
   return { username: creds.user, rec };
 }
 
+// PWA (2026-10-19): браузер тянет manifest, service worker и иконки БЕЗ логина (manifest --
+// без credentials по спецификации, пока нет crossorigin="use-credentials"), поэтому за
+// Basic Auth они дают 401 и установка приложения невозможна. Открываем ровно эти файлы,
+// ТОЧНЫМ списком (не префиксом), только на чтение. В них нет данных клиентов.
+// Content-Type задаём явно, не полагаясь на определение типа в Cloudflare Assets.
+const PWA_PUBLIC_PATHS = {
+  "/manifest.webmanifest": { type: "application/manifest+json", noCache: true },
+  "/sw.js": { type: "application/javascript", noCache: true },
+  "/icons/icon-192.png": { type: "image/png" },
+  "/icons/icon-512.png": { type: "image/png" },
+  "/icons/icon-maskable-512.png": { type: "image/png" },
+  "/icons/apple-touch-icon.png": { type: "image/png" },
+  "/icons/favicon-32.png": { type: "image/png" },
+};
+
+async function servePwaAsset(request, env, meta) {
+  const res = await env.ASSETS.fetch(request);
+  if (!res.ok) return res;
+  // Если когда-нибудь включат not_found_handling в wrangler.toml, на месте потерянного
+  // файла (deploy.sh не скопировал иконку) ASSETS отдал бы HTML-оболочку со статусом 200.
+  // Анонимному клиенту её отдавать нельзя -- честный 404.
+  if ((res.headers.get("Content-Type") || "").startsWith("text/html")) {
+    return new Response("Not found", { status: 404 });
+  }
+  const headers = new Headers(res.headers);
+  headers.set("Content-Type", meta.type);
+  headers.set("X-Content-Type-Options", "nosniff");
+  if (meta.noCache) headers.set("Cache-Control", "no-cache");
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 async function handleSite(request, env, url) {
+  const isReadOnly = request.method === "GET" || request.method === "HEAD";
+  const pwaMeta = isReadOnly && Object.prototype.hasOwnProperty.call(PWA_PUBLIC_PATHS, url.pathname)
+    ? PWA_PUBLIC_PATHS[url.pathname]
+    : null;
+  if (pwaMeta) return servePwaAsset(request, env, pwaMeta);
+
   const auth = await verifySiteUser(request, env);
   if (!auth) return unauthorized("OFD Renewal Map");
   // Журнал посещений убран (Дима, 2026-10-01): «я ей уже не пользуюсь, не нужно знать,
