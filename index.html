@@ -18,7 +18,7 @@
 <meta name="theme-color" content="#0c0f1c" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=28">
 <link rel="stylesheet" href="css/styles.css?v=28">
-<link rel="stylesheet" href="css/glass.css?v=1">
+<link rel="stylesheet" href="css/glass.css?v=2">
 </head>
 <body>
 
@@ -152,9 +152,8 @@
       <div class="lib-item" data-widget="b9-channels-growth"><span class="grip">⋮⋮</span>Каналы продаж — прирост базы<span class="lchip">as-of</span></div>
     </details>
 
-    <!-- Видимо ТОЛЬКО учётной записи u5yhjzlpy (Дима, 2026-09-04) -- скрыто по умолчанию,
-         открывается JS в app.js после /api/whoami. Клиентская проверка (закрыто "тоглом"),
-         не серверная -- см. предупреждение в чате при сдаче фичи. -->
+    <!-- B10: видят все залогиненные (решение Димы 2026-10-21); по умолчанию скрыта только B8 (hidden-1c).
+         Данные портрета в сам сайт не кладутся: их загружает пользователь кнопкой «Портрет». -->
     <details class="board-group">
       <summary><span class="code">B10</span>Портрет клиента</summary>
       <div class="lib-item" data-widget="b10-summary"><span class="grip">⋮⋮</span>Сводка действующих клиентов<span class="lchip">as-of</span></div>
@@ -162,9 +161,10 @@
       <div class="lib-item" data-widget="b10-portraits"><span class="grip">⋮⋮</span>Портреты сегментов<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-okved"><span class="grip">⋮⋮</span>Топ-10 видов деятельности<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-form"><span class="grip">⋮⋮</span>Форма бизнеса (ИП / ЮЛ)<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-ip"><span class="grip">⋮⋮</span>Портрет ИП<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-bizage"><span class="grip">⋮⋮</span>Возраст бизнеса<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-tariffs"><span class="grip">⋮⋮</span>Тарифы (срок кода)<span class="lchip">as-of</span></div>
-      <div class="lib-item" data-widget="b10-life"><span class="grip">⋮⋮</span>Срок жизни по типу продаж<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b10-life"><span class="grip">⋮⋮</span>Срок жизни клиента<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-top"><span class="grip">⋮⋮</span>Крупнейшие клиенты сегмента<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-regions"><span class="grip">⋮⋮</span>Регионы: как мы представлены<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-return"><span class="grip">⋮⋮</span>Кого можно вернуть<span class="lchip">as-of</span></div>
@@ -208,7 +208,8 @@
 <script src="js/parser.js?v=28"></script>
 <script src="js/metrics.js?v=28"></script>
 <script src="js/widgets.js?v=28"></script>
-<script src="js/portrait.js?v=1"></script>
+<script src="js/portrait-util.js?v=1"></script>
+<script src="js/portrait.js?v=3"></script>
 <script src="js/dnd.js?v=28"></script>
 <script src="js/export.js?v=28"></script>
 <script src="js/app.js?v=28"></script>

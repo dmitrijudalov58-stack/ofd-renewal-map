@@ -10,7 +10,8 @@
 (function (root) {
   "use strict";
   var OW = root.OFDWidgets;
-  if (!OW || !OW.WIDGETS) return;
+  var U = root.OFDPortraitUtil;
+  if (!OW || !OW.WIDGETS || !U) return;
   var WIDGETS = OW.WIDGETS;
   var SEGS = ["A", "B", "C", "D"];
   var COL = { A: "#2a52e0", B: "#7a5cf0", C: "#14a89a", D: "#e0963a" };
@@ -22,6 +23,29 @@
   function esc(s) { return String(s === null || s === undefined ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
   function fmt(x) { return Math.round(x).toLocaleString("ru-RU"); }
   function pc(a, b, d) { return b ? (100 * a / b).toFixed(d === undefined ? 1 : d).replace(".", ",") + "%" : "—"; }
+  function isV2(D) { return !!(D.meta && D.meta.schema >= 2 && D.t36 && D.lifeC && D.ip && D.act); }
+  function needV2Html() { return '<div class="placeholder-body">Пересоберите portrait-data.json: нужна версия 2 (scripts/build-portrait-data.js).</div>'; }
+  function fileTitle(name, d) {
+    return name + " · данные на " + d.meta.asOf + " · клиентов " + fmt(d.tot.clients) + " · " +
+      (isV2(d) ? "схема 2" + (d.act && d.act.contacts === false ? " · без контактов" : "") : "старый формат — пересоберите");
+  }
+  function t36Block(D, k) {
+    if (!isV2(D)) return '<div class="pt-t36"><div class="pt-t36-title">Тариф 36 мес.</div>' + needV2Html() + '</div>';
+    return t36Html(D.t36[k], k === "D", { kassas: "касс сегмента", clients: "клиентов сегмента" });
+  }
+  function t36Html(s, isD, words) {
+    var h = '<div class="pt-t36"><div class="pt-t36-title">Тариф 36 мес.</div>';
+    var stats = U.t36Stats(s);
+    return h +
+      '<div class="pt-t36-metric" data-metric="kassas"><div class="pt-t36-label">Касс на тарифе 36 мес.</div><span class="pt-t36-value">' + esc(pc(stats.numerator, s.kassas)) +
+      '</span><span class="pt-sub2">' + esc(fmt(stats.numerator) + " из " + fmt(s.kassas) + " " + words.kassas) + '</span></div>' +
+      '<div class="pt-t36-metric" data-metric="clients"><div class="pt-t36-label">Клиентов на тарифе 36 мес.</div><span class="pt-t36-value">' + esc(fmt(s.clients36)) +
+      '</span><span class="pt-sub2">' + esc(pc(s.clients36, s.clients) + " от " + fmt(s.clients) + " " + words.clients) + '</span></div>' +
+      '<div class="pt-t36-metric" data-metric="coverage"><div class="pt-t36-label">Охват 36 мес. внутри этих клиентов</div><span class="pt-t36-value"' +
+      (isD ? ' title="у клиента одна касса, охват всегда 100%" tabindex="0"' : '') + '>' + esc(isD ? "—" : pc(stats.numerator, s.M)) +
+      '</span><span class="pt-sub2">' + esc(isD ? "У клиента одна касса, охват всегда 100%" : fmt(stats.numerator) + " из " + fmt(s.M) + " касс этих клиентов") + '</span>' +
+      (isD ? '' : '<span class="pt-grn" data-growth="' + esc(stats.growth) + '">' + esc("точка роста: " + fmt(stats.growth) + " касс вне 36 мес.") + '</span>') + '</div></div>';
+  }
   function num(x, d) { return Number(x).toFixed(d === undefined ? 1 : d).replace(".", ","); }
   function segOf(k) { return k >= 10 ? "A" : k >= 6 ? "B" : k >= 2 ? "C" : "D"; }
   function tip() { return esc(Array.prototype.slice.call(arguments).join("<br>")); }
@@ -29,7 +53,7 @@
   function el(html) { var d = document.createElement("div"); d.innerHTML = html; return d.firstElementChild; }
   function q(s) { return '"' + String(s).replace(/"/g, '""') + '"'; }
   function csvDownload(name, text) {
-    var blob = new Blob(["﻿" + text], { type: "text/csv;charset=utf-8" }), a = document.createElement("a");
+    var blob = new Blob([text.charAt(0) === "﻿" ? text : "﻿" + text], { type: "text/csv;charset=utf-8" }), a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
@@ -119,43 +143,105 @@
       var ip = fm["ИП"] || [0, 0, 0], yl = fm["ЮЛ"] || [0, 0, 0];
       var reg = s.region.slice(0, 3).map(function (r) { return esc(r[0]) + " " + pc(r[1], s.clients, 0); }).join(", ");
       var ba = {}; s.bizAge.forEach(function (x) { ba[x[0]] = x[1]; });
-      var t36 = (D.tariff.seg[k]["36 месяцев"]) || 0;
       h += '<div class="pt-card" style="--c:' + COL[k] + '"><h4><span class="pt-dot"></span>Сегмент ' + k + "<small>" + RNG[k] + "</small></h4>" +
         '<div class="pt-pl">Отрасль, топ-3</div><ul class="pt-kv">' + li + "</ul>" +
         '<div class="pt-pl">Форма</div><div class="pt-kvrow">ИП <b>' + pc(ip[1], s.clients, 0) + "</b> · ЮЛ <b>" + pc(yl[1], s.clients, 0) + "</b></div>" +
         '<div class="pt-pl">Касс на клиента</div><div class="pt-kvrow"><b>' + num(s.kassas / s.clients) + "</b></div>" +
         '<div class="pt-pl">Регионы, топ-3</div><div class="pt-kvrow pt-small">' + reg + "</div>" +
         '<div class="pt-pl">Бизнесу 7+ лет</div><div class="pt-kvrow"><b>' + pc(ba["7+ лет"] || 0, s.clients, 0) + "</b></div>" +
-        '<div class="pt-pl">Касс на тарифе 36 мес.</div><div class="pt-kvrow"><b>' + pc(t36, s.kassas, 0) + "</b></div>" +
+        t36Block(D, k) +
         '<div class="pt-redline"><span>Ликвидировано</span>' + liq(s.liq, s.clients) + "</div></div>";
     });
     w.appendChild(el(h + "</div>"));
   });
 
-  // ---------- 4. ОКВЭД
+  // ---------- 4. ОКВЭД: топ-10 считается из списка действующих клиентов act.rows (фильтры: регион, раздел, касс)
+  var OKVED_HEAD = ["Сегмент", "Наименование", "ИНН", "КПП", "ИП/ЮЛ", "Регион", "Вид деятельности (ОКВЭД)", "Касс", "Месяцев в ОФД", "Возраст бизнеса", "Максимальный срок тарифа", "Телефон", "Email"];
   WIDGETS["b10-okved"] = def("Портрет: топ-10 видов деятельности", "таблица", 12, function (w, D) {
-    var oc = D.okvedCheck, oldn = 0, oldl = 0;
-    SEGS.forEach(function (k) { oldn += D.okved[k].old; oldl += D.okved[k].oldLiq; });
-    function tables(kind) {
-      var h = '<div class="pt-grid2">';
-      SEGS.forEach(function (k) {
-        var o = D.okved[k], s = D.seg[k], lst = o[kind], mx = lst.length ? lst[0][2] : 1, rows = "", shown = 0;
-        lst.forEach(function (x, i) {
-          shown += x[2];
-          var t = tip("<b>" + x[0] + " · " + (x[1] || "") + "</b>", "Клиентов: " + fmt(x[2]) + " (" + pc(x[2], s.clients) + " сегмента " + k + ")", "Ликвидировано: " + fmt(x[3]) + " (" + pc(x[3], x[2]) + ")");
-          rows += '<tr><td class="pt-mut">' + (i + 1) + "</td><td><b>" + esc(x[0]) + "</b> " + esc(x[1] || "") + '<div class="pt-bar"><i data-tip="' + t + '" style="width:' + (100 * x[2] / mx).toFixed(0) + "%;background:" + COL[k] + '"></i></div></td><td class="r">' + fmt(x[2]) + '</td><td class="r pt-mut">' + pc(x[2], s.clients) + '</td><td class="r">' + (x[3] ? '<span class="pt-liq">' + fmt(x[3]) + "</span>" : '<span class="pt-mut">0</span>') + "</td></tr>";
-        });
-        var rest = s.clients - shown - o.noOkved - o.old;
-        rows += '<tr><td class="pt-mut">…</td><td class="pt-mut">Остальные виды деятельности</td><td class="r">' + fmt(rest) + '</td><td class="r pt-mut">' + pc(rest, s.clients) + "</td><td></td></tr>";
-        if (o.old) rows += '<tr><td class="pt-mut">—</td><td class="pt-mut">Старый код ОКВЭД-1 (в ОКВЭД-2 не существует)</td><td class="r">' + fmt(o.old) + '</td><td class="r pt-mut">' + pc(o.old, s.clients, 2) + '</td><td class="r"><span class="pt-liq">' + fmt(o.oldLiq) + "</span></td></tr>";
-        if (o.noOkved) rows += '<tr><td class="pt-mut">—</td><td class="pt-mut">ОКВЭД не указан в источнике</td><td class="r">' + fmt(o.noOkved) + '</td><td class="r pt-mut">' + pc(o.noOkved, s.clients, 2) + "</td><td></td></tr>";
-        h += '<div class="pt-card" style="--c:' + COL[k] + '"><h4><span class="pt-dot"></span>' + k + '</h4><table class="pt-table"><thead><tr><th>#</th><th>Вид деятельности</th><th class="r">Клиентов</th><th class="r">Доля</th><th class="r">Ликвид.</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+    if (!isV2(D) || !D.act) { w.appendChild(el(needV2Html())); return; }
+    var A = D.act, st = { reg: "all", sec: "all", from: "", to: "", kind: "cls" }, secName = {}, cur = [];
+    A.secs.forEach(function (s) { secName[s[0]] = s[1]; });
+    function select() {
+      var range = U.kassRange(st.from, st.to);
+      if (range.error) return [];
+      return A.rows.filter(function (r) {
+        return (st.reg === "all" || A.regs[r[4]][0] === st.reg) && (st.sec === "all" || A.grps[r[5]][2] === st.sec) && U.inKassRange(r[6], range);
       });
-      return h + "</div>";
     }
-    w.appendChild(el('<div class="pt-note" style="margin:0 0 10px">Справочник ОКВЭД-2 (Росстат). Из ' + fmt(oc.total) + " клиентов: " + fmt(oc.total - oldn - oc.noOkved) + " с названием, " + fmt(oldn) + " со старым кодом ОКВЭД-1 (все " + fmt(oldl) + " ликвидированы), " + fmt(oc.noOkved) + " без кода в источнике.</div>"));
-    w.appendChild(tabs([["cls", "Раздел (2 знака)"], ["grp", "Полный код"]], function (v) { box.innerHTML = tables(v); }));
-    var box = el("<div></div>"); box.innerHTML = tables("cls"); w.appendChild(box);
+    function bySegment(rows) {
+      var by = {};
+      SEGS.forEach(function (k) { by[k] = { n: 0, old: 0, oldLiq: 0, missing: 0, buckets: {} }; });
+      rows.forEach(function (r) {
+        var s = by[segOf(r[6])], g = A.grps[r[5]], cls = g[2], dead = r[12] === 1 ? 1 : 0;
+        s.n++;
+        if (cls === "old") { s.old++; s.oldLiq += dead; return; }
+        if (cls === "") { s.missing++; return; }
+        var code = st.kind === "cls" ? cls : g[0], b = s.buckets[code];
+        if (!b) b = s.buckets[code] = { code: code, name: st.kind === "cls" ? secName[cls] || "" : g[1], n: 0, liq: 0 };
+        b.n++; b.liq += dead;
+      });
+      return by;
+    }
+    function tail(marker, label, n, total, dead) {
+      return '<tr><td class="pt-mut">' + marker + '</td><td class="pt-mut">' + label + '</td><td class="r">' + fmt(n) + '</td><td class="r pt-mut">' + pc(n, total) + "</td><td" + (dead === undefined ? "></td>" : ' class="r"><span class="pt-liq">' + fmt(dead) + "</span></td>") + "</tr>";
+    }
+    function card(k, s) {
+      var h = '<div class="pt-card" style="--c:' + COL[k] + '"><h4><span class="pt-dot"></span>' + k + "</h4>";
+      if (!s.n) return h + '<div class="pt-mut">Нет клиентов в выборке</div></div>';
+      var list = Object.keys(s.buckets).map(function (c) { return s.buckets[c]; })
+        .sort(function (a, b) { return b.n - a.n || a.code.localeCompare(b.code, "ru"); }).slice(0, 10);
+      var mx = list.length ? list[0].n : 1, shown = 0, rows = "";
+      list.forEach(function (x, i) {
+        shown += x.n;
+        var t = tip("<b>" + esc(x.code) + " · " + esc(x.name) + "</b>", "Клиентов: " + fmt(x.n) + " (" + pc(x.n, s.n) + " сегмента " + k + ")", "Ликвидировано: " + fmt(x.liq) + " (" + pc(x.liq, x.n) + ")");
+        rows += '<tr><td class="pt-mut">' + (i + 1) + "</td><td><b>" + esc(x.code) + "</b> " + esc(x.name) + '<div class="pt-bar"><i data-tip="' + t + '" style="width:' + (100 * x.n / mx).toFixed(0) + "%;background:" + COL[k] + '"></i></div></td><td class="r">' + fmt(x.n) + '</td><td class="r pt-mut">' + pc(x.n, s.n) + '</td><td class="r">' + (x.liq ? '<span class="pt-liq">' + fmt(x.liq) + "</span>" : '<span class="pt-mut">0</span>') + "</td></tr>";
+      });
+      rows += tail("…", "Остальные виды деятельности", s.n - shown - s.old - s.missing, s.n);
+      if (s.old) rows += tail("—", "Старый код ОКВЭД-1 (в ОКВЭД-2 не существует)", s.old, s.n, s.oldLiq);
+      if (s.missing) rows += tail("—", "ОКВЭД не указан в источнике", s.missing, s.n);
+      return h + '<table class="pt-table"><thead><tr><th>#</th><th>Вид деятельности</th><th class="r">Клиентов</th><th class="r">Доля</th><th class="r">Ликвид.</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+    }
+    function csv() {
+      var rows = cur.map(function (r) {
+        var g = A.grps[r[5]];
+        return [segOf(r[6]), r[0], innCell(r[1]), r[2] ? innCell(r[2]) : "", r[3] === 0 ? "ИП" : r[3] === 1 ? "ЮЛ" : "", A.regs[r[4]][1], (g[0] + " " + g[1]).trim(), r[6], r[7],
+          r[8] < 0 ? "" : num(r[8] / 10) + " г.", r[9] < 0 ? "" : r[9] + " мес.", fmtPhone(r[10]), r[11]];
+      });
+      csvDownload("vidy-deyatelnosti-" + D.meta.asOf + ".csv", U.csvString(OKVED_HEAD, rows));
+    }
+    var regOpts = A.regs.slice().sort(function (a, b) { return a[1].localeCompare(b[1], "ru"); });
+    var kassTip = "Число действующих касс клиента на as-of (по нему клиент попадает в сегмент A/B/C/D)";
+    var ctr = el('<div class="pt-ctrls"><select data-okved-filter="reg" aria-label="Регион"><option value="all">Все регионы</option>' +
+      regOpts.map(function (r) { return '<option value="' + esc(r[0]) + '">' + esc(r[1]) + "</option>"; }).join("") +
+      '</select><select data-okved-filter="sec" aria-label="Вид деятельности"><option value="all">Все виды деятельности</option>' +
+      A.secs.map(function (s) { return '<option value="' + esc(s[0]) + '">' + esc((s[0] + " " + s[1]).trim()) + "</option>"; }).join("") + "</select>" +
+      [["from", "Касс от"], ["to", "до"]].map(function (x) { return '<label data-tip="' + esc(kassTip) + '">' + x[1] + ' <input type="number" min="1" step="1" data-range="' + x[0] + '" aria-invalid="false"></label>'; }).join("") +
+      '<button type="button" class="pt-btn" data-role="reset">Сбросить</button><span data-role="count" aria-live="polite"></span><button type="button" class="pt-btn" data-csv="okved">Скачать CSV</button></div>');
+    var hint = el('<div class="pt-note" data-role="range-hint" role="status" hidden></div>'), note = el('<div class="pt-note" style="margin:0 0 10px"></div>'), box = el("<div></div>");
+    function draw() {
+      var range = U.kassRange(st.from, st.to), by = bySegment(cur = select()), old = 0, oldLiq = 0, missing = 0;
+      SEGS.forEach(function (k) { old += by[k].old; oldLiq += by[k].oldLiq; missing += by[k].missing; });
+      hint.textContent = range.error || ""; hint.hidden = !range.error;
+      ctr.querySelectorAll("[data-range]").forEach(function (input) { input.setAttribute("aria-invalid", range.error ? "true" : "false"); });
+      ctr.querySelector('[data-role="count"]').textContent = "В выборке: " + fmt(cur.length) + " клиентов";
+      note.textContent = "Справочник ОКВЭД-2 (Росстат). Из " + fmt(cur.length) + " клиентов: " + fmt(cur.length - old - missing) + " с названием, " + fmt(old) + " со старым кодом ОКВЭД-1 (ликвидировано: " + fmt(oldLiq) + "), " + fmt(missing) + " без кода в источнике.";
+      box.innerHTML = '<div class="pt-grid2">' + SEGS.map(function (k) { return card(k, by[k]); }).join("") + "</div>";
+    }
+    function setState(key, value) { if (st[key] !== value) { st[key] = value; draw(); } }
+    ctr.addEventListener("change", function (e) { var f = e.target.dataset.okvedFilter; if (f) setState(f, e.target.value); });
+    ["input", "change"].forEach(function (type) { ctr.addEventListener(type, function (e) { var r = e.target.dataset.range; if (r) setState(r, e.target.value); }); });
+    ctr.querySelector('[data-role="reset"]').addEventListener("click", function () {
+      st.reg = "all"; st.sec = "all"; st.from = ""; st.to = "";
+      ctr.querySelectorAll("select").forEach(function (s) { s.value = "all"; });
+      ctr.querySelectorAll("input").forEach(function (i) { i.value = ""; });
+      draw();
+    });
+    ctr.querySelector('[data-csv="okved"]').addEventListener("click", csv);
+    w.appendChild(ctr); w.appendChild(hint);
+    w.appendChild(tabs([["cls", "Раздел (2 знака)"], ["grp", "Полный код"]], function (v) { st.kind = v; draw(); }));
+    w.appendChild(note); w.appendChild(box);
+    w.appendChild(el('<div class="pt-note">КПП — из ЕГРЮЛ (DaData), контакты — из выгрузки ОФД; пусто = нет в источнике.' + (A.contacts === false ? " Контакты в этот файл не включены (пересоберите с флагом --active-contacts)." : "") + "</div>"));
+    draw();
   });
 
   // ---------- 5. Форма бизнеса
@@ -172,6 +258,53 @@
     });
     w.appendChild(el("<div>" + h + "</div>"));
     w.appendChild(el('<div class="pt-note">Красная заливка внутри столбца: доля ликвидированных в этой группе.</div>'));
+  });
+
+  // ---------- Единый портрет ИП (внутри общих сегментов, без собственной сегментации)
+  WIDGETS["b10-ip"] = def("Портрет: ИП", "карточки + таблица", 12, function (w, D) {
+    if (!isV2(D) || !D.ip) { w.appendChild(el(needV2Html())); return; }
+    var ip = D.ip, life = D.lifeC.ip, shown = 0, colors = ["#d9dff5", "#9db2f2", "#5f80e6", "#2a52e0"];
+    var mx = ip.grp.length ? ip.grp[0][2] : 0;
+    var rows = ip.grp.map(function (x, i) {
+      shown += x[2];
+      return '<tr><td class="pt-mut">' + (i + 1) + '</td><td><b>' + esc(x[0]) + '</b> ' + esc(x[1]) +
+        '<div class="pt-bar"><i style="width:' + (mx ? 100 * x[2] / mx : 0).toFixed(2) + '%;background:' + COL.A + '"></i></div></td><td class="r">' +
+        fmt(x[2]) + '</td><td class="r pt-mut">' + pc(x[2], ip.clients) + '</td><td class="r">' + liq(x[3], x[2]) + '</td></tr>';
+    }).join("");
+    function remainder(label, n, marker) {
+      return '<tr><td class="pt-mut">' + marker + '</td><td class="pt-mut">' + label + '</td><td class="r">' + fmt(n) +
+        '</td><td class="r pt-mut">' + pc(n, ip.clients) + '</td><td></td></tr>';
+    }
+    rows += remainder("Остальные виды деятельности", ip.clients - shown - ip.old - ip.noOkved, "…");
+    if (ip.old > 0) rows += remainder("Старый код ОКВЭД-1", ip.old, "—");
+    if (ip.noOkved > 0) rows += remainder("ОКВЭД не указан в источнике", ip.noOkved, "—");
+    var ages = ip.bizAge.map(function (x, i) {
+      return '<div class="pt-sb" style="width:' + (ip.clients ? 100 * x[1] / ip.clients : 0).toFixed(2) + '%;background:' + colors[i] +
+        ';color:' + (i > 1 ? '#fff' : '#0d1220') + '" title="' + esc(x[0] + ": " + fmt(x[1]) + " ИП; ликвидировано " + pc(x[2], x[1])) +
+        '"><span>' + esc(x[0] + " " + pc(x[1], ip.clients, 0)) + '</span></div>';
+    }).join("");
+    w.appendChild(el('<p class="pt-sub">Единый портрет ИП по критериям ABCD-анализа · без собственной сегментации</p>'));
+    w.appendChild(el('<div class="pt-tiles"><div class="pt-tile blue"><div class="pt-tl">ИП всего · клиентов</div><div class="pt-tv">' + fmt(ip.clients) + '</div></div>' +
+      '<div class="pt-tile"><div class="pt-tl">Касс</div><div class="pt-tv">' + fmt(ip.kassas) + '</div><div class="pt-ts">' + (ip.clients ? num(ip.kassas / ip.clients) : "—") + ' касс на клиента</div></div>' +
+      '<div class="pt-tile red"><div class="pt-tl">Ликвидировано</div><div class="pt-tv">' + fmt(ip.liq) + '</div><div class="pt-ts">' + pc(ip.liq, ip.clients) + ' от всех ИП</div></div></div>'));
+    w.appendChild(el('<div class="pt-grid2 pt-ip-grid"><div class="pt-card"><h4>Отрасль · топ-10 видов деятельности</h4>' +
+      '<div class="pt-scroll"><table class="pt-table" aria-label="Виды деятельности ИП"><thead><tr><th>#</th><th>Вид деятельности</th><th class="r">Клиентов</th><th class="r">Доля</th><th class="r">Ликвид.</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="pt-note">Доля — от всех ИП. Красная метка — число и доля ликвидированных внутри вида деятельности.</div></div>' +
+      '<div class="pt-ip-side"><div class="pt-card"><h4>Срок жизни клиента</h4><div class="pt-seg-n">' + num(life.months) + ' <small>мес.</small></div><div class="pt-sub">' +
+      esc(U.ymLabel(life.months) + " · " + fmt(life.clients) + " клиентов") + '</div><div class="pt-seg-liq">' + liq(life.liq, life.clients) + '<span class="pt-sub"> ликвидировано</span></div><div class="pt-note">База — все ИП за историю, включая ушедших; плитки выше — только действующие.</div></div>' +
+      '<div class="pt-card"><h4>Регионы · топ-5</h4><ul class="pt-kv">' + ip.region.map(function (x) {
+        return '<li><span>' + esc(x[0]) + '</span><b>' + pc(x[1], ip.clients) + '</b></li>';
+      }).join("") + '</ul><div class="pt-note">Доля от всех ИП.</div></div>' +
+      '<div class="pt-card"><h4>Возраст бизнеса</h4><div class="pt-stackb">' + ages + '</div><div class="pt-note">Доля ликвидированных по группам:<br>' + ip.bizAge.map(function (x) {
+        return esc(x[0]) + ': <span class="pt-liq">' + pc(x[2], x[1]) + '</span>';
+      }).join(" · ") + '</div></div></div></div>'));
+    w.appendChild(el('<div class="pt-card pt-ip-grid pt-ip-tariff">' + t36Html(ip.t36, false, { kassas: "касс ИП", clients: "клиентов ИП" }) + '</div>'));
+    w.appendChild(el('<div class="pt-ip-grid"><div class="pt-pl">Доля ИП внутри общих сегментов A/B/C/D</div><div class="pt-grid4">' + SEGS.map(function (k) {
+      var s = D.seg[k], n = 0;
+      s.form.forEach(function (x) { if (x[0] === "ИП") n = x[1]; });
+      return '<div class="pt-ip-share"><b style="color:' + COL[k] + '">' + k + '</b>' + pc(n, s.clients) + ' · ' + fmt(n) + ' из ' + fmt(s.clients) +
+        '<div class="pt-bar"><i style="width:' + (s.clients ? 100 * n / s.clients : 0).toFixed(2) + '%;background:' + COL[k] + '"></i></div></div>';
+    }).join("") + '</div></div>'));
   });
 
   // ---------- 6. Возраст бизнеса
@@ -220,16 +353,34 @@
     w.appendChild(el('<div class="pt-scroll" style="margin-top:12px"><table class="pt-table"><thead><tr><th>Срок кода</th>' + head + '<th class="r">Все сегменты</th></tr></thead><tbody>' + rows + "</tbody></table></div>"));
   });
 
-  // ---------- 8. Срок жизни по типу продаж
-  WIDGETS["b10-life"] = def("Портрет: срок жизни касс по типу продаж", "карточки", 5, function (w, D) {
-    var nm = { "1C": "1С", "КА": "КА", "Обособки": "Обособки", "Прямые": "Прямые" }, h = '<div class="pt-grid4">';
-    ["1C", "КА", "Обособки", "Прямые"].forEach(function (t) {
-      var x = D.life.filter(function (a) { return a.type === t; })[0]; if (!x) return;
-      var yrs = Math.floor(x.days / 365), mo = Math.round((x.days - yrs * 365) / 30.4375);
-      h += '<div class="pt-card" style="--c:#2a52e0"><div class="pt-seg-top"><span class="pt-seg-k" style="font-size:24px">' + nm[t] + '</span></div><div class="pt-seg-n">' + num(x.months) + ' <small>мес.</small></div><div class="pt-sub">' + yrs + " г. " + mo + " мес. · " + fmt(x.days) + " дн. · " + fmt(x.kassas) + ' касс</div><div class="pt-seg-liq">' + liq(x.liqKassas, x.kassas) + '<span class="pt-sub"> касс у ликвидированных</span></div></div>';
-    });
-    w.appendChild(el(h + "</div>"));
-    w.appendChild(el('<div class="pt-note">Средняя длительность работы действующей кассы (РНМ) в ОФД по «Типу продаж» первого кода. Только действующие кассы.</div>'));
+  // ---------- 8. Срок жизни клиента
+  WIDGETS["b10-life"] = def("Портрет: срок жизни клиента", "карточки", 5, function (w, D) {
+    if (!isV2(D)) { w.appendChild(el(needV2Html())); return; }
+    var termNote = "Срок = от начала первого кода до конца последнего (не позже as-of).";
+    function panel(kind) {
+      var channels = kind === "chan", list = channels ? D.lifeC.chan : SEGS.map(function (k) { return D.lifeC.seg[k]; });
+      var h = '<div class="' + (channels ? "pt-life-ch" : "pt-grid4") + '">';
+      list.forEach(function (x, i) {
+        var k = SEGS[i];
+        var label = channels ? '<div class="pt-life-label">' + esc(x.label) + '</div>' :
+          '<div class="pt-seg-top"><span class="pt-seg-k">' + k + '</span><span class="pt-pill">' + RNG[k] + '</span></div>';
+        h += '<div class="pt-card" style="--c:' + (channels ? COL.A : COL[k]) + '">' + label +
+          '<div class="pt-seg-n">' + num(x.months) + ' <small>мес.</small></div><div class="pt-sub">' +
+          esc(U.ymLabel(x.months) + " · " + fmt(x.clients) + " клиентов") + '</div><div class="pt-seg-liq">' +
+          liq(x.liq, x.clients) + '<span class="pt-sub"> ликвидировано</span></div></div>';
+      });
+      h += '</div>';
+      if (channels) {
+        h += '<div class="pt-note">Канал клиента определяется по последней кассе клиента в выгрузке — так же, как в виджете «Каналы продаж». Суммы по каналам здесь не совпадают с «Каналами продаж»: там считаются только действующие клиенты, здесь — все, включая ушедших.</div>';
+        h += '<div class="pt-note">' + termNote + '</div>';
+      } else {
+        h += '<div class="pt-note">' + termNote + ' В базе все клиенты: действующие, ушедшие и ожидающие продления. Сегмент действующего клиента — по числу его действующих касс сейчас; ушедшего — по числу его касс за всю историю.</div>';
+      }
+      return h;
+    }
+    var box = el("<div></div>");
+    w.appendChild(tabs([["seg", "По сегментам A/B/C/D"], ["chan", "По каналам продаж"]], function (v) { box.innerHTML = panel(v); }));
+    box.innerHTML = panel("seg"); w.appendChild(box);
   });
 
   // ---------- 9. Крупнейшие клиенты
@@ -298,24 +449,41 @@
 
   // ---------- 11. Кого вернуть
   WIDGETS["b10-return"] = def("Портрет: кого можно вернуть (шанс вернуться)", "таблица", 14, function (w, D) {
-    var C = D.cand, rows = C.rows, N = rows.length, cs = { reg: "all", sec: "all", seg: "all", min: 0, key: "p", dir: -1 }, curIdx = [];
-    var KEYS = { kass: 4, ten: 5, since: 6, p: 7 };
-    var HEAD = [["#", null, ""], ["Клиент", "org", ""], ["Регион", "reg", ""], ["Отрасль", "sec", ""], ["Касс", "kass", "r"], ["Был с нами, мес.", "ten", "r"], ["Ушёл, мес. назад", "since", "r"], ["Шанс вернуться", "p", ""]];
-    var COLS = [4, 23, 13, 23, 6, 8, 8, 15];
+    var C = D.cand, rows = C.rows, N = rows.length, curIdx = [], width = 30, windows = [], starts = [];
+    var hasWindowData = rows.some(function (r) { return r[11] != null && r[12] != null; });
+    var hasKass18 = rows.some(function (r) { return r[13] != null; });
+    var cs = { reg: "all", sec: "all", seg: "all", min: 0, window: "all", kassFrom: "", kassTo: "", key: hasWindowData ? "window" : "p", dir: hasWindowData ? 1 : -1 };
+    function kassOf(r) { return r[13] != null ? r[13] : r[4]; }
+    function cacheWindows() {
+      windows = rows.map(function (r, i) { var cw = U.callWindow(r[11], r[12], D.meta.asOf, width); starts[i] = cw ? +cw.start : null; return cw; });
+    }
+    if (hasWindowData) cacheWindows();
+    var KEYS = { ten: 5, p: 7, ended: 11, tariff: 12 };
+    var kassTip = "Максимум одновременно действующих касс клиента в любой момент за 18 месяцев до окончания его последнего кода";
+    var HEAD = [["#", null, ""], ["Клиент", "org", ""], ["Регион", "reg", ""], ["Отрасль", "sec", ""], [hasKass18 ? "Касс за 18 мес. до ухода" : "Касс", "kass", "r"], ["Был с нами, мес.", "ten", "r"], ["Код закончился", "ended", ""], ["Последний тариф", "tariff", ""], ["Окно звонка", "window", ""], ["Шанс вернуться", "p", ""]];
+    var COLS = [3, 17, 10, 13, 8, 7, 9, 7, 16, 10];
     var kpi = el('<div class="pt-kpi"></div>');
     var sRegOpts = C.regs.map(function (r, i) { return [r[1], i]; }).sort(function (a, b) { return a[0].localeCompare(b[0], "ru"); });
     var sSecOpts = C.secs.map(function (r, i) { return [r[0] + " " + r[1], i]; }).sort(function (a, b) { return a[0].localeCompare(b[0], "ru"); });
     var ctr = el('<div class="pt-ctrls"><select data-f="reg"><option value="all">Все регионы</option>' + sRegOpts.map(function (x) { return '<option value="' + x[1] + '">' + esc(x[0]) + "</option>"; }).join("") + '</select><select data-f="sec"><option value="all">Все отрасли</option>' + sSecOpts.map(function (x) { return '<option value="' + x[1] + '">' + esc(x[0]) + "</option>"; }).join("") +
-      '</select><select data-f="seg"><option value="all">Любой сегмент</option><option value="A">Сегмент A (10+ касс)</option><option value="B">Сегмент B (6–9)</option><option value="C">Сегмент C (2–5)</option><option value="D">Сегмент D (1)</option></select><select data-f="min"><option value="0">Шанс вернуться: любой</option><option value="5">не ниже 5%</option><option value="10">не ниже 10%</option><option value="15">не ниже 15%</option><option value="30">не ниже 30%</option></select><button type="button" class="pt-btn">Скачать CSV с контактами</button></div>');
+      '</select><select data-f="seg"><option value="all">Любой сегмент</option><option value="A">Сегмент A (10+ касс)</option><option value="B">Сегмент B (6–9)</option><option value="C">Сегмент C (2–5)</option><option value="D">Сегмент D (1)</option></select><select data-f="min"><option value="0">Шанс вернуться: любой</option><option value="5">не ниже 5%</option><option value="10">не ниже 10%</option><option value="15">не ниже 15%</option><option value="30">не ниже 30%</option></select>' +
+      (hasWindowData ? '<select data-f="window"><option value="all">Окно звонка: любое</option><option value="now">Звонить сейчас</option><option value="30">Ближайшие 30 дней</option><option value="90">Ближайшие 90 дней</option></select>' : '') +
+      ['kassFrom', 'kassTo'].map(function (f) { return '<label data-tip="Число касс клиента за 18 месяцев до окончания его последнего кода (для старого файла — максимум касс за историю)">' + (f === 'kassFrom' ? 'Касс от' : 'до') + ' <input type="number" min="1" step="1" data-f="' + f + '" aria-invalid="false"></label>'; }).join('') +
+      '<button type="button" class="pt-btn" data-csv="return">Скачать CSV с контактами</button></div>');
+    var rangeHint = el('<div class="pt-note" data-role="range-hint" role="status" hidden></div>');
     var scroll = el('<div class="pt-scroll"><table class="pt-table pt-fixed"></table></div>'), table = scroll.firstElementChild, note = el('<div class="pt-note"></div>');
     function filtered() {
-      var out = [];
+      var out = [], range = U.kassRange(cs.kassFrom, cs.kassTo);
+      rangeHint.textContent = range.error; rangeHint.hidden = !range.error;
+      ctr.querySelectorAll('[data-f="kassFrom"], [data-f="kassTo"]').forEach(function (input) { input.setAttribute("aria-invalid", range.error ? "true" : "false"); });
       for (var i = 0; i < N; i++) {
         var r = rows[i];
         if (cs.reg !== "all" && r[1] !== +cs.reg) continue;
         if (cs.sec !== "all" && r[2] !== +cs.sec) continue;
-        if (cs.seg !== "all" && segOf(r[4]) !== cs.seg) continue;
+        if (cs.seg !== "all" && segOf(kassOf(r)) !== cs.seg) continue;
         if (r[7] < cs.min * 10) continue;
+        if (!U.windowMatch(windows[i] || null, cs.window, D.meta.asOf)) continue;
+        if (!U.inKassRange(kassOf(r), range)) continue;
         out.push(i);
       }
       return out;
@@ -324,10 +492,13 @@
       var k = cs.key, d = cs.dir;
       idx.sort(function (a, b) {
         var A = rows[a], B = rows[b];
-        if (k === "org") return d * String(A[0]).localeCompare(String(B[0]), "ru");
-        if (k === "reg") return d * C.regs[A[1]][1].localeCompare(C.regs[B[1]][1], "ru");
-        if (k === "sec") return d * C.secs[A[2]][1].localeCompare(C.secs[B[2]][1], "ru");
-        return d * (A[KEYS[k]] - B[KEYS[k]]) || (B[7] - A[7]);
+        if (k === "org") return d * String(A[0]).localeCompare(String(B[0]), "ru") || B[7] - A[7];
+        if (k === "reg") return d * C.regs[A[1]][1].localeCompare(C.regs[B[1]][1], "ru") || B[7] - A[7];
+        if (k === "sec") return d * C.secs[A[2]][1].localeCompare(C.secs[B[2]][1], "ru") || B[7] - A[7];
+        var va = k === "window" ? starts[a] : k === "kass" ? kassOf(A) : A[KEYS[k]];
+        var vb = k === "window" ? starts[b] : k === "kass" ? kassOf(B) : B[KEYS[k]];
+        if (va == null || vb == null) return va == null && vb == null ? B[7] - A[7] : va == null ? 1 : -1;
+        return d * (va < vb ? -1 : va > vb ? 1 : 0) || B[7] - A[7];
       });
       return idx;
     }
@@ -342,33 +513,48 @@
         '<div class="pt-tile green"><div class="pt-tl">Живы: можно вернуть</div><div class="pt-tv">' + fmt(st.alive) + '</div><div class="pt-ts">' + pc(st.alive, st.churned) + " отвалившихся</div></div>" +
         '<div class="pt-tile blue"><div class="pt-tl">В текущей выборке</div><div class="pt-tv">' + fmt(idx.length) + '</div><div class="pt-ts">шанс 30% и выше: ' + fmt(t3) + "<br>шанс 15–30%: " + fmt(t2) + "</div></div>";
       var h = "<colgroup>" + COLS.map(function (x) { return '<col style="width:' + x + '%">'; }).join("") + "</colgroup><thead><tr>" + HEAD.map(function (x) {
-        return x[1] ? '<th class="pt-sortable ' + x[2] + (cs.key === x[1] ? " sorted" : "") + '" data-k="' + x[1] + '">' + x[0] + (cs.key === x[1] ? (cs.dir < 0 ? " ▼" : " ▲") : "") + "</th>" : "<th>" + x[0] + "</th>";
+        return x[1] ? '<th class="pt-sortable ' + x[2] + (cs.key === x[1] ? " sorted" : "") + '" data-k="' + x[1] + '"' + (x[1] === "kass" && hasKass18 ? ' data-tip="' + esc(kassTip) + '"' : '') + '>' + x[0] + (cs.key === x[1] ? (cs.dir < 0 ? " ▼" : " ▲") : "") + "</th>" : "<th>" + x[0] + "</th>";
       }).join("") + "</tr></thead><tbody>";
       idx.slice(0, 50).forEach(function (i, n) {
-        var r = rows[i], pct = r[7] / 10;
-        h += '<tr><td class="pt-mut">' + (n + 1) + "</td><td><b>" + esc(r[0]) + '</b><div class="pt-sub2">' + (r[3] ? "ЮЛ" : "ИП") + " · ИНН " + esc(r[8]) + "</div></td><td>" + esc(C.regs[r[1]][1]) + "</td><td>" + esc(C.secs[r[2]][1]) + '</td><td class="r"><b>' + fmt(r[4]) + '</b></td><td class="r">' + fmt(r[5]) + '</td><td class="r">' + fmt(r[6]) +
-          '</td><td><div class="pt-sc ' + tier(r[7]) + '" data-tip="' + tip("<b>" + esc(r[0]) + "</b>", "Шанс вернуться за 12 мес.: " + num(pct) + "%", "Ушёл " + r[6] + " мес. назад", "Был с нами " + r[5] + " мес.", "Макс. касс: " + r[4]) + '"><i style="width:' + Math.min(100, pct).toFixed(0) + '%"></i><b>' + num(pct) + "%</b></div></td></tr>";
+        var r = rows[i], pct = r[7] / 10, cw = windows[i] || null;
+        var kassInfo = r[13] != null ? "Касс за 18 мес. до ухода: " + r[13] + "<br>Всего касс за историю: " + r[4] : "Касс за историю: " + r[4];
+        h += '<tr data-now="' + !!(cw && cw.now) + '"><td class="pt-mut">' + (n + 1) + "</td><td><b>" + esc(r[0]) + '</b><div class="pt-sub2">' + (r[3] ? "ЮЛ" : "ИП") + " · ИНН " + esc(r[8]) + "</div></td><td>" + esc(C.regs[r[1]][1]) + "</td><td>" + esc(C.secs[r[2]][1]) + '</td><td class="r"><b>' + fmt(kassOf(r)) + '</b></td><td class="r">' + fmt(r[5]) + '</td><td>' + (r[11] != null ? esc(U.human(U.parseISO(r[11]))) : "—") +
+          '</td><td>' + (r[12] != null ? esc(r[12]) + " мес." : "—") + '</td><td>' + (cw ? '<b' + (cw.now ? ' class="pt-grn"' : '') + '>' + esc(U.windowLabel(cw)) + '</b><div class="pt-sub2">' + esc(U.windowDates(cw)) + '</div>' : "—") +
+          '</td><td><div class="pt-sc ' + tier(r[7]) + '" data-tip="' + tip("<b>" + esc(r[0]) + "</b>", "Шанс вернуться за 12 мес.: " + num(pct) + "%", "Ушёл " + r[6] + " мес. назад", "Был с нами " + r[5] + " мес.", kassInfo) + '"><i style="width:' + Math.min(100, pct).toFixed(0) + '%"></i><b>' + num(pct) + "%</b></div></td></tr>";
       });
       table.innerHTML = h + "</tbody>";
-      note.textContent = (idx.length > 50 ? "Показаны первые 50 из " + fmt(idx.length) + ". " : "Показаны все " + fmt(idx.length) + ". ") + "Полный список с телефонами и email: кнопка «Скачать CSV с контактами».";
+      note.textContent = (idx.length > 50 ? "Показаны первые 50 из " + fmt(idx.length) + ". " : "Показаны все " + fmt(idx.length) + ". ") + "Полный список с телефонами и email: кнопка «Скачать CSV с контактами»." + (hasWindowData ? " Окно звонка — от (дата продления − N дней) до даты продления по последнему коду и сроку последнего тарифа; дата продления — конец последнего кода плюс целое число сроков тарифа не раньше as-of. Для тарифа 1 мес. при N ≥ 30 окно открыто всегда («Звонить сейчас»)." : "") + (hasKass18 ? " Касс — максимум одновременно действующих касс клиента за 18 месяцев до окончания его последнего кода." : "");
     }
     table.addEventListener("click", function (e) {
       var th = e.target.closest("th.pt-sortable"); if (!th) return;
-      var k = th.dataset.k; if (cs.key === k) cs.dir = -cs.dir; else { cs.key = k; cs.dir = (k === "org" || k === "reg" || k === "sec") ? 1 : -1; }
+      var k = th.dataset.k; if (cs.key === k) cs.dir = -cs.dir; else { cs.key = k; cs.dir = ["org", "reg", "sec", "ended", "tariff", "window"].indexOf(k) >= 0 ? 1 : -1; }
       draw();
     });
     ctr.addEventListener("change", function (e) { var f = e.target.dataset.f; if (!f) return; cs[f] = f === "min" ? (+e.target.value || 0) : e.target.value; draw(); });
+    ctr.addEventListener("input", function (e) { var f = e.target.dataset.f; if (f !== "kassFrom" && f !== "kassTo") return; cs[f] = e.target.value; draw(); });
     ctr.querySelector("button").addEventListener("click", function () {
-      var head = ["ИНН", "Клиент", "Телефон", "Email", "Регион", "Отрасль (ОКВЭД)", "Форма", "Макс. касс", "Был с нами, мес.", "Ушёл, мес. назад", "Шанс вернуться за 12 мес., %"];
+      var head = ["ИНН", "Клиент", "Телефон", "Email", "Регион", "Отрасль (ОКВЭД)", "Форма", "Макс. касс", "Был с нами, мес.", "Ушёл, мес. назад", "Шанс вернуться за 12 мес., %", "Код закончился", "Последний тариф, мес.", "Окно с", "Окно по", "Касс за 18 мес. до ухода"];
       var lines = [head.map(q).join(";")];
       curIdx.forEach(function (i) {
-        var r = rows[i];
-        lines.push([q(innCell(r[8])), q(r[0]), q(fmtPhone(r[9])), q(r[10] || ""), q(C.regs[r[1]][1]), q(C.secs[r[2]][1]), r[3] ? "ЮЛ" : "ИП", r[4], r[5], r[6], num(r[7] / 10)].join(";"));
+        var r = rows[i], cw = windows[i] || null;
+        lines.push([q(innCell(r[8])), q(r[0]), q(fmtPhone(r[9])), q(r[10] || ""), q(C.regs[r[1]][1]), q(C.secs[r[2]][1]), r[3] ? "ЮЛ" : "ИП", r[4], r[5], r[6], num(r[7] / 10),
+          q(r[11] != null ? U.human(U.parseISO(r[11])) : ""), q(r[12] != null ? r[12] : ""), q(cw ? U.human(cw.start) : ""), q(cw ? U.human(cw.next) : ""), q(r[13] != null ? r[13] : "")].join(";"));
       });
       csvDownload("otvalivshiesya-shans-vernutsya.csv", lines.join("\r\n"));
     });
     w.appendChild(el('<div class="pt-note" style="margin:0 0 10px">Клиенты, которые от нас ушли (31-й день после окончания без продления) и по ЕГРЮЛ/ЕГРИП ещё существуют. «Шанс вернуться» — вероятность новой покупки кода за 12 месяцев (как посчитан: виджет «Портрет: как посчитан шанс вернуться»).</div>'));
-    w.appendChild(kpi); w.appendChild(ctr); w.appendChild(scroll); w.appendChild(note); draw();
+    w.appendChild(kpi);
+    if (hasWindowData) {
+      var winControl = el('<label class="pt-win">Начинать звонить за <input type="number" min="0" step="1" value="30" data-f="width" class="pt-win-input"> дней до даты продления</label>');
+      function changeWidth(e) {
+        var value = e.target.value, next = Number(value);
+        if (value === "" || !Number.isInteger(next) || next < 0 || next === width) return;
+        width = next; cacheWindows(); draw();
+      }
+      winControl.addEventListener("input", changeWidth); winControl.addEventListener("change", changeWidth);
+      w.appendChild(winControl);
+    }
+    w.appendChild(ctr); w.appendChild(rangeHint); w.appendChild(scroll); w.appendChild(note); draw();
   });
 
   // ---------- 12. Как посчитан шанс
@@ -417,7 +603,7 @@
       handleFile(f).then(function (d) {
         STATE.data = d; STATE.fileName = f.name;
         if (loader) loader.classList.remove("active");
-        if (label) { label.textContent = "Портрет ✓"; label.parentNode.title = f.name + " · данные на " + d.meta.asOf + " · клиентов " + fmt(d.tot.clients); }
+        if (label) { label.textContent = "Портрет ✓"; label.parentNode.title = fileTitle(f.name, d); }
         broadcast();
       }).catch(function (err) {
         console.error(err);
@@ -429,5 +615,5 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", bindInput); else bindInput();
 
-  root.OFDPortrait = { state: STATE, handleFile: handleFile, load: function (d) { STATE.data = validate(d); broadcast(); } };
+  root.OFDPortrait = { state: STATE, handleFile: handleFile, fileTitle: fileTitle, load: function (d) { STATE.data = validate(d); broadcast(); } };
 })(typeof window !== "undefined" ? window : globalThis);

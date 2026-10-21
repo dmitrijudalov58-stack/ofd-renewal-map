@@ -10,6 +10,8 @@
  * В файле есть телефоны и email отвалившихся (для CSV продаж): файл личный, на сайт не кладём,
  * в BI он загружается кнопкой «Портрет» в шапке.
  * Формулы клиента/кассы/оттока берутся из js/metrics.js без изменений.
+ * Схема 2: t36, lifeC, ip, act и cand[11..13]; --active-contacts включает контакты act.
+ * Только для тестов: DADATA_RAW_FILE и PORTRAIT_SMOKE_STOP=before-model.
  */
 "use strict";
 const fs = require("fs"), os = require("os"), path = require("path"), cp = require("child_process");
@@ -17,6 +19,7 @@ const ROOT = path.resolve(__dirname, "..");
 const XLSX = require(path.join(ROOT, "node_modules/xlsx"));
 const Parser = require(path.join(ROOT, "js/parser.js")), M = require(path.join(ROOT, "js/metrics.js"));
 const P = require("./dadata-paths.js");
+const X = require("./portrait-extra.js");
 const DAY = 86400000, MO = 30.4375 * DAY, YEAR_MS = 31557600000;
 
 function arg(name) { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; }
@@ -25,7 +28,9 @@ function fail(msg) { console.error("ОШИБКА: " + msg); process.exit(1); }
 const xlsxPath = arg("--xlsx") || (fs.existsSync(P.SOURCE_POINTER) ? fs.readFileSync(P.SOURCE_POINTER, "utf8").trim() : null);
 if (!xlsxPath || !fs.existsSync(xlsxPath)) fail("не найдена выгрузка ОФД (--xlsx или " + P.SOURCE_POINTER + ")");
 const outPath = arg("--out") || path.join(os.homedir(), "Downloads", "portrait-data.json");
-const rawPath = path.join(ROOT, "dadata-raw.ndjson");
+const rawPath = process.env.DADATA_RAW_FILE || path.join(ROOT, "dadata-raw.ndjson");
+const withContacts = process.argv.includes("--active-contacts");
+console.log("контакты действующих: " + (withContacts ? "включены" : "выключены"));
 if (!fs.existsSync(P.CACHE_FILE)) fail("нет DaData-кэша " + P.CACHE_FILE);
 if (!fs.existsSync(rawPath)) fail("нет " + rawPath);
 
@@ -90,7 +95,7 @@ async function loadFns() {
       let o; try { o = JSON.parse(l); } catch (e) { return; }
       const s = o.response && o.response.suggestions && o.response.suggestions[0]; if (!s) return;
       const d = s.data, a = (d.address && d.address.data) || {};
-      raw.set(inn, { type: d.type, st: d.state && d.state.status, reg: d.state && d.state.registration_date, rc: a.region_kladr_id ? String(a.region_kladr_id).slice(0, 2) : null });
+      raw.set(inn, { type: d.type, st: d.state && d.state.status, reg: d.state && d.state.registration_date, kpp: d.kpp || "", rc: a.region_kladr_id ? String(a.region_kladr_id).slice(0, 2) : null });
     });
     rl.on("close", resolve);
   });
@@ -115,7 +120,7 @@ async function loadFns() {
   const formOf = (inn) => { const r = raw.get(inn); return r ? (r.type === "INDIVIDUAL" ? "ИП" : "ЮЛ") : null; };
   const topT = (m, n) => Object.entries(m).sort((x, y) => y[1][0] - x[1][0]).slice(0, n).map(([k, v]) => [k, v[0], v[1]]);
 
-  const out = { meta: { asOf: iso(asOf), generatedAt: new Date().toISOString(), exportFile: path.basename(xlsxPath), fnsMonth: fns.y + "-" + String(fns.m).padStart(2, "0"), fnsAlignedTo: iso(fnsEnd) } };
+  const out = { meta: { schema: 2, asOf: iso(asOf), generatedAt: new Date().toISOString(), exportFile: path.basename(xlsxPath), fnsMonth: fns.y + "-" + String(fns.m).padStart(2, "0"), fnsAlignedTo: iso(fnsEnd) } };
   out.tot = { clients: act.length, kassas: act.reduce((s, a) => s + a.n, 0) };
   out.tot.liq = act.filter((a) => alive(a.inn) === 1).length; out.tot.risk = act.filter((a) => alive(a.inn) === 2).length; out.tot.nodata = act.filter((a) => alive(a.inn) === 3).length;
   out.tot.liqKassas = act.filter((a) => alive(a.inn) === 1).reduce((s, a) => s + a.n, 0);
@@ -170,6 +175,17 @@ async function loadFns() {
   a831.forEach((n8, inn) => { const r = R0(rcOf(inn)), sg = seg(n8); r.aug[sg][0]++; r.aug[sg][1] += n8; });
   out.reg = reg;
 
+  // ---------- дополнительные агрегаты схемы 2 (после объявления reg и rcOf)
+  const ctx = { seg, alive, formOf, grpOf, clsOf, bizB, okved, rcOf, asOf,
+    regName: (rc) => (reg[rc] ? reg[rc].name : "Не определён"),
+    orgOf: (inn, c) => (cache[inn] && cache[inn].org) || c.kassas[0].org || "—",
+    kppOf: (inn) => (raw.get(inn) && raw.get(inn).kpp) || "",
+    bizYears: (inn) => { const r = raw.get(inn); return r && r.reg ? (asOf - new Date(r.reg)) / YEAR_MS : null; } };
+  out.t36 = X.t36(act, ctx);
+  out.lifeC = X.lifeClients(model, asOf, ctx);
+  out.ip = X.ipAgg(act, ctx);
+  out.act = X.activeList(act, ctx, withContacts);
+
   // ---------- панель прошлых оттоков для модели и текущие кандидаты
   const mo = (s) => { const m = /(\d+)/.exec(s || ""); return m ? +m[1] : null; };
   const pc = {}, cc = {};
@@ -216,10 +232,16 @@ async function loadFns() {
   cl.forEach((o) => { const f = feat(o, asOf); if (!f) return; const v = { S: "now", inn: o.inn, y: 0, ...f }; cur.push({ ...v, ph: f._ph, em: f._em }); });
   fs.writeFileSync(path.join(work, "current.json"), JSON.stringify({ cols, cur }));
   console.log("панель:", panelRows, "наблюдений · текущих живых отвалившихся:", cur.length, "· обучение…");
-  const py = cp.spawnSync("python3", [path.join(__dirname, "portrait-train.py"), work], { stdio: ["ignore", "inherit", "inherit"], maxBuffer: 1 << 28 });
-  if (py.status !== 0) fail("python3 portrait-train.py завершился с ошибкой (нужны pandas, numpy, scikit-learn: pip install)");
-  const P1 = new Map(); fs.readFileSync(path.join(work, "current_p.csv"), "utf8").trim().split("\n").slice(1).forEach((l) => { const [inn, p] = l.split(","); P1.set(inn, +p); });
-  out.model = JSON.parse(fs.readFileSync(path.join(work, "model.json"), "utf8"));
+  const P1 = new Map();
+  if (process.env.PORTRAIT_SMOKE_STOP === "before-model") {
+    cur.forEach((z) => P1.set(z.inn, 0.5));
+    out.model = {};
+  } else {
+    const py = cp.spawnSync("python3", [path.join(__dirname, "portrait-train.py"), work], { stdio: ["ignore", "inherit", "inherit"], maxBuffer: 1 << 28 });
+    if (py.status !== 0) fail("python3 portrait-train.py завершился с ошибкой (нужны pandas, numpy, scikit-learn: pip install)");
+    fs.readFileSync(path.join(work, "current_p.csv"), "utf8").trim().split("\n").slice(1).forEach((l) => { const [inn, p] = l.split(","); P1.set(inn, +p); });
+    out.model = JSON.parse(fs.readFileSync(path.join(work, "model.json"), "utf8"));
+  }
   const contact = new Map(cur.map((z) => [z.inn, z]));
 
   // ---------- отвалившиеся: кандидаты со скором и контактами
@@ -235,11 +257,15 @@ async function loadFns() {
     const ten = Math.round(days / 30.4375), since = Math.max(0, Math.round((asOf - a.c.currentEnd) / DAY / 30.4375));
     const i = cache[a.inn] || {}, z = contact.get(a.inn), p = P1.get(a.inn);
     if (p === undefined) return; // нет признаков для модели (редкий случай): в список не берём
-    rowsC.push([i.org || a.c.kassas[0].org || "—", regIdx[rc], secIdx[cls], formOf(a.inn) === "ИП" ? 0 : 1, a.n, ten, since, Math.round(p * 1000), a.inn, (z && z.ph) || "", (z && z.em) || ""]);
+    rowsC.push([i.org || a.c.kassas[0].org || "—", regIdx[rc], secIdx[cls], formOf(a.inn) === "ИП" ? 0 : 1, a.n, ten, since, Math.round(p * 1000), a.inn, (z && z.ph) || "", (z && z.em) || "", ...X.candExtra(a.c)]);
   });
   out.cand = { secs, regs, rows: rowsC, stats: { churned: chu.length, alive: nAlive, liq: nLiq, proc: nProc, nodata: nNo } };
   out.reg = reg;
   fs.writeFileSync(outPath, JSON.stringify(out));
   fs.rmSync(work, { recursive: true, force: true });
   console.log("готово:", outPath, Math.round(fs.statSync(outPath).size / 1048576 * 10) / 10, "МБ ·", Math.round((Date.now() - t0) / 1000), "с · кандидатов", rowsC.length);
+  const actRows = out.act.rows, pct = (i) => (actRows.length ? actRows.filter((r) => r[i]).length / actRows.length * 100 : 0).toFixed(1) + "%";
+  console.log("act:", actRows.length, "· с телефоном:", pct(10), "· с email:", pct(11), "· с КПП:", pct(2));
+  console.log("кандидаты без даты окончания:", rowsC.filter((r) => r[11] == null).length, "· без тарифа:", rowsC.filter((r) => r[12] == null).length, "· без kass18:", rowsC.filter((r) => r[13] == null).length);
+  if (fs.statSync(outPath).size > 25 * 1048576) console.log("ПРЕДУПРЕЖДЕНИЕ: файл больше 25 МБ — рассмотреть отдельный файл клиентов");
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -147,8 +147,11 @@ table.wtable tbody tr:hover { background: var(--brand-soft); }
 .pt-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); display: inline-block; margin-right: 8px; }
 
 .pt-grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.pt-life-ch { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.pt-life-label { font-size: 19px; line-height: 1.25; font-weight: 800; color: var(--c, var(--ink)); min-height: 48px; }
 .pt-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 1100px) { .pt-grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pt-grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 1100px) { .pt-life-ch { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .pt-card { background: var(--fill); border: 1px solid var(--line); border-radius: var(--r-md); padding: 14px 16px; min-width: 0; }
 .pt-card h4 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; }
 .pt-card h4 small { margin-left: 8px; font-weight: 500; color: var(--muted); font-size: 12px; }
@@ -162,6 +165,19 @@ table.wtable tbody tr:hover { background: var(--brand-soft); }
 .pt-kv li { display: flex; justify-content: space-between; gap: 10px; padding: 3px 0; font-size: 12.5px; }
 .pt-kv li span { min-width: 0; overflow-wrap: anywhere; }
 .pt-kvrow { font-size: 13px; }
+.pt-t36 { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); }
+.pt-t36-title { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+.pt-t36-metric { margin-top: 12px; }
+.pt-t36-label { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.pt-t36-value { font-size: 23px; font-weight: 750; letter-spacing: -.025em; margin-right: 6px; color: var(--ink); }
+.pt-t36-metric .pt-sub2 { display: block; }
+.pt-t36-metric .pt-grn { white-space: normal; margin-top: 5px; }
+.pt-ip-grid { margin-top: 14px; align-items: start; }
+.pt-ip-side { display: grid; gap: 14px; min-width: 0; }
+.pt-ip-tariff .pt-t36 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; border: 0; padding: 0; margin: 0; }
+.pt-ip-tariff .pt-t36-title, .pt-ip-share .pt-bar { grid-column: 1 / -1; }
+.pt-ip-share { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; font-size: 12px; }
+@media (max-width: 1100px) { .pt-ip-tariff .pt-t36 { grid-template-columns: 1fr; } }
 .pt-redline { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
 
 .pt-hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); gap: 20px; align-items: center; }
@@ -183,7 +199,11 @@ table.wtable tbody tr:hover { background: var(--brand-soft); }
 .pt-tabs button { border: 0; background: transparent; padding: 6px 14px; border-radius: 999px; font: inherit; font-size: 12.5px; font-weight: 650; color: var(--muted); cursor: pointer; }
 .pt-tabs button.on { background: var(--card-bg); color: var(--brand); box-shadow: 0 1px 3px rgba(30,45,110,.18); }
 .pt-ctrls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.pt-win { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.pt-win-input { font: inherit; color: var(--ink); background: var(--glass-hi); border: 1px solid var(--line); padding: 7px 12px; border-radius: 999px; width: 88px; }
 .pt-ctrls select { font: inherit; font-size: 12.5px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--glass-hi); color: var(--ink); max-width: 320px; }
+.pt-ctrls label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+.pt-ctrls input[type="number"] { font: inherit; font-size: 12.5px; color: var(--ink); background: var(--glass-hi); border: 1px solid var(--line); padding: 7px 12px; border-radius: 999px; width: 76px; }
 .pt-btn { border: 0; background: var(--brand); color: #fff; padding: 8px 15px; border-radius: 999px; font: inherit; font-size: 12.5px; font-weight: 650; cursor: pointer; box-shadow: 0 6px 16px -6px rgba(42,82,224,.6); }
 .pt-btn:hover { filter: brightness(1.08); }
 
