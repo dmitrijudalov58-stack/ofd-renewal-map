@@ -743,7 +743,7 @@
       '<div class="widget" data-widget-id="' + id + '">' +
       '<div class="widget-head"><span class="grip">⋮⋮</span><h3>' + title + '</h3>' +
       '<span class="wchip">' + type + '</span><span class="' + scopeClass + '">' + scope + '</span>' +
-      '<button class="refresh-widget-btn" aria-label="Обновить" title="Обновить борд — если данные выглядят не так или борд завис после смены фильтра">⟳</button>' +
+      '<button class="refresh-widget-btn" aria-label="Обновить" title="Обновить борд — если данные выглядят не так или борд завис после смены фильтра. Заодно возвращает высоту по содержимому">⟳</button>' +
       '<button class="remove-btn" aria-label="Убрать виджет">×</button></div>' +
       '<div class="widget-body"></div>' +
       (footHTML ? '<div class="widget-foot">' + footHTML + '</div>' : '') +

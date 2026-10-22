@@ -152,6 +152,11 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
 .lib-item:hover { background: var(--card-bg); border-left-color: var(--brand); }
 .lib-item:active { cursor: grabbing; opacity: .6; }
 .lib-item .grip { color: var(--muted); font-size: 11px; }
+/* Ручка раздела целиком (заголовок группы): тащится на холст, все борды раздела встают друг
+   под другом (js/dnd.js, addGroup). Стили самостоятельные -- клон при перетаскивании живёт
+   в <body>, вне details.board-group, селекторы "details summary .code" на него не действуют. */
+.lib-item.lib-group { flex: 1; min-width: 0; padding: 4px 6px; border-left: none; font-size: 13px; font-weight: 700; letter-spacing: .01em; }
+.lib-item.lib-group .code { font-family: var(--mono); font-size: 10.5px; color: var(--brand); font-weight: 700; }
 .lib-item .lchip {
   margin-left: auto; font-family: var(--mono); font-size: 9px; color: var(--muted);
   border: 1px solid var(--line); border-radius: 999px; padding: 1px 6px; white-space: nowrap;
@@ -230,10 +235,15 @@ details.board-group summary .code { font-family: var(--mono); font-size: 10.5px;
   background: var(--card-bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow);
   display: flex; flex-direction: column; overflow: hidden;
-  /* min-height:100%, НЕ height:100% -- с height:100% resizeToContent() у GridStack всегда
-     видит itemH===wantedH (ребёнок ровно с контейнер) и никогда не растит карточку. */
-  min-height: 100%;
+  /* Высота -- естественная (по содержимому), БЕЗ min-height:100% и height:100%. Раньше тут стоял
+     min-height:100%: GridStack.resizeToContent() считал его "нужной" высотой, и карточка только
+     росла и не сжималась обратно (баг "борд оттягивается вниз", Дима, 2026-10-22). Подгонку
+     высоты карточки под контент делает ResizeObserver в js/dnd.js. */
 }
+/* Ручной ресайз за уголок (js/dnd.js, MANUAL_CLASS): карточка заполняет ячейку целиком, а то, что
+   не влезло, скроллится внутри тела, а не обрезается. */
+.grid-stack-item.gs-manual .widget { height: 100%; }
+.grid-stack-item.gs-manual .widget-body { min-height: 0; overflow: auto; }
 /* GridStack по умолчанию ставит overflow-y:auto на .grid-stack-item-content -- лишний
    третий слой скролла поверх уже существующих .table-scroll/.expand-scroll. Снимаем его,
    внутренние капы (ниже) остаются единственной точкой скролла, как и до миграции. */
@@ -489,9 +499,13 @@ table.wtable tbody tr:hover { background: var(--paper); }
    Цепочка: .widget (flex-колонка) -> .widget-body (flex:1) -> .ch-wrap -> .ch-tablebox. */
 .widget-body:has(> .ch-wrap) { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .ch-wrap { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.ch-tablebox { flex: 1; min-height: 250px; overflow: auto; }
-.ch-tablebox { position: relative; }
-.ch-tablebox .table-scroll { max-height: none; position: absolute; inset: 0; overflow: auto; }
+.ch-tablebox { flex: 1; min-height: 250px; overflow: auto; position: relative; }
+/* Авто-высота карточки (по умолчанию, js/dnd.js): таблица в потоке и растёт с числом строк до потолка,
+   выше -- скролл внутри. Абсолютное заполнение (inset:0) не даёт контенту высоты, и карточка
+   схлопывалась бы до min-height:250px (регресс после отказа от .widget{min-height:100%}, 2026-10-22). */
+.ch-tablebox .table-scroll { max-height: 560px; overflow: auto; }
+/* Ручной режим (gs-manual): таблица, как и раньше, занимает всю высоту растянутой руками карточки. */
+.grid-stack-item.gs-manual .ch-tablebox .table-scroll { max-height: none; position: absolute; inset: 0; }
 /* ячейки данных не переносятся: дельты («−2,23 п.п.») и плашки в две строки делали строку вдвое
    выше, и в карточке умещалось 3 строки вместо 6. Не влезло по ширине -- горизонтальный скролл. */
 .ch-table td { white-space: nowrap; }

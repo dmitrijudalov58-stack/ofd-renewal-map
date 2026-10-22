@@ -13,6 +13,8 @@
   var canvas = document.getElementById("canvas");
   var emptyState = document.getElementById("emptyState");
   var placed = []; // [{instanceId, widgetId}] -- порядок не важен, просто реестр текущих карточек
+  var MANUAL_CLASS = "gs-manual"; // карточка, высоту которой задал руками (ресайз за уголок)
+  var FULL_WIDTH = 12; // колонок на всю ширину холста (column: 12 ниже)
 
   var grid = GridStack.init({
     column: 12, cellHeight: 60, margin: 8, float: false, animate: true,
@@ -40,6 +42,52 @@
 
   function toggleEmpty() {
     emptyState.style.display = placed.length === 0 ? "flex" : "none";
+  }
+
+  // ---------- высота карточки = высота содержимого (решение Димы, 2026-10-22) ----------
+  // БАГ (Дима, 2026-10-22): клик по борду растил КАРТОЧКУ, а не полезную площадь, и назад она
+  // не сжималась. Причина: у .widget был min-height:100%, а GridStack.resizeToContent() берёт
+  // высоту виджета как "нужную" -- она не могла быть меньше текущей высоты карточки, поэтому
+  // карточка только росла (раскрыл строку, закрыл -- пустота внизу остаётся навсегда), а
+  // округление вверх до целой ячейки добавляло ещё 60-90px. Теперь .widget имеет естественную
+  // высоту (min-height убран), а подгонку делает ResizeObserver: он ловит ЛЮБОЕ изменение
+  // содержимого (клик, фильтр, смена периода, подгрузка шрифта, перенос строк при смене
+  // ширины), а не только клик. Ручной ресайз за уголок ставит MANUAL_CLASS -- высоту держит
+  // рука, авто-подгонка для этой карточки выключена (кнопка "⟳" возвращает авто-высоту).
+  var fitQueue = new Set();
+  var isFitScheduled = false;
+
+  function runFit() {
+    isFitScheduled = false;
+    var items = Array.from(fitQueue);
+    fitQueue.clear();
+    items.forEach(function (itemEl) {
+      if (itemEl.isConnected && !itemEl.classList.contains(MANUAL_CLASS)) grid.resizeToContent(itemEl);
+    });
+  }
+
+  // Склейка в один кадр: за один клик ResizeObserver может сработать несколько раз.
+  function scheduleFit(itemEl) {
+    fitQueue.add(itemEl);
+    if (isFitScheduled) return;
+    isFitScheduled = true;
+    // rAF нет в окружениях без отрисовки (jsdom в тестах) -- там подгонка всё равно ничего не меряет
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(runFit);
+    else setTimeout(runFit, 0);
+  }
+
+  var fitObserver = typeof ResizeObserver === "function"
+    ? new ResizeObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var itemEl = entry.target.closest(".grid-stack-item");
+        if (itemEl) scheduleFit(itemEl);
+      });
+    })
+    : null;
+
+  function watchFit(itemEl, widgetNode) {
+    if (fitObserver) fitObserver.observe(widgetNode); // первое срабатывание при observe() даёт стартовую подгонку
+    else scheduleFit(itemEl);
   }
 
   // Один виджет с плохими данными/крайним случаем не должен рушить остальные. Раньше
@@ -121,6 +169,7 @@
       var widgetId = widgetNode.dataset.widgetId;
       var def = widgetId ? root.OFDWidgets.WIDGETS[widgetId] : null;
       if (def && typeof def.onRemove === "function") def.onRemove(instanceId);
+      if (fitObserver) fitObserver.unobserve(widgetNode);
       grid.removeWidget(itemEl);
       placed = placed.filter(function (p) { return p.instanceId !== instanceId; });
       toggleEmpty();
@@ -163,10 +212,15 @@
     var btn = widgetNode.querySelector(".refresh-widget-btn");
     btn.addEventListener("click", function () {
       renderWidgetBody(widgetNode, widgetId);
+      // "⟳" заодно возвращает карточке авто-высоту по содержимому (после ручного ресайза).
+      var itemEl = widgetNode.closest(".grid-stack-item");
+      if (!itemEl) return;
+      itemEl.classList.remove(MANUAL_CLASS);
+      scheduleFit(itemEl);
     });
   }
 
-  function addWidget(widgetId, x, y, w, h, customState) {
+  function addWidget(widgetId, x, y, w, h, customState, isManual) {
     if (!root.OFDState || !root.OFDState.model) return;
     var def = root.OFDWidgets.WIDGETS[widgetId];
     if (!def) return;
@@ -188,10 +242,38 @@
     if (y != null) opts.y = y;
     var itemEl = grid.addWidget(gridItem, opts);
     itemEl.dataset.instanceId = instanceId;
+    if (isManual) itemEl.classList.add(MANUAL_CLASS);
     wireRemove(widgetNode);
     wireRefresh(widgetNode, widgetId);
+    watchFit(itemEl, widgetNode);
     placed.push({ instanceId: instanceId, widgetId: widgetId });
     toggleEmpty();
+  }
+
+  // Целый раздел библиотеки одним перетаскиванием (Дима, 2026-10-22): все борды раздела в том
+  // порядке, в каком они идут в библиотеке, друг под другом на всю ширину холста. Стартовая
+  // высота -- плейсхолдер по типу виджета, сразу после добавления её заменяет авто-высота
+  // (watchFit), нижние карточки GridStack сам сдвигает по мере роста верхних.
+  function groupWidgetIds(groupId) {
+    var groupEl = Array.from(document.querySelectorAll("details.board-group")).find(function (d) {
+      return d.dataset.group === groupId;
+    });
+    if (!groupEl) return [];
+    return Array.from(groupEl.querySelectorAll(".lib-item[data-widget]"))
+      // data-skip-group: шаблоны (напр. "Новый канал" в B5) создают новую сущность, в отчёт раздела не входят
+      .filter(function (item) { return !item.hasAttribute("data-skip-group"); })
+      .map(function (item) { return item.dataset.widget; });
+  }
+
+  function addGroup(groupId, startY) {
+    var y = startY || 0;
+    groupWidgetIds(groupId).forEach(function (widgetId) {
+      var def = root.OFDWidgets.WIDGETS[widgetId];
+      if (!def) return;
+      var h = defaultSizeFor(def).h;
+      addWidget(widgetId, 0, y, FULL_WIDTH, h);
+      y += h;
+    });
   }
 
   // Смена периода/as-of -- подменяем ТОЛЬКО .widget-body (не весь .grid-stack-item-content,
@@ -212,29 +294,26 @@
     });
   }
 
-  // Вместо точечных resizeToContent-вызовов в каждом из 8+ виджетов с раскрытием/
-  // переключателями вида/% по отдельности -- один делегированный обработчик кликов на весь
-  // холст: любой клик внутри карточки может поменять высоту контента (раскрытие строки,
-  // тумблер, кнопка "обновить график") -- пересчитываем без разбора, откуда именно клик.
-  // resizeToContent -- дешёвая операция (getBoundingClientRect), лишние вызовы не создают
-  // проблем. Debounce 50мс -- не пересчитывать на каждый клик из быстрой серии (например
-  // сортировка таблицы по нескольким колонкам подряд).
-  var resizeDebounce = null;
-  canvas.addEventListener("click", function (e) {
-    var itemEl = e.target.closest && e.target.closest(".grid-stack-item");
-    if (!itemEl) return;
-    clearTimeout(resizeDebounce);
-    resizeDebounce = setTimeout(function () {
-      grid.resizeToContent(itemEl);
-    }, 50);
+  // Авто-высота и ручной ресайз за уголок физически несовместимы: подгонка по контенту затёрла
+  // бы то, что юзер только что задал руками. Тронул руками -> авто-высота выключается для этой
+  // карточки (решение Димы: взял контроль руками -- система больше не лезет). Метим на
+  // resizestart, а не resizestop: пока тянут, ResizeObserver не должен успеть "поправить" высоту.
+  // Тянули только ширину (высота после ресайза та же) -- ручной режим не нужен, возвращаем авто.
+  grid.on("resizestart", function (event, el) {
+    if (!el || !el.gridstackNode) return;
+    el.dataset.resizeStartH = el.gridstackNode.h;
+    el.dataset.resizeWasManual = el.classList.contains(MANUAL_CLASS) ? "1" : "";
+    el.classList.add(MANUAL_CLASS);
   });
-
-  // Авто-рост карточки (sizeToContent) и ручной ресайз за уголок физически несовместимы в
-  // GridStack: после resizestop библиотека сама пересчитывает высоту по контенту и затирает
-  // то, что юзер только что задал руками. Тронул руками -> авто-рост выключается для этой
-  // карточки навсегда (решение Димы: интуитивно, взял контроль руками -- система больше не лезет).
   grid.on("resizestop", function (event, el) {
-    if (el && el.gridstackNode) el.gridstackNode.sizeToContent = false;
+    if (!el || !el.gridstackNode) return;
+    var isHeightChanged = el.gridstackNode.h !== Number(el.dataset.resizeStartH);
+    var wasManual = el.dataset.resizeWasManual === "1";
+    delete el.dataset.resizeStartH;
+    delete el.dataset.resizeWasManual;
+    if (isHeightChanged || wasManual) return;
+    el.classList.remove(MANUAL_CLASS);
+    scheduleFit(el);
   });
 
   // Перетаскивание из библиотеки (левый сайдбар) -- GridStack.setupDragIn кладёт на дроп
@@ -244,11 +323,18 @@
   // от движка). Забираем widgetId из data-атрибута клона, убираем клон, добавляем
   // настоящий виджет через addWidget с уже вычисленными GridStack координатами.
   GridStack.setupDragIn(".lib-item", { appendTo: "body", helper: "clone" });
+  // Клон может быть ручкой целого раздела (data-group, см. заголовки в index.html) -- тогда
+  // вместо одного борда добавляем весь раздел, начиная с точки дропа.
   grid.on("dropped", function (event, previousWidget, newWidget) {
     if (!newWidget || !newWidget.el) return;
     var widgetId = newWidget.el.dataset.widget;
+    var groupId = newWidget.el.dataset.group;
+    var drop = { x: newWidget.x, y: newWidget.y };
     grid.removeWidget(newWidget.el);
-    if (widgetId) addWidget(widgetId, newWidget.x, newWidget.y, newWidget.w, newWidget.h);
+    if (groupId) addGroup(groupId, drop.y);
+    // Размер -- по умолчанию для типа виджета (defaultSizeFor), а не размер клона из библиотеки:
+    // клон узкий (4 колонки), и при авто-высоте таблица в 4 колонки вытягивалась бы в длинную полоску.
+    else if (widgetId) addWidget(widgetId, drop.x, drop.y);
   });
 
   // ---------- сохранение/восстановление раскладки между сессиями ----------
@@ -270,6 +356,9 @@
           x: node ? node.x : 0, y: node ? node.y : 0,
           w: node ? node.w : null, h: node ? node.h : null,
         };
+        // manual: высоту задали руками -- при загрузке авто-подгонка её не трогает. У остальных
+        // поля нет (старые сохранения читаются как авто-высота).
+        if (itemEl && itemEl.classList.contains(MANUAL_CLASS)) entry.manual = 1;
         // Опциональное per-instance состояние (имя кастомного канала и т.п.) -- у
         // подавляющего большинства виджетов хука нет, entry.custom просто не появляется.
         var def = root.OFDWidgets.WIDGETS[p.widgetId];
@@ -340,7 +429,7 @@
     var restored = false;
     data.widgets.forEach(function (w) {
       if (w && root.OFDWidgets.WIDGETS[w.widgetId]) {
-        addWidget(w.widgetId, w.x || 0, w.y || 0, w.w, w.h, w.custom);
+        addWidget(w.widgetId, w.x || 0, w.y || 0, w.w, w.h, w.custom, w.manual === 1);
         restored = true;
       }
     });

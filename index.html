@@ -17,7 +17,7 @@
 <meta name="theme-color" content="#edf0f7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0c0f1c" media="(prefers-color-scheme: dark)">
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=28">
-<link rel="stylesheet" href="css/styles.css?v=28">
+<link rel="stylesheet" href="css/styles.css?v=30">
 <link rel="stylesheet" href="css/glass.css?v=2">
 </head>
 <body>
@@ -81,8 +81,8 @@
    <div class="rail-scroll">
     <p class="rail-title">Библиотека виджетов</p>
 
-    <details class="board-group" open>
-      <summary><span class="code">B1</span>Клиенты</summary>
+    <details class="board-group" data-group="b1" open>
+      <summary><span class="lib-item lib-group" data-group="b1" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B1</span>Клиенты</span></summary>
       <div class="lib-item" data-widget="b1-active"><span class="grip">⋮⋮</span>Активные клиенты сейчас<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b1-new"><span class="grip">⋮⋮</span>Новые клиенты за период<span class="lchip">период</span></div>
       <div class="lib-item" data-widget="b1-churn"><span class="grip">⋮⋮</span>Отток клиентов за период<span class="lchip">период</span></div>
@@ -95,8 +95,8 @@
       <div class="lib-item" data-widget="b2-renewdist-clients"><span class="grip">⋮⋮</span>Распределение продлений по клиентам<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B2</span>Кассы</summary>
+    <details class="board-group" data-group="b2">
+      <summary><span class="lib-item lib-group" data-group="b2" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B2</span>Кассы</span></summary>
       <div class="lib-item" data-widget="b2-active"><span class="grip">⋮⋮</span>Активные кассы сейчас<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b2-flow"><span class="grip">⋮⋮</span>Новые / отток / реанимация касс<span class="lchip">период</span></div>
       <div class="lib-item" data-widget="b2-netgrowth"><span class="grip">⋮⋮</span>Прирост базы (кассы)<span class="lchip">период</span></div>
@@ -105,8 +105,8 @@
       <div class="lib-item" data-widget="b2-summary"><span class="grip">⋮⋮</span>Сводка клиенты vs кассы<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B3</span>Партнёры</summary>
+    <details class="board-group" data-group="b3">
+      <summary><span class="lib-item lib-group" data-group="b3" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B3</span>Партнёры</span></summary>
       <div class="lib-item" data-widget="b3-active"><span class="grip">⋮⋮</span>Действующие партнёры сейчас<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b3-table"><span class="grip">⋮⋮</span>Таблица по партнёрам<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b3-reserve"><span class="grip">⋮⋮</span>Топ по зависшему резерву<span class="lchip">as-of</span></div>
@@ -115,8 +115,8 @@
       <div class="lib-item" data-widget="b3-partner-eff"><span class="grip">⋮⋮</span>Партнёр: новые / отток / % эффективности<span class="lchip">период</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B4</span>Коды ОФД</summary>
+    <details class="board-group" data-group="b4">
+      <summary><span class="lib-item lib-group" data-group="b4" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B4</span>Коды ОФД</span></summary>
       <div class="lib-item" data-widget="b4-years"><span class="grip">⋮⋮</span>Неактивированные коды по годам<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b4-partners"><span class="grip">⋮⋮</span>Неактивированные коды по партнёрам<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b4-revoked"><span class="grip">⋮⋮</span>Отозванные коды<span class="lchip">период</span></div>
@@ -124,29 +124,29 @@
       <div class="lib-item" data-widget="b4-reserve-share"><span class="grip">⋮⋮</span>Доля кодов «впрок»<span class="lchip">период</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B5</span>Расчёты</summary>
+    <details class="board-group" data-group="b5">
+      <summary><span class="lib-item lib-group" data-group="b5" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B5</span>Расчёты</span></summary>
       <div class="lib-item" data-widget="b5-revenue-olya"><span class="grip">⋮⋮</span>Выручка: Оля Зибер<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b5-revenue-larisa"><span class="grip">⋮⋮</span>Выручка: Лариса Пенигина<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b5-revenue-partners"><span class="grip">⋮⋮</span>Выручка: Партнёры<span class="lchip">as-of</span></div>
-      <div class="lib-item" data-widget="b5-revenue-custom"><span class="grip">⋮⋮</span>Новый канал (переименовывается)<span class="lchip">as-of</span></div>
+      <div class="lib-item" data-widget="b5-revenue-custom" data-skip-group><span class="grip">⋮⋮</span>Новый канал (переименовывается)<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B6</span>Обзвон</summary>
+    <details class="board-group" data-group="b6">
+      <summary><span class="lib-item lib-group" data-group="b6" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B6</span>Обзвон</span></summary>
       <div class="lib-item" data-widget="b6-callsheet"><span class="grip">⋮⋮</span>Список для обзвона<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B7</span>Продления</summary>
+    <details class="board-group" data-group="b7">
+      <summary><span class="lib-item lib-group" data-group="b7" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B7</span>Продления</span></summary>
       <div class="lib-item" data-widget="b7-renewal-calendar"><span class="grip">⋮⋮</span>Календарь продлений<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b9-renewal-calendar-channels"><span class="grip">⋮⋮</span>Календарь продлений по каналам<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b7-tariff-flow"><span class="grip">⋮⋮</span>Переток тарифов<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b7-1c-callout"><span class="grip">⋮⋮</span>Выгрузка для прозвона (Обмен с 1С)<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group">
-      <summary><span class="code">B9</span>Каналы продаж</summary>
+    <details class="board-group" data-group="b9">
+      <summary><span class="lib-item lib-group" data-group="b9" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B9</span>Каналы продаж</span></summary>
       <div class="lib-item" data-widget="b9-channels-setup"><span class="grip">⋮⋮</span>Каналы продаж — состав<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b9-channels-dynamics"><span class="grip">⋮⋮</span>Каналы продаж — динамика год к году<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b9-channels-growth"><span class="grip">⋮⋮</span>Каналы продаж — прирост базы<span class="lchip">as-of</span></div>
@@ -154,8 +154,8 @@
 
     <!-- B10: видят все залогиненные (решение Димы 2026-10-21); по умолчанию скрыта только B8 (hidden-1c).
          Данные портрета в сам сайт не кладутся: их загружает пользователь кнопкой «Портрет». -->
-    <details class="board-group">
-      <summary><span class="code">B10</span>Портрет клиента</summary>
+    <details class="board-group" data-group="b10">
+      <summary><span class="lib-item lib-group" data-group="b10" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B10</span>Портрет клиента</span></summary>
       <div class="lib-item" data-widget="b10-summary"><span class="grip">⋮⋮</span>Сводка действующих клиентов<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-segments"><span class="grip">⋮⋮</span>Сегменты A/B/C/D<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b10-portraits"><span class="grip">⋮⋮</span>Портреты сегментов<span class="lchip">as-of</span></div>
@@ -171,8 +171,8 @@
       <div class="lib-item" data-widget="b10-model"><span class="grip">⋮⋮</span>Как посчитан шанс вернуться<span class="lchip">as-of</span></div>
     </details>
 
-    <details class="board-group hidden-1c" id="board1cGroup">
-      <summary><span class="code">B8</span>Обмен с 1С</summary>
+    <details class="board-group hidden-1c" data-group="b8" id="board1cGroup">
+      <summary><span class="lib-item lib-group" data-group="b8" title="Перетащи на холст — добавятся все борды раздела по порядку, друг под другом"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">B8</span>Обмен с 1С</span></summary>
       <div class="lib-item" data-widget="b8-1c-growth"><span class="grip">⋮⋮</span>Прирост базы (Обмен с 1С)<span class="lchip">период</span></div>
       <div class="lib-item" data-widget="b8-1c-dadata-upload"><span class="grip">⋮⋮</span>Обогащение DaData — данные<span class="lchip">as-of</span></div>
       <div class="lib-item" data-widget="b8-1c-portrait-compare"><span class="grip">⋮⋮</span>Обмен с 1С — купившие vs контроль<span class="lchip">as-of</span></div>
@@ -207,10 +207,10 @@
 <script src="js/vendor/gridstack-all.js?v=28"></script>
 <script src="js/parser.js?v=28"></script>
 <script src="js/metrics.js?v=28"></script>
-<script src="js/widgets.js?v=28"></script>
+<script src="js/widgets.js?v=29"></script>
 <script src="js/portrait-util.js?v=1"></script>
 <script src="js/portrait.js?v=3"></script>
-<script src="js/dnd.js?v=28"></script>
+<script src="js/dnd.js?v=29"></script>
 <script src="js/export.js?v=28"></script>
 <script src="js/app.js?v=28"></script>
 <script src="js/pwa.js?v=1"></script>
