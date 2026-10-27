@@ -7057,7 +7057,10 @@
   // схлопывать в одну строку Дима явно не захотел. Строки одного клиента идут подряд.
   // Колонка «Касс» — сколько касс ЭТОГО клиента попало в ЭТУ таблицу (просроченных или
   // заканчивающихся), НЕ общее число касс клиента.
-  // Окно скользит от as-of: верхняя таблица — месяц as-of минус 1, нижняя — месяц as-of.
+  // Окна скользят от as-of (Дима, 2026-10-27): верхняя таблица — с 1-го числа месяца as-of
+  // ПО as-of включительно («по сегодняшний день»), нижняя — со следующего дня после as-of
+  // до конца СЛЕДУЮЩЕГО месяца. Так хвост текущего месяца (после as-of) не выпадает ни из
+  // одной таблицы, а в «Просрочены» не попадают ещё не истёкшие тарифы.
   var OFD1C_CALLOUT_LIMIT = 300; // на экране; в Excel уходит всё
 
   function ofd1cMonthBounds(d, offset) {
@@ -7066,20 +7069,35 @@
       end: new Date(d.getFullYear(), d.getMonth() + offset + 1, 0, 23, 59, 59),
     };
   }
-  // currentEnd — максимум по всей цепочке, поэтому «конец в прошлом месяце» само по себе
+  function ofd1cDayStart(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+  function ofd1cCalloutRanges(asOf) {
+    var today = ofd1cDayStart(asOf);
+    return {
+      overdue: {
+        start: ofd1cMonthBounds(asOf, 0).start,
+        end: new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59),
+      },
+      upcoming: {
+        start: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1),
+        end: ofd1cMonthBounds(asOf, 1).end,
+      },
+    };
+  }
+  // currentEnd — максимум по всей цепочке, поэтому «конец уже наступил» само по себе
   // означает «не продлили»: было бы продление — максимум сдвинулся бы вперёд.
-  function ofd1cCalloutRows(model, asOf, monthOffset) {
+  function ofd1cCalloutRows(model, asOf, range) {
     if (!OFD1C_STATE.records) return [];
-    var b = ofd1cMonthBounds(asOf, monthOffset);
+    var asOfDay = ofd1cDayStart(asOf);
     var hits = ofd1cGroupBySerial(model).filter(function (ch) {
-      return ch.currentEnd && ch.currentEnd >= b.start && ch.currentEnd <= b.end;
+      return ch.currentEnd && ch.currentEnd >= range.start && ch.currentEnd <= range.end;
     });
     var perClient = new Map();
     hits.forEach(function (ch) { perClient.set(ch.inn, (perClient.get(ch.inn) || 0) + 1); });
     hits.forEach(function (ch) {
       ch._inWindow = perClient.get(ch.inn);
       ch._org = (ch.client && ch.client.org) || "";
-      ch._days = Math.round((ch.currentEnd - asOf) / 86400000);
+      // разница в календарных днях: «завтра» = 1, а не 0 из-за времени суток в as-of
+      ch._days = Math.round((ofd1cDayStart(ch.currentEnd) - asOfDay) / 86400000);
     });
     hits.sort(function (a, c) {
       if (a._org !== c._org) return a._org.localeCompare(c._org, "ru");
@@ -7113,11 +7131,16 @@
       listColumn: { index: 9, options: OFD1C_CALL_STATUSES, sheetName: "Статусы" },
     };
   }
-  function ofd1cCalloutBlock(model, asOf, monthOffset, overdue) {
+  function ofd1cCalloutBlock(model, asOf, range, overdue) {
     var box = el('<div style="margin-bottom:18px"></div>');
-    var b = ofd1cMonthBounds(asOf, monthOffset);
-    var monthLabel = b.start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
-    var rows = ofd1cCalloutRows(model, asOf, monthOffset);
+    // верх — месяц + «по сегодняшний день»; низ — диапазон дат (в него входит хвост текущего месяца)
+    var monthLabel = overdue
+      ? range.start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }) + " · по сегодняшний день (" + fmtDate(range.end) + ")"
+      : "с " + fmtDate(range.start) + " по " + fmtDate(range.end);
+    var fileLabel = overdue
+      ? range.start.toLocaleDateString("ru-RU", { month: "long", year: "numeric" }) + " по " + fmtDate(range.end)
+      : fmtDate(range.start) + "-" + fmtDate(range.end);
+    var rows = ofd1cCalloutRows(model, asOf, range);
     var clients = new Set(rows.map(function (ch) { return ch.inn; })).size;
     var head = el(
       '<div class="threshold-row" style="justify-content:space-between;align-items:baseline">' +
@@ -7144,7 +7167,7 @@
     head.querySelector(".callout-dl").addEventListener("click", function () {
       if (!root.OFDExport || !root.OFDExport.downloadXlsx) return;
       root.OFDExport.downloadXlsx(
-        (overdue ? "Просрочены 1С " : "Заканчиваются 1С ") + monthLabel,
+        (overdue ? "Просрочены 1С " : "Заканчиваются 1С ") + fileLabel,
         ofd1cCalloutExportSpec(rows, model, overdue, monthLabel)
       );
     });
@@ -7158,11 +7181,12 @@
       function renderBody() {
         wrap.innerHTML = "";
         if (!OFD1C_STATE.records) {
-          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл «Обмен с 1С» кнопкой в шапке — здесь появятся две таблицы для продажников: просроченные за прошлый месяц и заканчивающиеся в текущем.</div>'));
+          wrap.appendChild(el('<div class="placeholder-body">Загрузи файл «Обмен с 1С» кнопкой в шапке — здесь появятся две таблицы для продажников: просроченные в текущем месяце (по сегодняшний день) и заканчивающиеся со следующего дня до конца следующего месяца.</div>'));
           return;
         }
-        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, -1, true));
-        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, 0, false));
+        var ranges = ofd1cCalloutRanges(ctx.asOf);
+        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, ranges.overdue, true));
+        wrap.appendChild(ofd1cCalloutBlock(model, ctx.asOf, ranges.upcoming, false));
       }
       renderBody();
       OFD1C_REFRESHERS[instanceId] = renderBody;
@@ -7695,6 +7719,8 @@
     ofd1cFitFromIndex: ofd1cFitFromIndex,
     ofd1cScoringModel: ofd1cScoringModel,
     ofd1cClientContacts: ofd1cClientContacts,
+    ofd1cCalloutRanges: ofd1cCalloutRanges,
+    ofd1cCalloutRows: ofd1cCalloutRows,
     ofd1cSalesExportSpec: ofd1cSalesExportSpec,
     OFD1C_CALL_STATUSES: OFD1C_CALL_STATUSES,
     OFD1C_SCORE_FEATURES: OFD1C_SCORE_FEATURES,

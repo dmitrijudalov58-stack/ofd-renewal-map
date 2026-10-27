@@ -1589,6 +1589,45 @@ async function main() {
       if (!calDrillOk) ok = false;
     }
 
+    // «Выгрузка для прозвона (Обмен с 1С)» (Дима, 2026-10-27): окна считаются от as-of --
+    // верх: с 1-го числа месяца as-of ПО as-of включительно, низ: со следующего дня до
+    // конца следующего месяца. Раньше окна были «прошлый месяц» + «текущий» (сентябрь/октябрь
+    // при as-of в октябре) -- этого больше быть не должно.
+    {
+      const W = win.OFDWidgets;
+      const asOfT = new win.Date(2026, 9, 27, 15, 30); // 27.10.2026 15:30
+      const rg = W.ofd1cCalloutRanges(asOfT);
+      const sameT = (a, b) => a.getTime() === b.getTime();
+      const rangesOk = sameT(rg.overdue.start, new win.Date(2026, 9, 1)) && sameT(rg.overdue.end, new win.Date(2026, 9, 27, 23, 59, 59)) &&
+        sameT(rg.upcoming.start, new win.Date(2026, 9, 28)) && sameT(rg.upcoming.end, new win.Date(2026, 10, 30, 23, 59, 59));
+      console.log("ofd1c-прозвон: окна при as-of 27.10 = 01.10–27.10 и 28.10–30.11:", rangesOk ? "OK" : "FAIL");
+      if (!rangesOk) ok = false;
+
+      const rgDec = W.ofd1cCalloutRanges(new win.Date(2026, 11, 31, 10, 0));
+      const decOk = sameT(rgDec.overdue.start, new win.Date(2026, 11, 1)) && sameT(rgDec.upcoming.start, new win.Date(2027, 0, 1)) &&
+        sameT(rgDec.upcoming.end, new win.Date(2027, 0, 31, 23, 59, 59));
+      console.log("ofd1c-прозвон: переход через год (as-of 31.12 -> низ = январь следующего года):", decOk ? "OK" : "FAIL");
+      if (!decOk) ok = false;
+
+      const overdueRows = W.ofd1cCalloutRows(model, asOfT, rg.overdue);
+      const upcomingRows = W.ofd1cCalloutRows(model, asOfT, rg.upcoming);
+      console.log("ofd1c-прозвон: строк «Просрочены» / «Заканчиваются»:", overdueRows.length, "/", upcomingRows.length);
+      const overdueInRange = overdueRows.every((r) => r.currentEnd >= rg.overdue.start && r.currentEnd <= rg.overdue.end && r._days <= 0);
+      const upcomingInRange = upcomingRows.every((r) => r.currentEnd >= rg.upcoming.start && r.currentEnd <= rg.upcoming.end && r._days >= 1);
+      console.log("ofd1c-прозвон: «Просрочены» -- только концы до as-of включительно, «Дней» <= 0:", overdueInRange ? "OK" : "FAIL");
+      console.log("ofd1c-прозвон: «Заканчиваются» -- только концы после as-of, «Дней» >= 1:", upcomingInRange ? "OK" : "FAIL");
+      if (!overdueInRange || !upcomingInRange) ok = false;
+      const overlap = overdueRows.some((r) => upcomingRows.indexOf(r) >= 0);
+      console.log("ofd1c-прозвон: таблицы не пересекаются:", !overlap ? "OK" : "FAIL");
+      if (overlap) ok = false;
+
+      const calloutNode = W.WIDGETS["b7-1c-callout"].render(model, { asOf: asOfT }, "callout-test");
+      const calloutText = calloutNode.textContent;
+      const labelsOk = calloutText.includes("по сегодняшний день (27.10.2026)") && calloutText.includes("с 28.10.2026 по 30.11.2026");
+      console.log("ofd1c-прозвон: на борде приписка «по сегодняшний день» и диапазон низа 28.10.2026–30.11.2026:", labelsOk ? "OK" : "FAIL");
+      if (!labelsOk) ok = false;
+    }
+
     win.OFDState.ctx = ofd1cOrigCtx; // возвращаем период -- не протекает в следующие тесты
     win.OFDWidgets.ofd1cSetState({ records: null, fileName: null, sheetsCount: null, headerMismatch: false }); // не протекает в другие тесты этого файла
   } else {
