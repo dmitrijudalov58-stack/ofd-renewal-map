@@ -1565,6 +1565,141 @@
     };
   }
 
+  // ---------- Выгрузка по центрам продаж для Маргариты (2026-10-28) ----------
+  // Маргарита хочет понять, какие партнёры под представительствами (ЦП) активируют коды сами
+  // себе, а какие -- клиентам. Партнёр здесь берётся из САМОЙ строки PIN (кто оформил именно
+  // этот код), а не партнёр клиента-владельца кассы: вопрос "кому партнёр закупает коды" --
+  // про код, не про клиента. Поэтому computePartners/c.partner сюда не подходят.
+  // Дословные значения «Центр продаж» из её сообщения; сверено с файлом на 26.10.2026 --
+  // все 11 найдены. «Уфа ЦП» в сообщении стояла дважды -- опечатка (Дима, 2026-10-28).
+  var MARGARITA_CENTERS = [
+    'Представительство АО "Калуга Астрал" в г. Волгоград ЦП',
+    "ОП ООО АСТРАЛ-СОФТ г. Екатеринбург",
+    'Представительство АО "Калуга Астрал" в г. Воронеж',
+    'Представительство АО "Калуга Астрал" в г. Краснодар ЦП',
+    'Представительство АО "Калуга Астрал" в г.Новосибирске ЦП',
+    'Представительство АО "Калуга Астрал" в г. Омск ЦП',
+    'Представительство АО "Калуга Астрал" в г. Саратов ЦП',
+    'Представительство АО "Калуга Астрал" в г. Уфа ЦП',
+    'Представительство ООО "АСТРАЛ-СОФТ" в г. Санкт-Петербург ЦП',
+    'АО "Калуга Астрал" Калуга ЦП (для Калуги)',
+    "ОП Калуга Астрал в г. Екатеринбург (Савукова Н.)",
+  ];
+  var CENTER_NONE = "(без центра продаж)";
+
+  // normCenter + срез организационной формы и слова «Представительство»: ЦП «ОП ООО АСТРАЛ-СОФТ
+  // г. Екатеринбург» и партнёр «ОП АСТРАЛ-СОФТ г. Екатеринбург» -- один офис, различаются только
+  // «ООО». \b в JS не работает с кириллицей, поэтому границы слов заданы через (^|\s) и lookahead.
+  // Хвост « ЦП»/« П»/« ОФД» срезается ещё раз: normCenter не справляется, когда после него идут скобки
+  // («… Калуга ЦП (для Калуги)» -- на месте скобок остаётся пробел, и хвост не режется).
+  function normOffice(s) {
+    return normCenter(s).replace(/(^|\s)(ооо|ао|представительство)(?=\s|$)/g, " ").replace(/\s+/g, " ").trim()
+      .replace(/\s+(цп|п|офд)$/, "");
+  }
+  // «Прямая продажа ЦП»: партнёр в строке PIN -- это сам центр продаж (офис продаёт сам себе).
+  function isDirectCenterPartner(partner, center) {
+    var p = normOffice(partner);
+    return p !== "" && p === normOffice(center);
+  }
+
+  // Агрегат по ВСЕМ ЦП файла за период [from, to] (границы включительно):
+  //   bought    -- коды с «Датой создания» в периоде, ЛЮБОГО статуса (Зарегистрировано, Новый,
+  //                Выдан, Отозвано) -- так же, как «создано» в computeFunnel. Даты покупки в
+  //                выгрузке нет, «Дата создания» её замещает.
+  //   activated -- только «Зарегистрировано» с «Датой активации» в периоде (отозванные не считаем).
+  // Это два независимых счётчика (разные даты): активировано может превышать куплено, если коды
+  // куплены до периода. Строка детализации = клиент (ИНН) × тариф. Один проход по файлу;
+  // выбор ЦП и режим «прямые» потом делает selectCenterExport без повторного прохода.
+  // Известное ограничение: «Зарегистрировано» без РНМ модель не хранит (buildModel их пропускает);
+  // на файле 26.10.2026 таких 49, в 11 ЦП Маргариты за период -- 0.
+  function aggregateCenterPartners(model, from, to) {
+    var centers = new Map(); // ЦП -> Map(ключ партнёра -> накопитель)
+
+    function accumulatorFor(row) {
+      var cname = row.salesCenter || CENTER_NONE;
+      var pmap = centers.get(cname);
+      if (!pmap) { pmap = new Map(); centers.set(cname, pmap); }
+      // Флаг «прямая» -- часть ключа: одно юрлицо (один ИНН) может стоять и как сам офис, и как обычный
+      // партнёр в одном ЦП; в одну строку они не сливаются, иначе режим «без прямых» зависел бы от
+      // порядка строк в файле.
+      var direct = isDirectCenterPartner(row.partner, row.salesCenter);
+      var pkey = (row.partnerInn || ("name:" + (row.partner || ""))) + (direct ? "|прямая" : "");
+      var p = pmap.get(pkey);
+      if (!p) {
+        p = {
+          partner: row.partner || "—", partnerInn: row.partnerInn || "", direct: direct,
+          bought: 0, activated: 0, detailMap: new Map(), clientSet: new Set(),
+        };
+        pmap.set(pkey, p);
+      }
+      return p;
+    }
+
+    function visit(row, isRegistered) {
+      var isBought = inRange(row.created, from, to);
+      var isActivated = isRegistered && inRange(row.activated, from, to);
+      if (!isBought && !isActivated) return;
+      var p = accumulatorFor(row);
+      if (isBought) p.bought++;
+      if (!isActivated) return;
+      p.activated++;
+      var clientInn = row.innOrg || row.innPhys || "";
+      var tariff = row.tariff || "—";
+      if (clientInn !== "") p.clientSet.add(clientInn); // строка без ИНН -- не «один клиент»
+      var dkey = clientInn + "|" + tariff;
+      var d = p.detailMap.get(dkey);
+      if (!d) {
+        d = { client: row.org || "—", clientInn: clientInn, tariff: tariff, pins: 0, self: clientInn !== "" && clientInn === p.partnerInn, nameAt: null };
+        p.detailMap.set(dkey, d);
+      }
+      d.pins++;
+      // название клиента -- по самой свежей активации (в разных строках одного ИНН оно пишется по-разному)
+      if (row.org && (d.nameAt === null || row.activated > d.nameAt)) { d.client = row.org; d.nameAt = row.activated; }
+    }
+
+    model.kassas.forEach(function (k) { k.codes.forEach(function (r) { visit(r, true); }); });
+    model.reserveRows.forEach(function (r) { visit(r, false); });
+    model.revokedRows.forEach(function (r) { visit(r, false); });
+
+    var out = [];
+    centers.forEach(function (pmap, cname) {
+      var partners = [], activated = 0, bought = 0;
+      pmap.forEach(function (p) {
+        var detail = Array.from(p.detailMap.values()).map(function (d) {
+          return { client: d.client, clientInn: d.clientInn, tariff: d.tariff, pins: d.pins, self: d.self };
+        });
+        detail.sort(function (a, b) { return b.pins - a.pins || a.client.localeCompare(b.client, "ru") || a.tariff.localeCompare(b.tariff, "ru"); });
+        partners.push({ partner: p.partner, partnerInn: p.partnerInn, direct: p.direct, bought: p.bought, activated: p.activated, clients: p.clientSet.size, detail: detail });
+        activated += p.activated; bought += p.bought;
+      });
+      partners.sort(function (a, b) { return b.activated - a.activated || b.bought - a.bought || a.partner.localeCompare(b.partner, "ru"); });
+      out.push({ name: cname, activated: activated, bought: bought, partners: partners });
+    });
+    out.sort(function (a, b) { return b.activated - a.activated || b.bought - a.bought || a.name.localeCompare(b.name, "ru"); });
+    return { centers: out };
+  }
+
+  // Срез агрегата под выбор пользователя: selected -- Set имён ЦП, includeDirect -- показывать ли
+  // прямые продажи ЦП (партнёр = сам ЦП). Возвращает строки обоих листов выгрузки и итоги.
+  // totals.clients -- уникальные ИНН по всей выборке (клиент у двух партнёров считается один раз),
+  // поэтому НЕ равен сумме колонки «Клиентов» на листе сводки.
+  function selectCenterExport(agg, selected, includeDirect) {
+    var summary = [], detail = [], clientSet = new Set(), activated = 0, bought = 0;
+    agg.centers.forEach(function (c) {
+      if (!selected.has(c.name)) return;
+      c.partners.forEach(function (p) {
+        if (p.direct && !includeDirect) return;
+        summary.push({ center: c.name, partner: p.partner, partnerInn: p.partnerInn, clients: p.clients, activated: p.activated, bought: p.bought, direct: p.direct });
+        p.detail.forEach(function (d) {
+          detail.push({ center: c.name, partner: p.partner, partnerInn: p.partnerInn, client: d.client, clientInn: d.clientInn, tariff: d.tariff, pins: d.pins, self: d.self, direct: p.direct });
+          if (d.clientInn !== "") clientSet.add(d.clientInn);
+        });
+        activated += p.activated; bought += p.bought;
+      });
+    });
+    return { summary: summary, detail: detail, totals: { partners: summary.length, clients: clientSet.size, activated: activated, bought: bought } };
+  }
+
   // резерв конкретного партнёра за конкретный (год, месяц) — для 3-го уровня раскрытия B4
   function computeReservePartnersForMonth(model, year, month) {
     var byPartner = new Map();
@@ -2178,6 +2313,10 @@
     allPartnerNamesSorted: allPartnerNamesSorted,
     salesCentersForPartnerName: salesCentersForPartnerName,
     classifyChannel: classifyChannel,
+    MARGARITA_CENTERS: MARGARITA_CENTERS,
+    isDirectCenterPartner: isDirectCenterPartner,
+    aggregateCenterPartners: aggregateCenterPartners,
+    selectCenterExport: selectCenterExport,
     isKassaAlive: isKassaAlive,
     kassaDeadline: kassaDeadline,
     individualEnd: individualEnd,

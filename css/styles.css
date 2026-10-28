@@ -510,3 +510,11 @@ table.wtable tbody tr:hover { background: var(--paper); }
    выше, и в карточке умещалось 3 строки вместо 6. Не влезло по ширине -- горизонтальный скролл. */
 .ch-table td { white-space: nowrap; }
 .ch-table thead th { position: sticky; top: 0; z-index: 2; background: var(--card-bg); }
+
+/* B3 «Выгрузка для Маргариты» (2026-10-28): список ЦП с галочками и счётчиками, пилюля «да» во флаг-колонках */
+.mg-cp-list { max-height: 260px; overflow-y: auto; margin-top: 6px; max-width: 680px; }
+.mg-cp-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 2px; border-radius: 6px; }
+.mg-cp-row:hover { background: var(--paper); }
+.mg-cp-stat { margin-left: auto; padding-left: 12px; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.mg-yes { font-weight: 600; color: var(--brand); }
+.mg .stat-row { margin: 10px 0 4px; }

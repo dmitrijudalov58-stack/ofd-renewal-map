@@ -110,11 +110,10 @@
     return '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(v) + "</t></is></c>";
   }
 
-  // spec: {sheetName, headers:[str], rows:[[...]], colWidths:[num], textCols:[idx] (числа как
-  // текст -- ИНН), listColumn:{index, options:[str], sheetName}} -> Uint8Array .xlsx
-  function buildXlsx(spec) {
-    var headers = spec.headers, rows = spec.rows, lastCol = colLetter(headers.length - 1);
-    var textCols = spec.textCols || [];
+  // Один лист данных -> XML листа. lc (listColumn) -- выпадающий список, только у первого листа.
+  function dataSheetXml(sheet, lc) {
+    var headers = sheet.headers, rows = sheet.rows, lastCol = colLetter(headers.length - 1);
+    var textCols = sheet.textCols || [];
     var sheetRows = ['<row r="1">' + headers.map(function (h, i) { return cellXml(colLetter(i) + "1", h, 1); }).join("") + "</row>"];
     rows.forEach(function (r, ri) {
       var n = ri + 2;
@@ -123,35 +122,48 @@
       }).join("") + "</row>");
     });
     var lastRow = Math.max(2, rows.length + 1);
-    var cols = (spec.colWidths || []).map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join("");
-    var lc = spec.listColumn;
+    var cols = (sheet.colWidths || []).map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join("");
     var validation = "";
     if (lc) {
       var listRef = "'" + lc.sheetName.replace(/'/g, "''") + "'!$A$1:$A$" + lc.options.length;
       var colL = colLetter(lc.index);
       validation = '<dataValidations count="1"><dataValidation type="list" allowBlank="1" showErrorMessage="1" errorTitle="Статус" error="Выбери значение из списка" sqref="' + colL + "2:" + colL + lastRow + '"><formula1>' + xmlEsc(listRef) + "</formula1></dataValidation></dataValidations>";
     }
-    var sheet1 = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
       '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
       '<sheetFormatPr defaultRowHeight="15"/>' + (cols ? "<cols>" + cols + "</cols>" : "") +
       "<sheetData>" + sheetRows.join("") + "</sheetData>" +
       '<autoFilter ref="A1:' + lastCol + (rows.length + 1) + '"/>' + validation + "</worksheet>";
+  }
+
+  // spec: одно-листовой {sheetName, headers:[str], rows:[[...]], colWidths:[num], textCols:[idx]
+  // (числа как текст -- ИНН), listColumn:{index, options:[str], sheetName}} либо многолистовой
+  // {sheets:[{sheetName, headers, rows, colWidths, textCols}], listColumn?} -> Uint8Array .xlsx.
+  // listColumn относится к ПЕРВОМУ листу, скрытый лист со значениями списка идёт последним.
+  function buildXlsx(spec) {
+    var dataSheets = spec.sheets || [spec];
+    var lc = spec.listColumn;
     var files = [];
-    var sheetsMeta = [{ name: spec.sheetName, hidden: false }];
-    files.push({ name: "xl/worksheets/sheet1.xml", data: utf8(sheet1) });
+    var sheetsMeta = [];
+    dataSheets.forEach(function (sh, i) {
+      files.push({ name: "xl/worksheets/sheet" + (i + 1) + ".xml", data: utf8(dataSheetXml(sh, i === 0 ? lc : null)) });
+      sheetsMeta.push({ name: sh.sheetName, hidden: false });
+    });
     if (lc) {
       var sheet2 = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
         '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
         lc.options.map(function (o, i) { return '<row r="' + (i + 1) + '">' + cellXml("A" + (i + 1), o, 0) + "</row>"; }).join("") +
         "</sheetData></worksheet>";
-      files.push({ name: "xl/worksheets/sheet2.xml", data: utf8(sheet2) });
+      files.push({ name: "xl/worksheets/sheet" + (dataSheets.length + 1) + ".xml", data: utf8(sheet2) });
       sheetsMeta.push({ name: lc.sheetName, hidden: true });
     }
     var wb = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
       sheetsMeta.map(function (s, i) { return '<sheet name="' + xmlEsc(s.name) + '" sheetId="' + (i + 1) + '"' + (s.hidden ? ' state="hidden"' : "") + ' r:id="rId' + (i + 1) + '"/>'; }).join("") +
-      "</sheets>" + '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">' + xmlEsc("'" + spec.sheetName.replace(/'/g, "''") + "'!$A$1:$" + lastCol + "$" + (rows.length + 1)) + "</definedName></definedNames></workbook>";
+      "</sheets><definedNames>" + dataSheets.map(function (sh, i) {
+        return '<definedName name="_xlnm._FilterDatabase" localSheetId="' + i + '" hidden="1">' + xmlEsc("'" + sh.sheetName.replace(/'/g, "''") + "'!$A$1:$" + colLetter(sh.headers.length - 1) + "$" + (sh.rows.length + 1)) + "</definedName>";
+      }).join("") + "</definedNames></workbook>";
     var wbRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       sheetsMeta.map(function (s, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join("") +
       '<Relationship Id="rId' + (sheetsMeta.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';

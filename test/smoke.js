@@ -126,3 +126,57 @@ if (channelNetMismatches) {
     process.exitCode = 1;
   }
 }
+
+// «Выгрузка для Маргариты» (2026-10-28): расчёт по модели сверяется с НЕЗАВИСИМЫМ пересчётом по
+// сырым строкам (без buildModel) -- ловит потерю/задвоение PIN. Период: с 01.08.2025 по последнюю
+// дату в файле (как по умолчанию в виджете), все 11 ЦП из её сообщения, прямые включены.
+// Жёсткие числа (13 745 / 14 307 / 8 927 / 8 304) посчитаны отдельным скриптом на файле от
+// 26.10.2026 и проверяются ТОЛЬКО на нём.
+{
+  const FROM = new Date("2025-08-01T00:00:00");
+  let fresh = null;
+  rows.forEach((r) => {
+    if (r.created instanceof Date && (!fresh || r.created > fresh)) fresh = r.created;
+    if (r.activated instanceof Date && (!fresh || r.activated > fresh)) fresh = r.activated;
+  });
+  const TO = new Date(fresh.getFullYear(), fresh.getMonth(), fresh.getDate(), 23, 59, 59);
+  const sel = new Set(Metrics.MARGARITA_CENTERS);
+  const agg = Metrics.aggregateCenterPartners(model, FROM, TO);
+  const all = Metrics.selectCenterExport(agg, sel, true);
+  const noDirect = Metrics.selectCenterExport(agg, sel, false);
+
+  const inR = (d) => d instanceof Date && d >= FROM && d <= TO;
+  let rawAct = 0, rawBought = 0, skippedNoRnm = 0;
+  rows.forEach((r) => {
+    if (!sel.has(r.salesCenter)) return;
+    if (r.status === "Зарегистрировано" && !r.rnm) { if (inR(r.activated) || inR(r.created)) skippedNoRnm++; return; } // модель их не хранит
+    if (r.status === "Зарегистрировано" && inR(r.activated)) rawAct++;
+    if (inR(r.created)) rawBought++;
+  });
+  const detailPins = all.detail.reduce((a, d) => a + d.pins, 0);
+  const summaryAct = all.summary.reduce((a, s) => a + s.activated, 0);
+  const found = Metrics.MARGARITA_CENTERS.filter((c) => agg.centers.some((x) => x.name === c));
+  const directPartners = all.summary.filter((s) => s.direct).length;
+  console.log(`margarita export ${FROM.toLocaleDateString("ru-RU")}-${TO.toLocaleDateString("ru-RU")}: ЦП найдено ${found.length} из ${Metrics.MARGARITA_CENTERS.length}, строк сводки ${all.summary.length} (прямых ${directPartners}), строк детализации ${all.detail.length}`);
+  console.log(`margarita export итого: активировано ${all.totals.activated}, куплено ${all.totals.bought}, клиентов ${all.totals.clients}; без прямых: активировано ${noDirect.totals.activated}, куплено ${noDirect.totals.bought}; пропущено моделью (зарег. без РНМ): ${skippedNoRnm}`);
+
+  let exportMismatches = 0;
+  const expect = (name, ok, extra) => { console.log("margarita export " + name + ":", ok ? "OK" : "FAIL", ok ? "" : extra); if (!ok) exportMismatches++; };
+  expect("все 11 ЦП найдены в файле", found.length === Metrics.MARGARITA_CENTERS.length, Metrics.MARGARITA_CENTERS.filter((c) => !found.includes(c)));
+  expect("активировано = независимый пересчёт по строкам", all.totals.activated === rawAct, `${all.totals.activated} против ${rawAct}`);
+  expect("куплено = независимый пересчёт по строкам", all.totals.bought === rawBought, `${all.totals.bought} против ${rawBought}`);
+  expect("сумма PIN детализации = активировано", detailPins === all.totals.activated, `${detailPins} против ${all.totals.activated}`);
+  expect("сумма «Активировано» сводки = активировано", summaryAct === all.totals.activated, `${summaryAct} против ${all.totals.activated}`);
+  expect("режим «без прямых» не больше режима «с прямыми»", noDirect.totals.activated <= all.totals.activated && noDirect.totals.bought <= all.totals.bought);
+  expect("клиентов (уникальных ИНН) не больше PIN", all.totals.clients <= all.totals.activated);
+  if (TO.getFullYear() === 2026 && TO.getMonth() === 9 && TO.getDate() === 26) {
+    expect("файл 26.10.2026: активировано 13 745", all.totals.activated === 13745, all.totals.activated);
+    expect("файл 26.10.2026: куплено 14 307", all.totals.bought === 14307, all.totals.bought);
+    expect("файл 26.10.2026: строк детализации 8 927", all.detail.length === 8927, all.detail.length);
+    expect("файл 26.10.2026: клиентов 8 304", all.totals.clients === 8304, all.totals.clients);
+  }
+  if (exportMismatches) {
+    console.error("FAIL: выгрузка для Маргариты не сходится:", exportMismatches);
+    process.exitCode = 1;
+  }
+}

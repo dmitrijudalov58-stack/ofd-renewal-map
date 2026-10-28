@@ -4,7 +4,7 @@
   "description": "Карта продлений ОФД — статический BI-инструмент, dev-зависимости нужны только для локальных тестов, сайт их не использует",
   "private": true,
   "scripts": {
-    "test": "node test/smoke.js && node test/browser-smoke.js"
+    "test": "node test/export-xlsx.test.js && node test/center-export.test.js && node test/smoke.js && node test/browser-smoke.js"
   },
   "license": "UNLICENSED",
   "type": "commonjs",

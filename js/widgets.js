@@ -1929,6 +1929,275 @@
     exportable: true,
   };
 
+  // ---------- B3 «Выгрузка для Маргариты» (2026-10-28) ----------
+  // Два листа Excel по центрам продаж (ЦП): «Детализация» (ЦП × партнёр × клиент × тариф) и
+  // «Сводка по партнёрам» -- чтобы понять, кто из партнёров под ЦП активирует коды сам себе,
+  // а кто клиентам. Расчёт -- metrics.js aggregateCenterPartners/selectCenterExport (там же
+  // определения «куплено» и «активировано»).
+  // Период -- СВОИ поля «с/по», НЕ период из шапки (Маргарита просила именно с 01.08.2025, шапка
+  // у Димы может быть другой), поэтому чип «свой период». Состояние (период, выбор ЦП, режим
+  // «прямые», вкладка) живёт по instanceId и переживает rerenderAll(): выбор не сбрасывается.
+  var MG_DEFAULT_FROM = "2025-08-01";
+  var MG_SCREEN_LIMIT = 300; // строк детализации на экране; в Excel уходят все
+  var MG_STATE = {}; // instanceId -> { from, to, selected:Set, direct, tab }
+  var MG_AGG_CACHE = { model: null, from: 0, to: 0, agg: null };
+
+  function mgInputDate(d) {
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  function mgYesNo(v) { return v ? "да" : "нет"; }
+  function mgFlagCell(v) { return v ? '<span class="mg-yes">да</span>' : "нет"; }
+
+  function mgState(key, ctx) {
+    var s = MG_STATE[key];
+    if (s) return s;
+    // «по» по умолчанию -- последняя дата, которую видел файл; нет её -- as-of загрузки
+    var fresh = root.OFDState && root.OFDState.freshness;
+    var end = fresh instanceof Date ? fresh : (ctx.loadAsOf || ctx.asOf);
+    s = { from: MG_DEFAULT_FROM, to: mgInputDate(end), selected: new Set(ctx.M.MARGARITA_CENTERS), direct: false, tab: "detail", cpOpen: false, cpTerm: "" };
+    MG_STATE[key] = s;
+    return s;
+  }
+
+  // null, если даты не заполнены или «с» позже «по»
+  function mgPeriod(st) {
+    var from = new Date(st.from + "T00:00:00"), to = new Date(st.to + "T23:59:59");
+    if (isNaN(from.getTime()) || isNaN(to.getTime()) || from > to) return null;
+    return { from: from, to: to };
+  }
+
+  // Один проход по файлу на пару (модель, период); выбор ЦП и режим «прямые» пересчитываются
+  // без прохода, поэтому галочки реагируют мгновенно.
+  function mgAggregate(model, ctx, from, to) {
+    var c = MG_AGG_CACHE;
+    if (c.model === model && c.from === from.getTime() && c.to === to.getTime()) return c.agg;
+    var agg = ctx.M.aggregateCenterPartners(model, from, to);
+    MG_AGG_CACHE = { model: model, from: from.getTime(), to: to.getTime(), agg: agg };
+    return agg;
+  }
+
+  // сколько прямых продаж спрятано переключателем в выбранных ЦП (подсказка рядом с галочкой)
+  function mgDirectHidden(agg, selected) {
+    var partners = 0, pins = 0;
+    agg.centers.forEach(function (c) {
+      if (!selected.has(c.name)) return;
+      c.partners.forEach(function (p) { if (p.direct) { partners++; pins += p.activated; } });
+    });
+    return { partners: partners, pins: pins };
+  }
+
+  // sel -- результат selectCenterExport. Лист 1: клиент × тариф, лист 2: партнёр. ИНН -- текстом
+  // (textCols), чтобы Excel не съедал ведущие нули.
+  function mgExportSpec(sel) {
+    return {
+      sheets: [
+        {
+          sheetName: "Детализация",
+          headers: ["Центр продаж", "Партнёр", "ИНН партнёра", "Клиент", "ИНН клиента", "Тариф", "Активировано PIN", "Клиент = партнёр", "Партнёр = ЦП"],
+          rows: sel.detail.map(function (d) { return [d.center, d.partner, d.partnerInn, d.client, d.clientInn, d.tariff, d.pins, mgYesNo(d.self), mgYesNo(d.direct)]; }),
+          colWidths: [48, 42, 14, 42, 14, 14, 18, 18, 14],
+          textCols: [2, 4],
+        },
+        {
+          sheetName: "Сводка по партнёрам",
+          headers: ["Центр продаж", "Партнёр", "ИНН партнёра", "Клиентов", "Активировано кодов", "Куплено кодов", "Партнёр = ЦП"],
+          rows: sel.summary.map(function (s) { return [s.center, s.partner, s.partnerInn, s.clients, s.activated, s.bought, mgYesNo(s.direct)]; }),
+          colWidths: [48, 42, 14, 12, 20, 16, 14],
+          textCols: [2],
+        },
+      ],
+    };
+  }
+
+  WIDGETS["b3-margarita-export"] = {
+    title: "Выгрузка для Маргариты", type: "таблица + Excel", scope: "свой период", span: true,
+    render: function (model, ctx, instanceId) {
+      var st = mgState(instanceId || "default", ctx);
+      var wrap = el(
+        '<div class="mg">' +
+        '<div class="threshold-row">' +
+        '<label>с <input type="date" class="mg-from"></label>' +
+        '<label>по <input type="date" class="mg-to"></label>' +
+        '<span class="stat-label mg-fresh" style="margin-top:0"></span>' +
+        '</div>' +
+        '<div class="threshold-row"><button type="button" class="cc-toggle mg-cp-toggle"></button></div>' +
+        '<div class="cc-body hidden mg-cp-body">' +
+        '<div class="threshold-row">' +
+        '<button type="button" class="refresh-chart-btn mg-cp-default">Список Маргариты</button>' +
+        '<button type="button" class="refresh-chart-btn mg-cp-all">Все ЦП</button>' +
+        '<button type="button" class="refresh-chart-btn mg-cp-none">Снять все</button>' +
+        '<input type="text" class="cc-search mg-cp-search" placeholder="поиск ЦП…">' +
+        '</div>' +
+        '<div class="mg-cp-list"></div>' +
+        '</div>' +
+        '<div class="threshold-row">' +
+        '<label><input type="checkbox" class="mg-direct"> показывать прямые продажи ЦП (партнёр = сам ЦП)</label>' +
+        '<span class="stat-label mg-direct-note" style="margin-top:0"></span>' +
+        '</div>' +
+        '<div class="threshold-row">' +
+        '<button type="button" class="refresh-chart-btn mg-download">Скачать Excel (2 листа)</button>' +
+        '<span class="stat-label mg-status" role="status" style="margin-top:0"></span>' +
+        '</div>' +
+        '<div class="stat-row mg-kpis"></div>' +
+        '<div class="threshold-row mg-tabs" style="margin-top:12px">' +
+        '<button type="button" class="refresh-chart-btn mg-tab" data-tab="detail">Лист 1 · Детализация</button>' +
+        '<button type="button" class="refresh-chart-btn mg-tab" data-tab="summary">Лист 2 · Сводка по партнёрам</button>' +
+        '</div>' +
+        '<div class="mg-table"></div>' +
+        '<div class="stat-label mg-note"></div>' +
+        '</div>'
+      );
+      var q = function (sel) { return wrap.querySelector(sel); };
+      var fromInput = q(".mg-from"), toInput = q(".mg-to"), freshEl = q(".mg-fresh");
+      var cpToggle = q(".mg-cp-toggle"), cpBody = q(".mg-cp-body"), cpList = q(".mg-cp-list"), cpSearch = q(".mg-cp-search");
+      var directBox = q(".mg-direct"), directNote = q(".mg-direct-note"), statusEl = q(".mg-status");
+      var kpisEl = q(".mg-kpis"), tableEl = q(".mg-table"), noteEl = q(".mg-note");
+      var agg = null, period = null, cpTotal = 0;
+
+      fromInput.value = st.from;
+      toInput.value = st.to;
+      directBox.checked = st.direct;
+      cpSearch.value = st.cpTerm;
+      cpBody.classList.toggle("hidden", !st.cpOpen);
+
+      function setStatus(text) { statusEl.textContent = text || ""; }
+
+      function updateCpLabel() {
+        var open = !cpBody.classList.contains("hidden");
+        cpToggle.textContent = (open ? "▾" : "▸") + " Центры продаж (выбрано " + st.selected.size + " из " + cpTotal + ")";
+      }
+
+      // false -- период некорректен: period сброшен (скачивание заблокировано), прежний agg остаётся
+      // на экране вместе с сообщением об ошибке
+      function recompute() {
+        period = mgPeriod(st);
+        if (!period) { setStatus("Проверь период: «с» и «по» должны быть заполнены, «с» не позже «по»."); return false; }
+        agg = mgAggregate(model, ctx, period.from, period.to);
+        setStatus("");
+        return true;
+      }
+
+      function renderFresh() {
+        var fresh = root.OFDState && root.OFDState.freshness;
+        if (!(fresh instanceof Date)) { freshEl.textContent = ""; return; }
+        var late = period && mgInputDate(period.to) > mgInputDate(fresh);
+        freshEl.textContent = "Данные в файле до " + fmtDate(fresh) + (late ? " — период заканчивается позже, последние дни неполные" : "");
+      }
+
+      function renderCpList() {
+        var term = cpSearch.value.trim().toLowerCase();
+        var byName = new Map(agg.centers.map(function (c) { return [c.name, c]; }));
+        var mainNames = ctx.M.MARGARITA_CENTERS;
+        var mainSet = new Set(mainNames);
+        var otherSet = new Set();
+        agg.centers.forEach(function (c) { if (!mainSet.has(c.name)) otherSet.add(c.name); });
+        st.selected.forEach(function (n) { if (!mainSet.has(n)) otherSet.add(n); }); // выбранный ЦП без данных в этом периоде не должен «пропасть»
+        var otherNames = Array.from(otherSet);
+        function matches(n) { return !term || n.toLowerCase().indexOf(term) !== -1; }
+        function row(name) {
+          var c = byName.get(name);
+          var stat = c ? "акт. " + fmtNum(c.activated) + " · куп. " + fmtNum(c.bought) : "нет данных за период";
+          return '<label class="mg-cp-row"><input type="checkbox" data-cp="' + esc(name) + '"' + (st.selected.has(name) ? " checked" : "") + '> ' + esc(name) + '<span class="mg-cp-stat">' + stat + "</span></label>";
+        }
+        var main = mainNames.filter(matches), other = otherNames.filter(matches);
+        var html = '<div class="cc-group-label">Список Маргариты (' + main.length + ")</div>" + main.map(row).join("");
+        if (other.length) html += '<div class="cc-group-label">Другие ЦП в файле (' + other.length + ")</div>" + other.map(row).join("");
+        if (!main.length && !other.length) html = '<div class="cc-empty">Ничего не найдено</div>';
+        cpList.innerHTML = html;
+        cpTotal = mainNames.length + otherNames.length;
+        updateCpLabel();
+      }
+
+      function kpi(value, label) { return "<div>" + statBlock(fmtNum(value), label, true) + "</div>"; }
+
+      function renderResults() {
+        var sel = ctx.M.selectCenterExport(agg, st.selected, st.direct);
+        kpisEl.innerHTML = kpi(sel.totals.partners, "Партнёров (строк сводки)") + kpi(sel.totals.clients, "Клиентов (уникальных ИНН)") +
+          kpi(sel.totals.activated, "Активировано кодов") + kpi(sel.totals.bought, "Куплено кодов");
+        if (st.direct) {
+          directNote.textContent = "прямые включены";
+        } else {
+          var hidden = mgDirectHidden(agg, st.selected);
+          directNote.textContent = "скрыто прямых: " + fmtNum(hidden.partners) + " партнёров, " + fmtNum(hidden.pins) + " PIN";
+        }
+        wrap.querySelectorAll(".mg-tab").forEach(function (b) { b.style.borderColor = b.dataset.tab === st.tab ? "var(--brand)" : ""; b.style.color = b.dataset.tab === st.tab ? "var(--brand)" : ""; });
+        tableEl.innerHTML = "";
+        var total, shown;
+        if (st.tab === "detail") {
+          var dRows = sel.detail.slice(0, MG_SCREEN_LIMIT);
+          total = sel.detail.length; shown = dRows.length;
+          if (total) {
+            tableEl.appendChild(makeSortableTable(
+              [{ label: "Центр продаж" }, { label: "Партнёр" }, { label: "ИНН партнёра" }, { label: "Клиент" }, { label: "ИНН клиента" }, { label: "Тариф" },
+                { label: "Активировано PIN", num: true }, { label: "Клиент = партнёр", html: true }, { label: "Партнёр = ЦП", html: true }],
+              dRows.map(function (d) { return [d.center, d.partner, d.partnerInn, d.client, d.clientInn, d.tariff, d.pins, mgFlagCell(d.self), mgFlagCell(d.direct)]; })
+            ));
+          }
+          noteEl.textContent = "Строка = ЦП + партнёр + клиент + тариф. «Клиент = партнёр» — ИНН клиента совпал с ИНН партнёра (партнёр купил коды себе).";
+        } else {
+          var sRows = sel.summary.slice(0, MG_SCREEN_LIMIT);
+          total = sel.summary.length; shown = sRows.length;
+          if (total) {
+            tableEl.appendChild(makeSortableTable(
+              [{ label: "Центр продаж" }, { label: "Партнёр" }, { label: "ИНН партнёра" }, { label: "Клиентов", num: true },
+                { label: "Активировано кодов", num: true }, { label: "Куплено кодов", num: true }, { label: "Партнёр = ЦП", html: true }],
+              sRows.map(function (s) { return [s.center, s.partner, s.partnerInn, s.clients, s.activated, s.bought, mgFlagCell(s.direct)]; })
+            ));
+          }
+          noteEl.textContent = "Строка = ЦП + партнёр. Куплено — все коды партнёра с датой создания в периоде (любой статус; даты покупки в выгрузке нет). Активировано — коды, установленные на кассе клиента, по дате активации. Это два независимых счётчика: активировано может быть больше купленного, если коды куплены до периода.";
+        }
+        if (!total) tableEl.appendChild(el('<div class="placeholder-body">Нет строк: выбери центры продаж или расширь период.</div>'));
+        else if (total > shown) noteEl.textContent = "Показаны первые " + fmtNum(shown) + " из " + fmtNum(total) + " — в Excel уходят все. " + noteEl.textContent;
+      }
+
+      function refresh() {
+        recompute();
+        if (!agg) agg = { centers: [] }; // первый рендер с неверным периодом: пустой виджет, но кнопки живые
+        renderFresh();
+        renderCpList();
+        renderResults();
+      }
+
+      fromInput.addEventListener("change", function () { st.from = fromInput.value; refresh(); });
+      toInput.addEventListener("change", function () { st.to = toInput.value; refresh(); });
+      cpToggle.addEventListener("click", function () { st.cpOpen = !cpBody.classList.toggle("hidden"); updateCpLabel(); });
+      cpSearch.addEventListener("input", function () { st.cpTerm = cpSearch.value; renderCpList(); });
+      cpList.addEventListener("change", function (e) {
+        var name = e.target.getAttribute && e.target.getAttribute("data-cp");
+        if (name === null || name === undefined) return;
+        if (e.target.checked) st.selected.add(name); else st.selected.delete(name);
+        updateCpLabel(); // список не перерисовываем: галочка уже стоит, фокус остаётся на ней
+        renderResults();
+      });
+      function setSelection(names) { st.selected = new Set(names); renderCpList(); renderResults(); }
+      q(".mg-cp-default").addEventListener("click", function () { setSelection(ctx.M.MARGARITA_CENTERS); });
+      q(".mg-cp-all").addEventListener("click", function () {
+        setSelection(ctx.M.MARGARITA_CENTERS.concat(agg.centers.map(function (c) { return c.name; })));
+      });
+      q(".mg-cp-none").addEventListener("click", function () { setSelection([]); });
+      directBox.addEventListener("change", function () { st.direct = directBox.checked; renderResults(); });
+      wrap.querySelectorAll(".mg-tab").forEach(function (b) {
+        b.addEventListener("click", function () { st.tab = b.dataset.tab; renderResults(); });
+      });
+      q(".mg-download").addEventListener("click", function () {
+        if (!agg || !period) { setStatus("Сначала поправь период."); return; }
+        if (!root.OFDExport || !root.OFDExport.downloadXlsx) { setStatus("Экспорт недоступен: не загрузился js/export.js."); return; }
+        var sel = ctx.M.selectCenterExport(agg, st.selected, st.direct);
+        if (!sel.summary.length) { setStatus("В выгрузке нет строк: выбери центры продаж или расширь период."); return; }
+        try {
+          root.OFDExport.downloadXlsx("Выгрузка для Маргариты " + fmtDate(period.from) + "-" + fmtDate(period.to), mgExportSpec(sel));
+          setStatus("Скачано: партнёров " + fmtNum(sel.summary.length) + ", строк детализации " + fmtNum(sel.detail.length) + ".");
+        } catch (err) {
+          setStatus("Ошибка выгрузки: " + err.message);
+        }
+      });
+
+      refresh();
+      return wrap;
+    },
+    onRemove: function (instanceId) { delete MG_STATE[instanceId || "default"]; },
+  };
+
   // ---------- B4 Коды ОФД ----------
 
   WIDGETS["b4-years"] = {
@@ -7722,6 +7991,8 @@
     ofd1cCalloutRanges: ofd1cCalloutRanges,
     ofd1cCalloutRows: ofd1cCalloutRows,
     ofd1cSalesExportSpec: ofd1cSalesExportSpec,
+    // Только для теста (test/browser-smoke.js) -- сборка спеки xlsx «Выгрузка для Маргариты» без клика по кнопке.
+    mgExportSpec: mgExportSpec,
     OFD1C_CALL_STATUSES: OFD1C_CALL_STATUSES,
     OFD1C_SCORE_FEATURES: OFD1C_SCORE_FEATURES,
     ofd1cIndustryBucketLabel: ofd1cIndustryBucketLabel,

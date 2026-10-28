@@ -1921,6 +1921,153 @@ async function main() {
     win.OFDCanvas.rerenderAll();
   }
 
+  // «Выгрузка для Маргариты» (b3-margarita-export, 2026-10-28): интерактив виджета сверяется с
+  // независимым расчётом через OFDMetrics, xlsx собирается Node-версией export.js и читается
+  // Node-xlsx (downloadBlob в jsdom не нужен -- downloadXlsx подменён захватом аргументов).
+  {
+    const MG = "b3-margarita-export";
+    win.OFDCanvas.addWidget(MG);
+    const mgNodes = win.document.querySelectorAll('[data-widget-id="' + MG + '"]');
+    let mg = mgNodes[mgNodes.length - 1];
+    const M = win.OFDMetrics;
+    const mgCheck = (name, cond, extra) => { console.log("mg:", name + ":", cond ? "OK" : "FAIL", cond || extra === undefined ? "" : extra); if (!cond) ok = false; };
+    mgCheck("виджет b3-margarita-export на холсте", !!mg);
+    const mgLib = win.document.querySelector('.lib-item[data-widget="' + MG + '"]');
+    mgCheck("библиотека: пункт есть в группе B3 и не входит в «добавить весь раздел» (data-skip-group)", !!mgLib && mgLib.hasAttribute("data-skip-group") && !!mgLib.closest('details[data-group="b3"]'));
+    if (mg) {
+      const q = (s) => mg.querySelector(s);
+      const num = (el) => parseInt((el.textContent || "").replace(/\D/g, ""), 10);
+      const kpis = () => Array.from(mg.querySelectorAll(".mg-kpis .stat-value")).map(num); // [партнёров, клиентов, активировано, куплено]
+      const fire = (el, type) => el.dispatchEvent(new win.Event(type, { bubbles: true }));
+      const expected = (fromS, toS, selected, direct) => {
+        const agg = M.aggregateCenterPartners(model, new Date(fromS + "T00:00:00"), new Date(toS + "T23:59:59"));
+        return M.selectCenterExport(agg, new Set(selected), direct);
+      };
+      const mainCenters = M.MARGARITA_CENTERS;
+
+      mgCheck("период по умолчанию: «с» = 2025-08-01", q(".mg-from").value === "2025-08-01", q(".mg-from").value);
+      mgCheck("«по» заполнен датой (as-of/файл)", /^\d{4}-\d{2}-\d{2}$/.test(q(".mg-to").value), q(".mg-to").value);
+      mgCheck("прямые по умолчанию скрыты", q(".mg-direct").checked === false);
+      mgCheck("четыре KPI-плитки", kpis().length === 4, kpis());
+
+      // 1) дефолт: сходится с независимым расчётом
+      let exp = expected(q(".mg-from").value, q(".mg-to").value, mainCenters, false);
+      let got = kpis();
+      mgCheck("KPI (без прямых) = независимый расчёт", got[0] === exp.totals.partners && got[1] === exp.totals.clients && got[2] === exp.totals.activated && got[3] === exp.totals.bought, JSON.stringify([got, exp.totals]));
+      mgCheck("в таблице детализации не больше 300 строк на экране", mg.querySelectorAll(".mg-table tbody tr").length === Math.min(300, exp.detail.length), mg.querySelectorAll(".mg-table tbody tr").length);
+      mgCheck("шапка детализации: 9 колонок, есть «Клиент = партнёр» и «Партнёр = ЦП»", (() => { const h = Array.from(mg.querySelectorAll(".mg-table th")).map((t) => t.textContent); return h.length === 9 && h[7] === "Клиент = партнёр" && h[8] === "Партнёр = ЦП"; })());
+      mgCheck("подсказка про скрытые прямые показана", /скрыто прямых/.test(q(".mg-direct-note").textContent), q(".mg-direct-note").textContent);
+
+      // 2) режим «показывать прямые»
+      q(".mg-direct").checked = true; fire(q(".mg-direct"), "change");
+      exp = expected(q(".mg-from").value, q(".mg-to").value, mainCenters, true);
+      got = kpis();
+      mgCheck("KPI (с прямыми) = независимый расчёт", got[2] === exp.totals.activated && got[3] === exp.totals.bought, JSON.stringify([got, exp.totals]));
+      mgCheck("с прямыми активировано не меньше, чем без прямых", exp.totals.activated >= expected(q(".mg-from").value, q(".mg-to").value, mainCenters, false).totals.activated);
+      mgCheck("подсказка: «прямые включены»", /прямые включены/.test(q(".mg-direct-note").textContent));
+
+      // 3) вкладка «Сводка по партнёрам»
+      mg.querySelector('.mg-tab[data-tab="summary"]').dispatchEvent(new win.Event("click", { bubbles: true }));
+      mgCheck("лист 2: шапка со «Куплено кодов»", (() => { const h = Array.from(mg.querySelectorAll(".mg-table th")).map((t) => t.textContent); return h.length === 7 && h[3] === "Клиентов" && h[5] === "Куплено кодов"; })());
+      mgCheck("лист 2: число строк = строки сводки (до 300)", mg.querySelectorAll(".mg-table tbody tr").length === Math.min(300, exp.summary.length), mg.querySelectorAll(".mg-table tbody tr").length);
+
+      // 4) выбор ЦП: «Снять все» -> пусто, «Список Маргариты» -> как было
+      q(".mg-cp-none").dispatchEvent(new win.Event("click", { bubbles: true }));
+      got = kpis();
+      mgCheck("«Снять все»: нули и заглушка вместо таблицы", got.every((v) => v === 0) && !!mg.querySelector(".mg-table .placeholder-body"), JSON.stringify(got));
+      q(".mg-cp-default").dispatchEvent(new win.Event("click", { bubbles: true }));
+      mgCheck("«Список Маргариты» возвращает выбор", kpis()[2] === exp.totals.activated, JSON.stringify(kpis()));
+      mgCheck("список ЦП: отмечены только ЦП из списка Маргариты, которые есть в списке", mg.querySelectorAll(".mg-cp-list input[type=checkbox]:checked").length === mainCenters.length, mg.querySelectorAll(".mg-cp-list input[type=checkbox]:checked").length);
+
+      // 5) неверный период: статус-ошибка, прежние результаты на месте
+      const before = JSON.stringify(kpis());
+      q(".mg-from").value = "2026-12-31"; fire(q(".mg-from"), "change");
+      mgCheck("«с» позже «по»: сообщение об ошибке, KPI не сброшены", /Проверь период/.test(q(".mg-status").textContent) && JSON.stringify(kpis()) === before, q(".mg-status").textContent);
+
+      // 5а) неверный период: скачивание заблокировано (не отдаёт старую выборку); после rerenderAll виджет живой, кнопки не падают
+      let capturedBad = null;
+      const origDlBad = win.OFDExport.downloadXlsx;
+      win.OFDExport.downloadXlsx = (name, spec) => { capturedBad = { name, spec }; };
+      q(".mg-download").dispatchEvent(new win.Event("click", { bubbles: true }));
+      win.OFDExport.downloadXlsx = origDlBad;
+      mgCheck("неверный период: «Скачать Excel» заблокирован, файл не создан", capturedBad === null && /поправь период/.test(q(".mg-status").textContent), q(".mg-status").textContent);
+      win.OFDCanvas.rerenderAll();
+      const mgBadNodes = win.document.querySelectorAll('[data-widget-id="' + MG + '"]');
+      mg = mgBadNodes[mgBadNodes.length - 1];
+      mgCheck("неверный период + rerenderAll: 4 плитки, подпись списка ЦП, сообщение об ошибке",
+        kpis().length === 4 && /Центры продаж \(выбрано \d+ из \d+\)/.test(q(".mg-cp-toggle").textContent) && /Проверь период/.test(q(".mg-status").textContent), q(".mg-cp-toggle").textContent);
+      ["mg-cp-all", "mg-cp-none", "mg-cp-default"].forEach((cls) => q("." + cls).dispatchEvent(new win.Event("click", { bubbles: true }))); // не должны падать на пустом агрегате
+      mg.querySelector('.mg-tab[data-tab="summary"]').dispatchEvent(new win.Event("click", { bubbles: true }));
+      mg.querySelector('.mg-tab[data-tab="detail"]').dispatchEvent(new win.Event("click", { bubbles: true }));
+      mgCheck("неверный период: кнопки выбора ЦП и вкладки отрабатывают без падения", /выбрано 11 из/.test(q(".mg-cp-toggle").textContent), q(".mg-cp-toggle").textContent);
+
+      // 6) другой период пересчитывается
+      q(".mg-from").value = "2026-01-01"; fire(q(".mg-from"), "change");
+      q(".mg-to").value = "2026-03-31"; fire(q(".mg-to"), "change");
+      exp = expected("2026-01-01", "2026-03-31", mainCenters, true);
+      got = kpis();
+      mgCheck("период 01.01-31.03.2026 пересчитан = независимый расчёт", got[2] === exp.totals.activated && got[3] === exp.totals.bought && !/Проверь период/.test(q(".mg-status").textContent), JSON.stringify([got, exp.totals]));
+
+      // 6а) список ЦП: снятие галочки не перерисовывает список (фокус не теряется), счётчик обновляется
+      q(".mg-cp-toggle").dispatchEvent(new win.Event("click", { bubbles: true }));
+      mgCheck("список ЦП раскрывается по клику", !q(".mg-cp-body").classList.contains("hidden"));
+      const cb0 = q('.mg-cp-list input[type="checkbox"]');
+      const labelBefore = q(".mg-cp-toggle").textContent;
+      cb0.checked = false; fire(cb0, "change");
+      mgCheck("снятие галочки: тот же узел (список не перерисован), счётчик «выбрано» уменьшился",
+        cb0.isConnected && q('.mg-cp-list input[type="checkbox"]') === cb0 && q(".mg-cp-toggle").textContent !== labelBefore, labelBefore + " -> " + q(".mg-cp-toggle").textContent);
+      cb0.checked = true; fire(cb0, "change");
+      mgCheck("возврат галочки возвращает счётчик", q(".mg-cp-toggle").textContent === labelBefore, q(".mg-cp-toggle").textContent);
+      q(".mg-cp-search").value = "Уфа"; fire(q(".mg-cp-search"), "input");
+      mgCheck("поиск по ЦП оставляет в списке только совпадения", Array.from(mg.querySelectorAll(".mg-cp-list input[type=checkbox]")).every((c) => /Уфа/i.test(c.getAttribute("data-cp"))) && mg.querySelectorAll(".mg-cp-list input[type=checkbox]").length >= 1, mg.querySelectorAll(".mg-cp-list input[type=checkbox]").length);
+
+      // 7) состояние переживает rerenderAll (по instanceId), включая раскрытый список ЦП и поиск.
+      // Вкладку ставим явно (после шага 5а там «Детализация»): сохраняться должна не дефолтная, а выбранная.
+      mg.querySelector('.mg-tab[data-tab="summary"]').dispatchEvent(new win.Event("click", { bubbles: true }));
+      win.OFDCanvas.rerenderAll();
+      const mgNodes2 = win.document.querySelectorAll('[data-widget-id="' + MG + '"]');
+      mg = mgNodes2[mgNodes2.length - 1];
+      mgCheck("rerenderAll: период, режим «прямые» и вкладка сохранились",
+        mg.querySelector(".mg-from").value === "2026-01-01" && mg.querySelector(".mg-to").value === "2026-03-31" && mg.querySelector(".mg-direct").checked === true &&
+        mg.querySelectorAll(".mg-table th").length === 7,
+        JSON.stringify([mg.querySelector(".mg-from").value, mg.querySelector(".mg-to").value, mg.querySelector(".mg-direct").checked, mg.querySelectorAll(".mg-table th").length]));
+      mgCheck("rerenderAll: раскрытый список ЦП и текст поиска сохранились", !mg.querySelector(".mg-cp-body").classList.contains("hidden") && mg.querySelector(".mg-cp-search").value === "Уфа");
+
+      // 8) Excel: перехват downloadXlsx, сборка Node-версией и чтение Node-xlsx
+      let captured = null;
+      const origDl = win.OFDExport.downloadXlsx;
+      win.OFDExport.downloadXlsx = (name, spec) => { captured = { name, spec }; };
+      mg.querySelector(".mg-download").dispatchEvent(new win.Event("click", { bubbles: true }));
+      win.OFDExport.downloadXlsx = origDl;
+      mgCheck("«Скачать Excel» вызвал экспорт", !!captured && /^Выгрузка для Маргариты 01\.01\.2026-31\.03\.2026$/.test(captured.name), captured && captured.name);
+      if (captured) {
+        const NodeExport = require("../js/export.js");
+        const NodeXLSX = require("xlsx");
+        const xwb = NodeXLSX.read(Buffer.from(NodeExport.buildXlsx(captured.spec)), { type: "buffer" });
+        mgCheck("xlsx: два листа «Детализация» и «Сводка по партнёрам»", JSON.stringify(xwb.SheetNames) === JSON.stringify(["Детализация", "Сводка по партнёрам"]), xwb.SheetNames);
+        const s1 = NodeXLSX.utils.sheet_to_json(xwb.Sheets["Детализация"], { header: 1, raw: true });
+        const s2 = NodeXLSX.utils.sheet_to_json(xwb.Sheets["Сводка по партнёрам"], { header: 1, raw: true });
+        mgCheck("xlsx: строк детализации = расчёт, сводки = расчёт", s1.length - 1 === exp.detail.length && s2.length - 1 === exp.summary.length, JSON.stringify([s1.length - 1, exp.detail.length, s2.length - 1, exp.summary.length]));
+        const sumCol = (rows, i) => rows.slice(1).reduce((a, r) => a + (r[i] || 0), 0);
+        mgCheck("xlsx: сумма «Активировано PIN» листа 1 = «Активировано кодов» листа 2 = итог", sumCol(s1, 6) === sumCol(s2, 4) && sumCol(s1, 6) === exp.totals.activated, JSON.stringify([sumCol(s1, 6), sumCol(s2, 4), exp.totals.activated]));
+        mgCheck("xlsx: «Куплено кодов» листа 2 = итог", sumCol(s2, 5) === exp.totals.bought, JSON.stringify([sumCol(s2, 5), exp.totals.bought]));
+        mgCheck("xlsx: ИНН — строки, флаги «да/нет»", s1.slice(1).every((r) => typeof r[2] === "string" && typeof r[4] === "string" && (r[7] === "да" || r[7] === "нет") && (r[8] === "да" || r[8] === "нет")));
+        mgCheck("xlsx: шапка листа 1 и листа 2", JSON.stringify(s1[0]) === JSON.stringify(["Центр продаж", "Партнёр", "ИНН партнёра", "Клиент", "ИНН клиента", "Тариф", "Активировано PIN", "Клиент = партнёр", "Партнёр = ЦП"]) &&
+          JSON.stringify(s2[0]) === JSON.stringify(["Центр продаж", "Партнёр", "ИНН партнёра", "Клиентов", "Активировано кодов", "Куплено кодов", "Партнёр = ЦП"]));
+      }
+
+      // 9) пустая выгрузка не скачивается молча
+      mg.querySelector(".mg-cp-none").dispatchEvent(new win.Event("click", { bubbles: true }));
+      captured = null;
+      win.OFDExport.downloadXlsx = (name, spec) => { captured = { name, spec }; };
+      mg.querySelector(".mg-download").dispatchEvent(new win.Event("click", { bubbles: true }));
+      win.OFDExport.downloadXlsx = origDl;
+      mgCheck("пустой выбор: файл не создаётся, показано сообщение", captured === null && /нет строк/.test(mg.querySelector(".mg-status").textContent), mg.querySelector(".mg-status").textContent);
+
+      mg.querySelector(".remove-btn").click();
+    }
+  }
+
   console.log("JS runtime errors caught:", errors.length, errors.slice(0, 5));
   if (errors.length) ok = false;
 
