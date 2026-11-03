@@ -9,8 +9,8 @@ const { buildXlsx } = require("../js/export.js");
 
 const params = P.defaultParams();
 params.vat = "with";
-params.probManual["ofd|12|first"] = 0.5;
-params.checks["c|ofd|Партнёры|12"] = 1000;
+params.probManual["g|ofd|Партнёры"] = 0.5;
+params.checks["c|ofd|Партнёры|all"] = 1000;
 const kassa = {
   rnm: "RNM_TEST", clientKey: "7700000001", org: "Тестовый клиент", channel: "Партнёры", partner: "Тест",
   codes: [{ pin: "TEST", tariff: "12 месяцев", activated: new Date(2026, 0, 1), endDate: new Date(2027, 5, 15) }],
@@ -29,6 +29,6 @@ const workbook = XLSX.read(Buffer.from(bytes), { type: "buffer", cellFormula: tr
 assert.equal(workbook.Sheets["Сводный план"].E2.v, 500);
 assert.equal(workbook.Sheets["По месяцам"].D7.v, 500);
 assert.ok(workbook.Sheets["Описание и параметры"].B2.f.includes("Проверки"));
-const priceRow = Array.from({ length: 30 }, (_, i) => i + 14).find((i) => workbook.Sheets["Описание и параметры"]["A" + i]?.v === "c|ofd|Партнёры|12");
+const priceRow = Array.from({ length: 50 }, (_, i) => i + 14).find((i) => workbook.Sheets["Описание и параметры"]["A" + i]?.v === "c|ofd|Партнёры|all");
 assert.ok(priceRow, "price input present in the workbook");
 console.log(JSON.stringify({ file, priceCell: "G" + priceRow, initialMoney: 500, updatedPrice: 2000, expectedMoney: 1000 }));

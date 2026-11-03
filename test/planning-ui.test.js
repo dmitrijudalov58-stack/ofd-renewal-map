@@ -55,22 +55,22 @@ test("money and percent inputs reject invalid values and recalculate on valid ch
   const { dom, win } = await page();
   try {
     const board = render(win, "pl-params", "params-test");
-    const priceRow = [...board.querySelectorAll("tr[data-key]")].find((r) => r.getAttribute("data-key") === "c|ofd|Партнёры|12");
-    assert.ok(priceRow, "price parameter available");
+    const priceRow = [...board.querySelectorAll("[data-key]")].find((r) => r.getAttribute("data-key") === "c|ofd|Партнёры|all");
+    assert.ok(priceRow, "general price parameter available");
     const money = priceRow.querySelector(".pl-in");
     assert.equal(money.type, "number");
     change(win, money, "-100");
-    assert.equal(win.OFDPlanning.loadParams().checks["c|ofd|Партнёры|12"], undefined);
+    assert.equal(win.OFDPlanning.loadParams().checks["c|ofd|Партнёры|all"], undefined);
     assert.ok(priceRow.querySelector(".pl-error"), "invalid price is explained");
     change(win, money, "1200.50");
-    assert.equal(win.OFDPlanning.loadParams().checks["c|ofd|Партнёры|12"], 1200.5);
+    assert.equal(win.OFDPlanning.loadParams().checks["c|ofd|Партнёры|all"], 1200.5);
     assert.match(board.textContent, /пересчитан/i);
-    const probRow = [...board.querySelectorAll("tr[data-key]")].find((r) => r.getAttribute("data-key") === "ofd|12|first");
+    const probRow = [...board.querySelectorAll("[data-key]")].find((r) => r.getAttribute("data-key") === "g|ofd|Партнёры");
     assert.ok(probRow);
     change(win, probRow.querySelector(".pl-in"), "110");
-    assert.equal(win.OFDPlanning.loadParams().probManual["ofd|12|first"], undefined);
+    assert.equal(win.OFDPlanning.loadParams().probManual["g|ofd|Партнёры"], undefined);
     change(win, probRow.querySelector(".pl-in"), "0");
-    assert.equal(win.OFDPlanning.loadParams().probManual["ofd|12|first"], 0);
+    assert.equal(win.OFDPlanning.loadParams().probManual["g|ofd|Партнёры"], 0);
   } finally { dom.window.close(); }
 });
 

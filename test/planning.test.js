@@ -55,9 +55,10 @@ check("прогноз на дату окончания покрытия и по�
 check("вторая касса того же ИНН — отдельное событие", base.ofd.some(function (e) { return e.unit === "RNM2" && e.month === "2027-03"; }));
 check("продление вперёд за год плана не создаёт событие 2027", !base.ofd.some(function (e) { return e.unit === "RNM3"; }));
 check("уникальные ИНН не складывают кассы", base.roll.ofd.innsN === 1 && base.roll.ofd.base === 2, base.roll.ofd.innsN + "/" + base.roll.ofd.base);
-check("пустой чек не даёт сумму 0", ev1.amount == null && ev1.expectedQty == null && base.status.label === P.DRAFT);
+check("пустой чек не даёт сумму 0", ev1.amount == null && base.status.label === P.DRAFT);
 
 const withProb = P.defaultParams();
+withProb.priceMode = "partial";
 withProb.probManual["ofd|15|repeat"] = 0.5;
 withProb.probManual["ofd|12|first"] = 0;
 withProb.checks["c|ofd|Партнёры|15"] = 1000;
@@ -66,7 +67,7 @@ withProb.vat = "with";
 const priced = planOf([multi, other], withProb, null, asOf);
 const p1 = priced.ofd.filter(function (e) { return e.unit === "RNM1"; })[0];
 const p2 = priced.ofd.filter(function (e) { return e.unit === "RNM2"; })[0];
-check("ручная вероятность и чек дают дробное ожидание", p1.expectedQty === 0.5 && p1.amount === 500 && p1.probSource === "ручной", p1.amount);
+check("ручная вероятность и чек дают дробное ожидание", p1.expectedQty === 0.5 && p1.amount === 500 && p1.probSource === "частный ввод", p1.amount);
 check("явный ноль чека и вероятности остаётся нулём", p2.expectedQty === 0 && p2.amount === 0, p2.amount);
 withProb.events["ofd|RNM1"] = { excluded: true, comment: "не берём", month: "2027-08" };
 const excluded = planOf([multi], withProb, null, asOf).ofd[0];
@@ -88,6 +89,7 @@ const records = [
   rec("7700000099", "SN9", d(2025, 1, 1), d(2027, 1, 1), 12),
 ];
 const params = P.defaultParams();
+params.priceMode = "partial";
 params.vat = "without";
 params.checks["v|upsell|Партнёры"] = 0.25;
 params.checks["c|upsell|Партнёры|"] = 4000;
@@ -123,6 +125,7 @@ check("июнь 2027 в месячном листе несёт кэш 500", mont
 check("статус черновика, пока не всё заполнено", String(wb.Sheets["Описание и параметры"].B2.v).indexOf("Черновик") >= 0, wb.Sheets["Описание и параметры"].B2.v);
 
 const full = P.defaultParams();
+full.priceMode = "partial";
 full.vat = "with";
 full.probManual["ofd|15|repeat"] = 1;
 full.checks["c|ofd|Партнёры|15"] = 10;

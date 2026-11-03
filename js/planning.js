@@ -1,7 +1,7 @@
 /*
  * Раздел «Планирование». Отдельные борды и одна модель параметров.
- * Существующие виджеты и их id не меняются. Средние чеки и вероятности
- * здесь не подставляются из истории и из B5: пустое поле — «Не задано».
+ * Средние чеки вводятся вручную; вероятности продления и доля покупателей 1С
+ * могут рассчитываться из доступной истории и явно подписываются как оценки.
  */
 (function (root) {
   "use strict";
@@ -147,7 +147,7 @@
     return renewed ? "renewed" : "churned";
   }
   function defaultParams() {
-    return { year: 2027, vat: null, checks: {}, probManual: {}, events: {}, upsell: {} };
+    return { year: 2027, priceMode: "general", vat: null, checks: {}, probManual: {}, events: {}, upsell: {} };
   }
   function validNumberMap(value, percentOnly) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -175,6 +175,7 @@
       var year = Number(raw.year);
       return {
         year: Number.isInteger(year) && year >= 2000 && year <= 2100 ? year : base.year,
+        priceMode: raw.priceMode === 'partial' ? 'partial' : 'general',
         vat: raw.vat === 'with' || raw.vat === 'without' ? raw.vat : null,
         checks: validNumberMap(raw.checks, false), probManual: validNumberMap(raw.probManual, true),
         events: validChoices(raw.events, false), upsell: validChoices(raw.upsell, true),
@@ -269,6 +270,33 @@
     var general = segments[generalKey];
     if (general && general.mature > 0) return { value: general.prob, source: "ретро, все тарифы", key: specific, fallbackKey: generalKey };
     return { value: null, source: NO_DATA, key: specific };
+  }
+
+  function directionRetroRate(segments, product) {
+    var first = segments[segmentKey(product, "all", "first")];
+    var repeat = segments[segmentKey(product, "all", "repeat")];
+    var mature = (first ? first.mature : 0) + (repeat ? repeat.mature : 0);
+    var renewed = (first ? first.renewed : 0) + (repeat ? repeat.renewed : 0);
+    return { value: mature ? renewed / mature : null, mature: mature, renewed: renewed };
+  }
+  function generalProbKey(product, channel) { return "g|" + product + "|" + channel; }
+  function generalCheckKey(product, channel) { return "c|" + product + "|" + channel + "|all"; }
+  function privateProbKey(product, ev) {
+    if (product === "upsell") return "v|upsell|" + ev.channel;
+    return "p|d|" + product + "|" + ev.channel + "|" + (ev.tariff == null ? "na" : ev.tariff) + "|" + ev.cycle;
+  }
+  function privateCheckKey(product, ev) {
+    return "c|" + product + "|" + ev.channel + "|" + (product === "upsell" ? "" : ev.tariff == null ? "na" : ev.tariff);
+  }
+  function observedBuyerShare(model, buyers, hasRecords, asOf) {
+    if (!hasRecords || !model || !model.clients) return { value: null, buyers: 0, active: 0 };
+    var active = 0, bought = 0;
+    model.clients.forEach(function (client) {
+      if (!client || !client.key || client.phys || clientLapsedAt(client, asOf)) return;
+      active++;
+      if (buyers[client.key]) bought++;
+    });
+    return { value: active ? bought / active : null, buyers: bought, active: active };
   }
 
   function roll(rows, kind) {
@@ -429,16 +457,22 @@
 
     var segOfd = aggregateRetro(retroOfd);
     var segOnec = aggregateRetro(retroOnec);
+    var directionRates = { ofd: directionRetroRate(segOfd, "ofd"), onec: directionRetroRate(segOnec, "1c") };
+    var observedUpsell = observedBuyerShare(model, buyers, !!records, asOf);
+    var priceMode = params.priceMode === "partial" ? "partial" : "general";
     function applyMoney(ev, product) {
-      var manual = lookupStored(params.probManual, segmentKey(product === "onec" ? "1c" : product, ev.tariff == null ? "na" : ev.tariff, ev.cycle));
-      var prob = effectiveProb(product === "onec" ? segOnec : segOfd, product === "onec" ? "1c" : "ofd", ev.tariff, ev.cycle, manual);
-      ev.prob = prob.value;
-      ev.probSource = prob.source;
-      ev.probKey = "p|" + prob.key;
-      ev.fallbackKey = prob.fallbackKey ? "p|" + prob.fallbackKey : "";
-      var checkKey = "c|" + ev.product + "|" + ev.channel + "|" + (ev.tariff == null ? "na" : ev.tariff);
-      ev.checkKey = checkKey;
-      ev.check = lookupStored(params.checks, checkKey);
+      var generalProb = lookupStored(params.probManual, generalProbKey(product, ev.channel));
+      var directionRate = directionRates[product].value;
+      var legacyProb = lookupStored(params.probManual, segmentKey(product === "onec" ? "1c" : product, ev.tariff, ev.cycle));
+      var privateProb = lookupStored(params.probManual, privateProbKey(product, ev));
+      var chosenProb = priceMode === "partial" ? (privateProb != null ? privateProb : legacyProb) : null;
+      ev.prob = chosenProb != null ? chosenProb : generalProb != null ? generalProb : directionRate;
+      ev.probSource = chosenProb != null ? "частный ввод" : generalProb != null ? "общий ввод" : "ретро по направлению";
+      ev.probKey = privateProbKey(product, ev);
+      ev.checkKey = privateCheckKey(product, ev);
+      var commonCheck = lookupStored(params.checks, generalCheckKey(product, ev.channel));
+      var tariffCheck = priceMode === "partial" ? lookupStored(params.checks, ev.checkKey) : null;
+      ev.check = tariffCheck != null ? tariffCheck : commonCheck;
       if (!ev.included) {
         ev.expectedQty = 0;
         ev.amount = ev.check == null ? null : 0;
@@ -464,10 +498,14 @@
         var sel = params.upsell[c.key] || {};
         var selected = !!sel.selected;
         var channel = channelOfClient(c, overrides);
-        var convKey = "v|upsell|" + channel;
-        var checkKey = "c|upsell|" + channel + "|";
-        var conv = lookupStored(params.checks, convKey);
-        var check = lookupStored(params.checks, checkKey);
+        var convKey = privateProbKey("upsell", { channel: channel });
+        var checkKey = privateCheckKey("upsell", { channel: channel });
+        var generalConv = lookupStored(params.probManual, generalProbKey("upsell", channel));
+        var specificConv = priceMode === "partial" ? lookupStored(params.checks, convKey) : null;
+        var conv = specificConv != null ? specificConv : generalConv != null ? generalConv : observedUpsell.value;
+        var generalCheck = lookupStored(params.checks, generalCheckKey("upsell", channel));
+        var specificCheck = priceMode === "partial" ? lookupStored(params.checks, checkKey) : null;
+        var check = specificCheck != null ? specificCheck : generalCheck;
         var row = {
           id: "up|" + c.key, product: "upsell", inn: c.key, org: c.org || "", unit: c.key,
           tariff: null, tariffLabel: "—", cycle: "", channel: channel,
@@ -475,7 +513,7 @@
           included: selected ? 1 : 0, selected: selected, comment: sel.comment || "",
           kassas: (c.kassas || []).filter(function (k) { return !kassaLapsedAt(k, asOf); }).length,
           score: null, reason: "",
-          prob: conv, probSource: conv == null ? "конверсия не задана" : "ручная конверсия",
+          prob: conv, probSource: specificConv != null ? "частный ввод" : generalConv != null ? "общий ввод" : "наблюдаемая доля покупателей 1С (не годовая конверсия)",
           probKey: convKey, checkKey: checkKey, check: check, fallbackKey: "",
           pin: "", file: "", sheet: "", sourceRow: "",
         };
@@ -499,6 +537,7 @@
 
     var coverage = {
       ofdFrom: minOfd, ofdTo: maxOfd, onecFrom: min1, onecTo: max1,
+      observedUpsell: observedUpsell, directionRates: directionRates,
       ofdFiles: meta.sourceFiles || [], onecFile: file1c, onecLoaded: !!records,
       historyNote: records
         ? "Кандидаты первой продажи — действующие клиенты ОФД без покупки 1С в загруженном файле. Отсутствие в файле не доказывает, что покупки не было раньше покрытия файла."
@@ -524,81 +563,60 @@
   }
 
   function buildParamRows(plan) {
-    var rows = [];
-    var seen = {};
-    function addProb(segments, product, label) {
-      Object.keys(segments).forEach(function (key) {
-        if (key.indexOf("|all|") >= 0) return;
-        var parts = key.split("|");
-        var manual = lookupStored(plan.params.probManual, key);
-        var eff = effectiveProb(segments, product, parts[1] === "na" ? null : (parts[1] === "*" ? "*" : Number(parts[1])), parts[2], manual);
-        var id = "p|" + key;
-        if (seen[id]) return;
-        seen[id] = 1;
-        rows.push({
-          key: id, direction: label, channel: "—", tariff: parts[1] === "*" ? "все тарифы" : tariffLabel(parts[1] === "na" ? null : parts[1]),
-          cycle: cycleLabel(parts[2]), metric: "Вероятность продления кассы",
-          manual: manual, calculated: segments[key] && segments[key].mature > 0 ? segments[key].prob : (eff.fallbackKey ? segments[eff.fallbackKey] && segments[eff.fallbackKey].prob : null),
-          effective: eff.value, source: eff.source, unit: "доля, не проценты клиента",
-          inputKind: "prob", storeKey: key, fallbackKey: eff.fallbackKey || "",
-        });
-      });
+    var rows = [], seen = new Set();
+    var params = plan.params;
+    var isPartial = params.priceMode === "partial";
+    var byProduct = [
+      { id: "ofd", events: plan.ofd, title: DIRS[0].title, unit: DIRS[0].unitCheck, segments: plan.retroOfd.segments, retro: plan.coverage.directionRates.ofd },
+      { id: "onec", events: plan.onec, title: DIRS[1].title, unit: DIRS[1].unitCheck, segments: plan.retroOnec.segments, retro: plan.coverage.directionRates.onec },
+      { id: "upsell", events: plan.upsell, title: DIRS[2].title, unit: DIRS[2].unitCheck, retro: plan.coverage.observedUpsell },
+    ];
+    function add(row) {
+      if (seen.has(row.key)) return;
+      seen.add(row.key);
+      rows.push(row);
     }
-    addProb(plan.retroOfd.segments, "ofd", DIRS[0].title);
-    addProb(plan.retroOnec.segments, "1c", DIRS[1].title);
-    function addForecastProb(events, segments, product, label) {
-      events.forEach(function (ev) {
-        var key = segmentKey(product, ev.tariff, ev.cycle);
-        var id = "p|" + key;
-        if (seen[id]) return;
-        seen[id] = 1;
-        var manual = lookupStored(plan.params.probManual, key);
-        var eff = effectiveProb(segments, product, ev.tariff, ev.cycle, manual);
-        var general = eff.fallbackKey && segments[eff.fallbackKey];
-        rows.push({
-          key: id, direction: label, channel: "—", tariff: tariffLabel(ev.tariff),
-          cycle: cycleLabel(ev.cycle), metric: "Вероятность продления кассы",
-          manual: manual, calculated: general ? general.prob : null,
-          effective: eff.value, source: eff.source, unit: "доля, не проценты клиента",
-          inputKind: "prob", storeKey: key, fallbackKey: eff.fallbackKey || "",
-        });
-      });
-    }
-    addForecastProb(plan.ofd, plan.retroOfd.segments, "ofd", DIRS[0].title);
-    addForecastProb(plan.onec, plan.retroOnec.segments, "1c", DIRS[1].title);
-    function addCheck(list, product, unit) {
-      var combos = {};
-      list.forEach(function (ev) {
-        var tariff = product === "upsell" ? "" : (ev.tariff == null ? "na" : String(ev.tariff));
-        var key = "c|" + product + "|" + ev.channel + "|" + tariff;
-        combos[key] = { channel: ev.channel, tariff: tariff };
-      });
-      Object.keys(combos).sort().forEach(function (key) {
-        if (seen[key]) return;
-        seen[key] = 1;
-        var manual = lookupStored(plan.params.checks, key);
-        rows.push({
-          key: key, direction: dirTitle(product), channel: combos[key].channel,
-          tariff: product === "upsell" ? "—" : tariffLabel(combos[key].tariff === "na" ? null : combos[key].tariff),
-          cycle: "—", metric: "Средний чек", manual: manual, calculated: null, effective: manual,
-          source: manual == null ? NOT_SET : "ввод", unit: unit, inputKind: "money", storeKey: key,
-        });
-      });
-    }
-    addCheck(plan.ofd, "ofd", DIRS[0].unitCheck);
-    addCheck(plan.onec, "onec", DIRS[1].unitCheck);
-    addCheck(plan.upsell, "upsell", DIRS[2].unitCheck);
-    var convSeen = {};
-    plan.upsell.forEach(function (ev) {
-      var key = "v|upsell|" + ev.channel;
-      if (convSeen[key]) return;
-      convSeen[key] = 1;
-      var manual = lookupStored(plan.params.checks, key);
-      rows.push({
-        key: key, direction: DIRS[2].title, channel: ev.channel, tariff: "—", cycle: "—",
-        metric: "Конверсия первой продажи", manual: manual, calculated: null, effective: manual,
-        source: manual == null ? NOT_SET : "ввод", unit: "доля от выбранных клиентов канала",
-        inputKind: "prob", storeKey: key,
+    byProduct.forEach(function (group) {
+      group.events.forEach(function (ev) {
+        var checkKey = generalCheckKey(group.id, ev.channel);
+        var probKey = generalProbKey(group.id, ev.channel);
+        var commonCheck = lookupStored(params.checks, checkKey);
+        var commonInput = lookupStored(params.probManual, probKey);
+        var estimate = group.retro.value;
+        var commonProb = commonInput != null ? commonInput : estimate;
+        var probSource = group.id === "upsell"
+          ? "Покупатели 1С в доступной истории: " + group.retro.buyers + " из " + group.retro.active + " действующих ОФД; не годовая конверсия"
+          : "Зрелые окончания: " + group.retro.mature + ", продлили: " + group.retro.renewed + "; доля по направлению";
+        add({ key: "p|" + probKey, storeKey: probKey, direction: group.title, channel: ev.channel,
+          tariff: "все тарифы", cycle: "—", metric: group.id === "upsell" ? "Вероятность нового подключения" : "Вероятность продления кассы",
+          manual: commonInput, calculated: estimate, effective: commonProb, source: commonInput != null ? "общий ввод" : probSource,
+          unit: group.id === "upsell" ? "наблюдаемая доля, не годовой прогноз" : "доля зрелых окончаний",
+          inputKind: "prob", storeField: "probManual", scope: "general", retroProduct: group.id });
+        add({ key: checkKey, storeKey: checkKey, direction: group.title, channel: ev.channel,
+          tariff: "все тарифы", cycle: "—", metric: group.id === "upsell" ? "Средний чек нового подключения" : "Средний чек продления",
+          manual: commonCheck, calculated: null, effective: commonCheck, source: commonCheck == null ? NOT_SET : "общий ввод",
+          unit: group.unit, inputKind: "money", storeField: "checks", scope: "general" });
+        var specificProbKey = privateProbKey(group.id, ev);
+        var oldProb = group.id === "upsell" ? lookupStored(params.checks, specificProbKey)
+          : lookupStored(params.probManual, segmentKey(group.id === "onec" ? "1c" : "ofd", ev.tariff, ev.cycle));
+        var newProb = group.id === "upsell" ? oldProb : lookupStored(params.probManual, specificProbKey);
+        var specificProb = newProb != null ? newProb : oldProb;
+        var tariffProb = group.segments && group.segments[segmentKey(group.id === "onec" ? "1c" : "ofd", ev.tariff, ev.cycle)];
+        add({ key: specificProbKey, storeKey: specificProbKey, direction: group.title, channel: ev.channel,
+          tariff: group.id === "upsell" ? "—" : tariffLabel(ev.tariff), cycle: group.id === "upsell" ? "—" : cycleLabel(ev.cycle),
+          metric: group.id === "upsell" ? "Вероятность нового подключения" : "Вероятность продления кассы",
+          manual: specificProb, calculated: tariffProb && tariffProb.prob, effective: isPartial && specificProb != null ? specificProb : commonProb,
+          source: isPartial && specificProb != null ? "частный ввод" : "общий параметр",
+          unit: group.id === "upsell" ? "доля клиентов" : "доля касс", inputKind: "prob",
+          storeField: group.id === "upsell" ? "checks" : "probManual", scope: "partial", generalKey: "p|" + probKey });
+        var specificCheckKey = privateCheckKey(group.id, ev);
+        var specificCheck = lookupStored(params.checks, specificCheckKey);
+        add({ key: specificCheckKey, storeKey: specificCheckKey, direction: group.title, channel: ev.channel,
+          tariff: group.id === "upsell" ? "—" : tariffLabel(ev.tariff), cycle: "—",
+          metric: group.id === "upsell" ? "Средний чек нового подключения" : "Средний чек продления",
+          manual: specificCheck, calculated: null, effective: isPartial && specificCheck != null ? specificCheck : commonCheck,
+          source: isPartial && specificCheck != null ? "частный ввод" : "общий параметр",
+          unit: group.unit, inputKind: "money", storeField: "checks", scope: "partial", generalKey: checkKey });
       });
     });
     return rows;
@@ -698,7 +716,7 @@
     };
     var key = null;
     if (!extra.nocache) {
-      key = [params.year, params.vat, asOf.getTime(), pack.records ? pack.records.length : -1, JSON.stringify(params.checks), JSON.stringify(params.probManual), JSON.stringify(params.events), JSON.stringify(params.upsell), JSON.stringify(overrides)].join("~");
+      key = [params.year, params.priceMode, params.vat, asOf.getTime(), pack.records ? pack.records.length : -1, JSON.stringify(params.checks), JSON.stringify(params.probManual), JSON.stringify(params.events), JSON.stringify(params.upsell), JSON.stringify(overrides)].join("~");
       if (cache && cache.key === key && cache.model === model && cache.records === pack.records) return cache.plan;
     }
     var plan = buildPlan(model, asOf, params, pack.records, overrides, meta);
@@ -803,37 +821,50 @@
     var files = (plan.coverage.ofdFiles || []).join(", ") || "файл ОФД в этой сессии";
     var preamble = [
       ["Назначение", (isPartial ? "Срез борда «" + board + "», не полный бюджет. " : "Полный бюджет. ") + "Бюджетный прогноз продлений ОФД, продлений «Обмена с 1С» и первой продажи 1С действующим клиентам. Это не бухгалтерское признание выручки и не утверждённый бюджет."],
-      ["Статус", fml('=IF(AND(' + statusGuard + ',OR(B6="с НДС",B6="без НДС"),Проверки!B4=0,Проверки!B5=0,Проверки!B6=0,Проверки!B7=0,Проверки!B8=0,Проверки!B9=0,COUNTIF(Проверки!B10:B100,"РАСХОЖДЕНИЕ")=0),"' + READY + '","' + DRAFT + '")', plan.status.label, S_CALC)],
+      ["Статус", fml('=IF(AND(' + statusGuard + ',OR(B6="с НДС",B6="без НДС"),OR(B12="Общий",B12="Частный"),Проверки!B4=0,Проверки!B5=0,Проверки!B6=0,Проверки!B7=0,Проверки!B8=0,Проверки!B9=0,COUNTIF(Проверки!B10:B100,"РАСХОЖДЕНИЕ")=0),"' + READY + '","' + DRAFT + '")', plan.status.label, S_CALC)],
       ["Год плана", plan.year],
       ["Дата среза", fmtDate(plan.asOf)],
       ["Время выгрузки", exportedAt.toLocaleString("ru-RU")],
       ["Средний чек", vat],
       ["Источники ОФД", files + (plan.coverage.ofdFrom ? "; покрытие " + fmtDate(plan.coverage.ofdFrom) + " — " + fmtDate(plan.coverage.ofdTo) : "")],
       ["Источник 1С", plan.coverage.onecLoaded ? (plan.coverage.onecFile || "файл 1С") + (plan.coverage.onecFrom ? "; " + fmtDate(plan.coverage.onecFrom) + " — " + fmtDate(plan.coverage.onecTo) : "") : "не загружен"],
-      ["Допущения", "Одно продление на кассу в году плана. Вероятность — доля касс, не клиентов. Пустой ввод не равен нулю. Многолетний тариф не делится по месяцам."],
+      ["Допущения", "Один чек за кассу/сделку по направлению и каналу; тарифы учитываются только в частном режиме. Вероятность продления — зрелое ретро по всем тарифам направления. Доля покупателей 1С из доступной истории не является годовой конверсией."],
       ["Покрытие истории", plan.coverage.historyNote],
-      ["Допуск сверки", MONEY_TOLERANCE + " ₽. Синие ячейки ввода можно менять: суммы пересчитаются. Жёлтая ячейка — ручная вероятность вместо ретро."],
-      ["", ""],
+      ["Допуск сверки", MONEY_TOLERANCE + " ₽. Синие ячейки ввода можно менять: суммы пересчитаются. Ретро-процент и доля покупателей 1С — оценки, а не подтверждённая годовая конверсия."],
+      ["Режим параметров", plan.params.priceMode === "partial" ? "Частный" : "Общий", "Покупателей 1С среди действующих ОФД", plan.coverage.observedUpsell.buyers, "Действующих клиентов ОФД", plan.coverage.observedUpsell.active],
     ];
+    var rowNumbers = Object.fromEntries(plan.paramsRows.map(function (row, index) { return [row.key, PARAM_FIRST + index]; }));
     var rows = plan.paramsRows.map(function (r, i) {
       var excel = PARAM_FIRST + i;
       var calc = "";
       var calcVal = r.calculated == null ? "" : r.calculated;
-      if (r.inputKind === "prob" && String(r.key).indexOf("p|") === 0) {
-        var retro = String(r.storeKey).indexOf("1c|") === 0 ? retroSheets.onec : retroSheets.ofd;
-        var segmentRow = retro._segments.indexOf(r.fallbackKey || r.storeKey);
-        if (segmentRow >= 0) {
-          var source = qName(retro.sheetName) + '!J' + (4 + segmentRow);
-          calc = fml('=IF(' + source + '=\"\",\"\",' + source + ')', calcVal, S_PCT);
+      if (r.scope === "general" && r.inputKind === "prob") {
+        if (r.retroProduct === "upsell") {
+          calc = fml('=IF($F$12=0,"",$D$12/$F$12)', calcVal, S_PCT);
+        } else {
+          var retro = r.retroProduct === "onec" ? retroSheets.onec : retroSheets.ofd;
+          var product = r.retroProduct === "onec" ? "1c" : "ofd";
+          var segmentRows = ["first", "repeat"].map(function (cycle) {
+            var index = retro._segments.indexOf(segmentKey(product, "all", cycle));
+            return index < 0 ? null : index + 4;
+          }).filter(Boolean);
+          if (segmentRows.length) {
+            var mature = segmentRows.map(function (n) { return qName(retro.sheetName) + '!D' + n; }).join(',');
+            var renewed = segmentRows.map(function (n) { return qName(retro.sheetName) + '!E' + n; }).join(',');
+            calc = fml('=IF(SUM(' + mature + ')=0,"",SUM(' + renewed + ')/SUM(' + mature + '))', calcVal, S_PCT);
+          }
         }
       }
-      var applyF = '=IF(G' + excel + '="",IF(H' + excel + '="","Не задано",H' + excel + '),G' + excel + ')';
+      var generalRow = r.generalKey && rowNumbers[r.generalKey];
+      var applyF = generalRow
+        ? '=IF($B$12="Частный",IF(G' + excel + '="",I' + generalRow + ',G' + excel + '),I' + generalRow + ')'
+        : '=IF(G' + excel + '="",IF(H' + excel + '="","Не задано",H' + excel + '),G' + excel + ')';
       var applyV = r.effective == null ? NOT_SET : r.effective;
       return [
         tx(r.key), r.direction, r.channel, r.tariff, r.cycle, r.metric,
-        inputCell(r.manual, r.metric.indexOf("чек") >= 0 ? "money" : "prob", r.metric.indexOf("Вероятность") >= 0 && r.manual != null),
-        calc === "" ? "" : calc,
-        fml(applyF, applyV, r.metric.indexOf("чек") >= 0 ? S_MONEY : S_PCT),
+        inputCell(r.manual, r.inputKind, r.inputKind === "prob" && r.manual != null),
+        calc || (r.scope === "partial" && calcVal !== "" ? { v: calcVal, s: S_PCT } : ""),
+        fml(applyF, applyV, r.inputKind === "money" ? S_MONEY : S_PCT),
         r.unit, r.source,
       ];
     });
@@ -1335,7 +1366,7 @@
     var steps = [
       ['1. Данные ОФД', 'Загружены · ' + (plan.coverage.ofdFiles || []).length + ' файл(ов)', ''],
       ['2. Сверка «Обмен с 1С»', plan.coverage.onecLoaded ? 'Загружена: ' + (plan.coverage.onecFile || 'файл 1С') : 'Не загружена — направления 1С не посчитаны', plan.coverage.onecLoaded ? '' : '<button type="button" class="pl-load-1c">Загрузить сверку 1С</button>'],
-      ['3. Чеки и вероятности', 'Чеков без ввода: ' + checks.size + ' · вероятностей/конверсий: ' + probs.size + ' · НДС: ' + (plan.params.vat ? 'выбран' : 'не выбран'), '<button type="button" class="pl-open-params" data-pl-target="pl-params"' + (checks.size ? ' data-pl-focus="' + esc(used.find(function (ev) { return ev.check == null; }).checkKey) + '"' : '') + '>Открыть параметры</button>'],
+      ['3. Чеки и вероятности', 'Чеков без ввода: ' + checks.size + ' · вероятностей/конверсий: ' + probs.size + ' · НДС: ' + (plan.params.vat ? 'выбран' : 'не выбран'), '<button type="button" class="pl-open-params" data-pl-target="pl-params"' + (checks.size ? ' data-pl-focus="' + esc(plan.params.priceMode === 'partial' ? used.find(function (ev) { return ev.check == null; }).checkKey : generalCheckKey(used.find(function (ev) { return ev.check == null; }).product, used.find(function (ev) { return ev.check == null; }).channel)) + '"' : '') + '>Открыть параметры</button>'],
       ['4. Первая продажа и месяцы', 'Выбрано кандидатов: ' + plan.roll.upsell.included + ' · без месяца: ' + (plan.status.unassigned + plan.status.invalidMonth), '<button type="button" data-pl-target="pl-upsell">Отобрать клиентов</button>'],
       ['5. Проверка и выгрузка', plan.status.ready ? 'Подготовлено для согласования' : 'Черновик · ' + plan.status.gaps.length + ' причины', '<button type="button" data-pl-target="pl-params">Проверить бюджет</button>'],
     ];
@@ -1425,16 +1456,17 @@
   }
 
   var PARAM_PAGE_SIZE = 60;
-  function parameterFilter(view, rows) {
+  function parameterFilter(view, rows, mode) {
     var query = (view.paramQ || '').trim().toLocaleLowerCase('ru-RU');
     return rows.filter(function (row) {
+      if (row.scope !== mode) return false;
       if (view.paramDir && row.direction !== view.paramDir) return false;
       if (view.paramCh && row.channel !== view.paramCh) return false;
       if (view.paramTariff && row.tariff !== view.paramTariff) return false;
       return !query || [row.direction, row.channel, row.tariff, row.cycle, row.metric].join(' ').toLocaleLowerCase('ru-RU').indexOf(query) >= 0;
     });
   }
-  function parameterFilters(view, rows) {
+  function parameterFilters(view, rows, mode) {
     function select(cls, label, key) {
       var values = Array.from(new Set(rows.map(function (row) { return row[key]; }).filter(function (v) { return v && v !== '—'; }))).sort();
       return '<label>' + label + ' <select class="' + cls + '"><option value="">Все</option>' + values.map(function (v) {
@@ -1442,8 +1474,40 @@
       }).join('') + '</select></label>';
     }
     return '<div class="pl-filterbar"><label>Найти параметр <input class="pl-param-q" type="search" placeholder="Направление, тариф, канал" value="' + esc(view.paramQ || '') + '"></label>' +
-      select('pl-param-dir', 'Направление', 'direction') + select('pl-param-ch', 'Канал', 'channel') + select('pl-param-tf', 'Тариф', 'tariff') + '</div>';
+      select('pl-param-dir', 'Направление', 'direction') + select('pl-param-ch', 'Канал', 'channel') + (mode === 'partial' ? select('pl-param-tf', 'Тариф', 'tariff') : '') + '</div>';
   }
+  function generalParameterTable(rows) {
+    var groups = new Map();
+    rows.forEach(function (row) {
+      var key = row.direction + '|' + row.channel;
+      if (!groups.has(key)) groups.set(key, { direction: row.direction, channel: row.channel });
+      var pair = groups.get(key);
+      pair[row.inputKind] = row;
+    });
+    function input(row) {
+      if (!row) return '—';
+      var isMoney = row.inputKind === 'money';
+      var shown = row.manual == null ? '' : isMoney ? String(row.manual) : String(Math.round(row.manual * 10000) / 100);
+      var source = isMoney ? row.unit :
+        row.calculated == null ? 'Нет данных для оценки' : 'Оценка: ' + fmtPct(row.calculated);
+      return '<div class="pl-general-input" data-key="' + esc(row.storeKey) + '"><label class="pl-input-label">' +
+        '<input type="number" class="pl-in" min="0"' + (isMoney ? '' : ' max="100"') +
+        ' step="any" inputmode="decimal" aria-label="' + esc(row.metric + ', ' + row.direction + ', ' + row.channel) +
+        '" value="' + esc(shown) + '"><span>' + (isMoney ? '₽' : '%') + '</span></label>' +
+        '<small>' + esc(source || row.unit) + '</small><span class="pl-error" role="alert"></span></div>';
+    }
+    var html = '<div class="pl-table-wrap"><table class="pl-table pl-general-table"><thead><tr>' +
+      '<th>Направление</th><th>Канал продаж</th><th>Средний чек на продления</th><th>Средний чек на новые подключения</th>' +
+      '<th>Вероятность продления</th><th>Вероятность новых подключений</th></tr></thead><tbody>';
+    groups.forEach(function (group) {
+      var isNew = group.direction === DIRS[2].title;
+      html += '<tr><td><strong>' + esc(group.direction) + '</strong></td><td>' + esc(group.channel) + '</td>' +
+        '<td>' + (isNew ? '—' : input(group.money)) + '</td><td>' + (isNew ? input(group.money) : '—') + '</td>' +
+        '<td>' + (isNew ? '—' : input(group.prob)) + '</td><td>' + (isNew ? input(group.prob) : '—') + '</td></tr>';
+    });
+    return html + '</tbody></table></div>';
+  }
+
   function parameterTable(rows, view) {
     var page = Math.min(view.paramPage || 0, Math.max(0, Math.ceil(rows.length / PARAM_PAGE_SIZE) - 1));
     view.paramPage = page;
@@ -1472,13 +1536,13 @@
     if (raw !== '' && money && Math.abs(number * 100 - Math.round(number * 100)) > 1e-6) {
       return { error: 'Укажите рубли с точностью до копейки (не больше двух знаков после запятой).' };
     }
-    var field = row.metric.indexOf('Вероятность') >= 0 ? 'probManual' : 'checks';
+    var field = row.storeField || (row.inputKind === 'prob' ? 'probManual' : 'checks');
     var values = Object.fromEntries(Object.entries(params[field]).filter(function (pair) { return pair[0] !== row.storeKey; }));
     if (raw !== '') values[row.storeKey] = money ? number : number / 100;
     return { params: Object.assign({}, params, { [field]: values }) };
   }
   function bindParameterRows(box, plan, view, rows) {
-    box.querySelectorAll('.pl-param-row').forEach(function (tr) {
+    box.querySelectorAll('.pl-param-row, .pl-general-input').forEach(function (tr) {
       var row = rows.find(function (r) { return r.storeKey === tr.dataset.key; });
       if (!row) return;
       var input = tr.querySelector('.pl-in');
@@ -1523,7 +1587,7 @@
       var vat = plan.params.vat === "with" ? "с НДС" : plan.params.vat === "without" ? "без НДС" : "не выбрано";
       box.innerHTML = toolbar(plan, 'summary', viewOf(instanceId)) +
         '<div class="pl-summary-top"><label>Год плана <input class="pl-year" type="number" min="2000" max="2100" step="1" value="' + plan.year + '"></label>' +
-        '<span>Средний чек: ' + esc(vat) + '</span><span class="pl-error" role="alert"></span></div>' +
+        '<span>Средний чек: ' + esc(vat) + '</span><span>Параметры: ' + (plan.params.priceMode === 'partial' ? 'частные по тарифам' : 'общие по направлению и каналу') + '</span><span class="pl-error" role="alert"></span></div>' +
         planSources(plan) + planSteps(plan) + cards(plan);
       box.querySelector('.pl-year').addEventListener('change', function (e) {
         var year = Number(e.target.value);
@@ -1790,19 +1854,23 @@
     });
     board("pl-params", "Планирование — параметры и проверка бюджета", function (box, plan, instanceId) {
       var view = viewOf(instanceId);
-      var rows = parameterFilter(view, plan.paramsRows);
+      var mode = plan.params.priceMode === 'partial' ? 'partial' : 'general';
+      var modeRows = plan.paramsRows.filter(function (row) { return row.scope === mode; });
+      var rows = parameterFilter(view, modeRows, mode);
       var vatName = 'pl-vat-' + instanceId;
+      var modeName = 'pl-price-mode-' + instanceId;
       var html = '<div class="pl-params-top"><label>Год плана <input class="pl-year" type="number" min="2000" max="2100" step="1" value="' + plan.year + '"></label>' +
         '<fieldset class="pl-vat"><legend>Средний чек</legend><label><input type="radio" name="' + esc(vatName) + '" value="with"' + (plan.params.vat === 'with' ? ' checked' : '') + '> с НДС</label>' +
         '<label><input type="radio" name="' + esc(vatName) + '" value="without"' + (plan.params.vat === 'without' ? ' checked' : '') + '> без НДС</label></fieldset>' +
         '<button type="button" class="pl-allxlsx">Скачать весь план в Excel</button><span class="pl-feedback" role="status">' + esc(view.feedback || '') + '</span><span class="pl-error" role="alert"></span></div>' +
-        '<p class="pl-hint">Вводите средний чек в рублях, вероятность и конверсию — в процентах: 50 означает 50%. Пустое поле не равно нулю. НДС отмечается для всех чеков без автоматического пересчёта. Изменение сохраняется после выхода из поля или Enter.</p>' +
+        '<p class="pl-hint">Вводите средний чек в рублях, проценты — числом от 0 до 100. Общие чеки после обновления пустые: старые тарифные цены сохранены только в частном режиме. Ретро-продления рассчитаны по зрелым окончаниям касс; наблюдаемая доля покупателей 1С из неполной истории — не годовая конверсия. Изменения сохраняются после выхода из поля или Enter.</p>' +
+        '<fieldset class="pl-mode"><legend>Расчёт бюджета</legend><label><input type="radio" name="' + esc(modeName) + '" value="general"' + (mode === 'general' ? ' checked' : '') + '> Общий: направление × канал, без тарифов</label><label><input type="radio" name="' + esc(modeName) + '" value="partial"' + (mode === 'partial' ? ' checked' : '') + '> Частный: тариф/цикл, общий как запасной</label></fieldset>' +
         '<div class="pl-gaps"><strong>' + esc(plan.status.label) + '</strong>' +
         (plan.status.gaps.length ? '<ul>' + plan.status.gaps.map(function (g) { return '<li>' + esc(g) + '</li>'; }).join('') + '</ul>' : '<span> Все параметры заполнены.</span>') +
         (!plan.coverage.onecLoaded ? '<button type="button" class="pl-load-1c">Загрузить сверку 1С</button>' : '') + '</div>' +
-        parameterFilters(view, plan.paramsRows) +
-        '<p class="pl-hint">Строк параметров: ' + rows.length + ' из ' + plan.paramsRows.length + '. Чек — за одну кассу или первую сделку, не за весь ИНН.</p>' +
-        (rows.length ? parameterTable(rows, view) : '<div class="pl-empty">Параметров по этим фильтрам нет.</div>') +
+        parameterFilters(view, modeRows, mode) +
+        '<p class="pl-hint">Строк параметров: ' + rows.length + ' из ' + modeRows.length + '. Чек — за одну кассу или первую сделку, не за весь ИНН.</p>' +
+        (rows.length ? (mode === 'general' ? generalParameterTable(rows) : parameterTable(rows, view)) : '<div class="pl-empty">Параметров по этим фильтрам нет.</div>') +
         '<details class="pl-checks"><summary>Контрольные сверки · ' + plan.audit.filter(function (a) { return !a.ok; }).length + ' расхождений</summary><ul>' +
         plan.audit.map(function (a) { return '<li>' + (a.ok ? '✓ ' : '⚠ ') + esc(a.name) + '</li>'; }).join('') + '</ul></details>' +
         '<details class="pl-exclusions"><summary>Исключения: ' + plan.exclusions.length + '</summary><ul>' +
@@ -1810,6 +1878,15 @@
         '</ul>' + (plan.exclusions.length > 30 ? '<p>Полный список — в Excel.</p>' : '') + '</details>';
       box.innerHTML = html;
       bindNavigation(box);
+      box.querySelectorAll('.pl-mode input').forEach(function (node) {
+        node.addEventListener('change', function () {
+          if (!node.checked) return;
+          view.feedback = 'Режим изменён, план пересчитан';
+          view.paramPage = 0;
+          view.paramTariff = '';
+          saveParams(Object.assign({}, plan.params, { priceMode: node.value === 'partial' ? 'partial' : 'general' }));
+        });
+      });
       box.querySelector('.pl-year').addEventListener('change', function (e) {
         var year = Number(e.target.value);
         if (!Number.isInteger(year) || year < 2000 || year > 2100) { box.querySelector('.pl-params-top .pl-error').textContent = 'Укажите год от 2000 до 2100.'; return; }
@@ -1833,7 +1910,8 @@
       bindParameterRows(box, plan, view, rows);
       bindPager(box, 'pl-params-page', view, 'paramPage', rows.length, PARAM_PAGE_SIZE, function () { listeners[instanceId](); });
       [['.pl-param-dir', 'paramDir'], ['.pl-param-ch', 'paramCh'], ['.pl-param-tf', 'paramTariff']].forEach(function (pair) {
-        box.querySelector(pair[0]).addEventListener('change', function (e) { view[pair[1]] = e.target.value; view.paramPage = 0; listeners[instanceId](); });
+        var node = box.querySelector(pair[0]);
+        if (node) node.addEventListener('change', function (e) { view[pair[1]] = e.target.value; view.paramPage = 0; listeners[instanceId](); });
       });
       var search = box.querySelector('.pl-param-q');
       search.addEventListener('input', function () {

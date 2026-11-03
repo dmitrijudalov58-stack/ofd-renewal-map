@@ -611,7 +611,29 @@ table.wtable tbody tr:hover { background: var(--paper); }
 .pl-quarter-inns, .pl-channel-links { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 10px 0; font-size: 12px; }
 .pl-channel-months summary, .pl-checks summary, .pl-exclusions summary { cursor: pointer; font-weight: 600; }
 .pl-checks, .pl-exclusions { border-top: 1px solid var(--line); padding: 10px 0; margin-top: 8px; }
-/* Переход к борду не прячет его начало под закреплённой шапкой. */
+.pl-mode { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+.pl-mode legend { color: var(--viz-text2); font-size: 11px; }
+.pl-mode label { font-size: 12px; cursor: pointer; }
+.pl-general-table { min-width: 1050px; }
+.pl-general-table td { min-width: 145px; }
+.pl-general-table td:first-child { min-width: 220px; }
+.pl-general-input small { display: block; color: var(--viz-text2); font-size: 11px; max-width: 190px; }
+.pl-general-input .pl-in { width: 110px; min-width: 110px; }
+@container (max-width: 900px) {
+  .pl-general-table { min-width: 0; }
+  .pl-general-table thead { display: none; }
+  .pl-general-table tbody { display: grid; gap: 10px; padding: 8px; }
+  .pl-general-table tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .pl-general-table tbody td { display: block; min-width: 0; border: 0; padding: 4px; }
+  .pl-general-table tbody td:first-child { grid-column: 1 / -1; }
+  .pl-general-table tbody td:nth-child(n+3)::before { display: block; font-size: 11px; color: var(--viz-text2); }
+  .pl-general-table tbody td:nth-child(3)::before { content: 'Чек продления'; }
+  .pl-general-table tbody td:nth-child(4)::before { content: 'Чек нового подключения'; }
+  .pl-general-table tbody td:nth-child(5)::before { content: 'Вероятность продления'; }
+  .pl-general-table tbody td:nth-child(6)::before { content: 'Вероятность нового подключения'; }
+}
+@container (max-width: 480px) { .pl-general-table tbody tr { grid-template-columns: 1fr; } .pl-general-table tbody td { grid-column: 1 / -1; } }
+
 .widget[data-widget-id^="pl-"] { scroll-margin-top: 190px; }
 .pl-board { container-type: inline-size; }
 @container (max-width: 900px) {

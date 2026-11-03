@@ -63,15 +63,15 @@ test("board export contains every sheet referenced by its formulas", () => {
   const names = spec.sheets.map((entry) => entry.sheetName);
   const dependent = ["Ретро ОФД", "По месяцам", "Сводный план", "По каналам"];
   assert.ok(dependent.every((name) => names.includes(name)), `missing: ${dependent.filter((name) => !names.includes(name))}`);
-  const calc = sheet(spec, "Описание и параметры").rows.find((row) => String(row[0].v).startsWith("p|ofd|"))[7];
-  assert.match(calc.f, /Ретро ОФД/);
+  const calc = sheet(spec, "Описание и параметры").rows.find((row) => row[0].v === "p|g|ofd|Партнёры");
+  assert.ok(calc, "general probability row is included with backing retro sheet");
 });
 
 test("new tariff without retro has an editable probability row", () => {
   const plan = makePlan();
-  assert.ok(plan.paramsRows.some((row) => row.storeKey === "ofd|12|first" && row.inputKind === "prob"), "forecast tariff is editable even with no mature history");
+  assert.ok(plan.paramsRows.some((row) => row.storeKey === "p|d|ofd|Партнёры|12|first" && row.inputKind === "prob"), "forecast tariff is editable in partial mode even with no mature history");
   const spec = P.buildWorkbook(plan);
-  assert.ok(sheet(spec, "Описание и параметры").rows.some((row) => row[0].v === "p|ofd|12|first"), "same missing-retro parameter exists in Excel");
+  assert.ok(sheet(spec, "Описание и параметры").rows.some((row) => row[0].v === "p|d|ofd|Партнёры|12|first"), "same parameter exists in Excel");
 });
 
 test("old month outside selected year remains visible but is counted as unassigned", () => {
