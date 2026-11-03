@@ -54,11 +54,18 @@
   var topbarStats = { ofd: null, ofd1c: null, dadata: null };
   var STATS_LABELS = { ofd: "ОФД", ofd1c: "Обмен с 1С", dadata: "DaData" };
   function renderStatsBanner() {
-    var lines = ["ofd", "ofd1c", "dadata"].filter(function (k) { return topbarStats[k]; }).map(function (k) {
-      var s = topbarStats[k];
-      return "<div" + (s.isError ? ' style="color:var(--crit);font-weight:600"' : "") + "><b>" + STATS_LABELS[k] + ":</b> " + s.text + "</div>";
+    var keys = ["ofd", "ofd1c", "dadata"].filter(function (k) { return topbarStats[k]; });
+    if (!keys.length) { statsBanner.textContent = "Пока ничего не загружено."; return; }
+    var lines = keys.map(function (k) {
+      var line = document.createElement("div");
+      var label = document.createElement("b");
+      label.textContent = STATS_LABELS[k] + ":";
+      line.appendChild(label);
+      line.appendChild(document.createTextNode(" " + topbarStats[k].text));
+      if (topbarStats[k].isError) { line.style.color = "var(--crit)"; line.style.fontWeight = "600"; }
+      return line;
     });
-    statsBanner.innerHTML = lines.length ? lines.join("") : "Пока ничего не загружено.";
+    statsBanner.replaceChildren.apply(statsBanner, lines);
   }
   function setStatus(text, isError) {
     topbarStats.ofd = { text: text, isError: !!isError };
@@ -201,7 +208,7 @@
                 headerIssues = headerIssues.concat(parsed.headerIssues.map(function (m) { return file.name + ": " + m; }));
               }
               for (var i = 0; i < parsed.rows.length; i++) {
-                entries.push({ row: parsed.rows[i], fileTime: file.lastModified || 0 });
+                entries.push({ row: Object.assign({}, parsed.rows[i], { sourceFile: file.name }), fileTime: file.lastModified || 0 });
               }
               resolve();
             });
@@ -246,6 +253,7 @@
 
         window.OFDState.model = model;
         window.OFDState.rows = merged.rows;
+        window.OFDState.sourceFiles = files.map(function (f) { return f.name; });
         window.OFDState.asOf = asOf;
         window.OFDState.loadTimeAsOf = asOf; // зафиксирован раз и навсегда, для риск-бордов
         window.OFDState.freshness = computeFreshness(merged.rows);

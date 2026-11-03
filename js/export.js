@@ -103,26 +103,68 @@
     for (i = i + 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
     return s;
   }
+  // Ячейка-объект {v, f, s, t} — только для книг с формулами. Обычные значения
+  // (число, строка, null) остаются прежним XML, чтобы старые выгрузки не менялись.
+  function isRichCell(v) {
+    return !!v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date) && (Object.prototype.hasOwnProperty.call(v, "f") || Object.prototype.hasOwnProperty.call(v, "s") || Object.prototype.hasOwnProperty.call(v, "t"));
+  }
   function cellXml(ref, v, styleIdx) {
+    if (isRichCell(v)) return richCellXml(ref, v, styleIdx);
     var st = styleIdx ? ' s="' + styleIdx + '"' : "";
     if (v === null || v === undefined || v === "") return '<c r="' + ref + '"' + st + "/>";
     if (typeof v === "number" && isFinite(v)) return '<c r="' + ref + '"' + st + "><v>" + v + "</v></c>";
     return '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(v) + "</t></is></c>";
+  }
+  function richCellXml(ref, cell, fallbackStyle) {
+    var style = cell.s != null ? cell.s : (fallbackStyle || 0);
+    var st = style ? ' s="' + style + '"' : "";
+    var f = cell.f ? "<f>" + xmlEsc(String(cell.f).replace(/^=/, "")) + "</f>" : "";
+    var v = cell.v;
+    if (cell.t === "inlineStr" || (typeof v === "string" && !cell.f)) {
+      if (v === null || v === undefined || v === "") return '<c r="' + ref + '"' + st + "/>";
+      return '<c r="' + ref + '"' + st + ' t="inlineStr"><is><t xml:space="preserve">' + xmlEsc(v) + "</t></is></c>";
+    }
+    if (cell.f && (v === null || v === undefined || v === "")) {
+      return '<c r="' + ref + '"' + st + ' t="str">' + f + "<v></v></c>";
+    }
+    if (typeof v === "string") {
+      return '<c r="' + ref + '"' + st + ' t="str">' + f + "<v>" + xmlEsc(v) + "</v></c>";
+    }
+    if (typeof v === "number" && isFinite(v)) return '<c r="' + ref + '"' + st + ">" + f + "<v>" + v + "</v></c>";
+    if (!f) return '<c r="' + ref + '"' + st + "/>";
+    return '<c r="' + ref + '"' + st + ' t="str">' + f + "<v></v></c>";
   }
 
   // Один лист данных -> XML листа. lc (listColumn) -- выпадающий список, только у первого листа.
   function dataSheetXml(sheet, lc) {
     var headers = sheet.headers, rows = sheet.rows, lastCol = colLetter(headers.length - 1);
     var textCols = sheet.textCols || [];
-    var sheetRows = ['<row r="1">' + headers.map(function (h, i) { return cellXml(colLetter(i) + "1", h, 1); }).join("") + "</row>"];
+    var preamble = sheet.preamble || [];
+    var headerAt = preamble.length + 1;
+    var sheetRows = [];
+    preamble.forEach(function (r, i) {
+      var n = i + 1;
+      sheetRows.push('<row r="' + n + '">' + (r || []).map(function (v, ci) {
+        return cellXml(colLetter(ci) + n, v, 0);
+      }).join("") + "</row>");
+    });
+    sheetRows.push('<row r="' + headerAt + '">' + headers.map(function (h, i) { return cellXml(colLetter(i) + headerAt, h, 1); }).join("") + "</row>");
     rows.forEach(function (r, ri) {
-      var n = ri + 2;
+      var n = headerAt + 1 + ri;
       sheetRows.push('<row r="' + n + '">' + r.map(function (v, ci) {
         return cellXml(colLetter(ci) + n, textCols.indexOf(ci) !== -1 && v != null ? String(v) : v, 0);
       }).join("") + "</row>");
     });
-    var lastRow = Math.max(2, rows.length + 1);
-    var cols = (sheet.colWidths || []).map(function (w, i) { return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>'; }).join("");
+    var lastRow = Math.max(headerAt + 1, headerAt + rows.length);
+    var cols = (sheet.colWidths || []).map(function (w, i) {
+      var level = sheet.colOutline && sheet.colOutline[i] ? ' outlineLevel="' + sheet.colOutline[i] + '"' : "";
+      return '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"' + level + "/>";
+    }).join("");
+    var freeze = sheet.freezeRow == null ? headerAt : sheet.freezeRow;
+    var pane = freeze > 0
+      ? '<pane ySplit="' + freeze + '" topLeftCell="A' + (freeze + 1) + '" activePane="bottomLeft" state="frozen"/>'
+      : "";
+    var filterRef = sheet.filterRef === null ? "" : (sheet.filterRef || ("A" + headerAt + ":" + lastCol + lastRow));
     var validation = "";
     if (lc) {
       var listRef = "'" + lc.sheetName.replace(/'/g, "''") + "'!$A$1:$A$" + lc.options.length;
@@ -131,19 +173,70 @@
     }
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-      '<sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+      '<sheetViews><sheetView workbookViewId="0">' + pane + "</sheetView></sheetViews>" +
       '<sheetFormatPr defaultRowHeight="15"/>' + (cols ? "<cols>" + cols + "</cols>" : "") +
       "<sheetData>" + sheetRows.join("") + "</sheetData>" +
-      '<autoFilter ref="A1:' + lastCol + (rows.length + 1) + '"/>' + validation + "</worksheet>";
+      (filterRef ? '<autoFilter ref="' + filterRef + '"/>' : "") + validation + "</worksheet>";
   }
 
   // spec: одно-листовой {sheetName, headers:[str], rows:[[...]], colWidths:[num], textCols:[idx]
   // (числа как текст -- ИНН), listColumn:{index, options:[str], sheetName}} либо многолистовой
   // {sheets:[{sheetName, headers, rows, colWidths, textCols}], listColumn?} -> Uint8Array .xlsx.
   // listColumn относится к ПЕРВОМУ листу, скрытый лист со значениями списка идёт последним.
+  function sheetHasFormula(sh) {
+    if (sh.forceFormulaBook) return true;
+    var rows = sh.rows || [];
+    for (var r = 0; r < rows.length; r++) {
+      var row = rows[r] || [];
+      for (var c = 0; c < row.length; c++) if (isRichCell(row[c]) && row[c].f) return true;
+    }
+    return false;
+  }
+  var STYLES_PLAIN = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEAF4F1"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+  // Индексы s для книг с формулами (первые два совпадают со старой книгой):
+  // 0 обычная, 1 шапка, 2 ввод (синий шрифт), 3 ручная замена вероятности (синий + жёлтый),
+  // 4 деньги, 5 проценты, 6 дата, 7 текст @, 8 расчёт (серый шрифт).
+  var STYLES_FORMULA = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<numFmts count="4">' +
+    '<numFmt numFmtId="164" formatCode="#,##0.00"/>' +
+    '<numFmt numFmtId="165" formatCode="0.00%"/>' +
+    '<numFmt numFmtId="166" formatCode="DD.MM.YYYY"/>' +
+    '<numFmt numFmtId="167" formatCode="@"/>' +
+    "</numFmts>" +
+    '<fonts count="4"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font>' +
+    '<font><sz val="11"/><color rgb="FF0000FF"/><name val="Calibri"/></font>' +
+    '<font><sz val="11"/><color rgb="FF666666"/><name val="Calibri"/></font></fonts>' +
+    '<fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFEAF4F1"/><bgColor indexed="64"/></patternFill></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFFFFF99"/><bgColor indexed="64"/></patternFill></fill>' +
+    '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF4CC"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="11">' +
+    '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+    '<xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
+    '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+    '<xf numFmtId="165" fontId="2" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>' +
+    '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+    '<xf numFmtId="164" fontId="2" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' +
+    '<xf numFmtId="165" fontId="2" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' +
+    "</cellXfs>" +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+
   function buildXlsx(spec) {
     var dataSheets = spec.sheets || [spec];
     var lc = spec.listColumn;
+    var formulaBook = dataSheets.some(sheetHasFormula);
     var files = [];
     var sheetsMeta = [];
     dataSheets.forEach(function (sh, i) {
@@ -162,18 +255,16 @@
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
       sheetsMeta.map(function (s, i) { return '<sheet name="' + xmlEsc(s.name) + '" sheetId="' + (i + 1) + '"' + (s.hidden ? ' state="hidden"' : "") + ' r:id="rId' + (i + 1) + '"/>'; }).join("") +
       "</sheets><definedNames>" + dataSheets.map(function (sh, i) {
-        return '<definedName name="_xlnm._FilterDatabase" localSheetId="' + i + '" hidden="1">' + xmlEsc("'" + sh.sheetName.replace(/'/g, "''") + "'!$A$1:$" + colLetter(sh.headers.length - 1) + "$" + (sh.rows.length + 1)) + "</definedName>";
-      }).join("") + "</definedNames></workbook>";
+        var headerAt = ((sh.preamble || []).length) + 1;
+        var filter = sh.filterRef === null ? "" : (sh.filterRef || ("A" + headerAt + ":" + colLetter(sh.headers.length - 1) + (headerAt + sh.rows.length)));
+        if (!filter) return "";
+        var abs = filter.replace(/([A-Z]+)(\d+)/g, "$$$1$$$2");
+        return '<definedName name="_xlnm._FilterDatabase" localSheetId="' + i + '" hidden="1">' + xmlEsc("'" + sh.sheetName.replace(/'/g, "''") + "'!" + abs) + "</definedName>";
+      }).join("") + "</definedNames>" + (formulaBook ? '<calcPr calcMode="auto" fullCalcOnLoad="1"/>' : "") + "</workbook>";
     var wbRels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
       sheetsMeta.map(function (s, i) { return '<Relationship Id="rId' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet' + (i + 1) + '.xml"/>'; }).join("") +
       '<Relationship Id="rId' + (sheetsMeta.length + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>';
-    var styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-      '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
-      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEAF4F1"/><bgColor indexed="64"/></patternFill></fill></fills>' +
-      '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
-      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-      '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/></cellXfs>' +
-      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    var styles = formulaBook ? STYLES_FORMULA : STYLES_PLAIN;
     var ct = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' +
       '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +

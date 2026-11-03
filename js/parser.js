@@ -107,7 +107,7 @@
       if (arr.length === 0) return;
       if (sheetIdx === 0) headerIssues = checkHeader(arr[0]);
       for (var r = 1; r < arr.length; r++) {
-        rows.push(normalizeRow(arr[r]));
+        rows.push(Object.assign({}, normalizeRow(arr[r]), { sourceSheet: name, sourceRow: r + 1 }));
       }
     });
     return { rows: rows, headerIssues: headerIssues };

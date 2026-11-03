@@ -4026,7 +4026,10 @@
   // Матчим ТОЛЬКО по ИНН клиента (общее поле в обеих системах) -- см. ofd1cMatchClients.
   var OFD1C_STATE = { records: null, fileName: null, sheetsCount: null, headerMismatch: false };
   var OFD1C_REFRESHERS = {}; // instanceId -> function() -- живой пересчёт остальных B8-бордов после загрузки файла (тот же приём, что ccActiveRefreshers у B5)
-  function ofd1cBroadcast() { Object.keys(OFD1C_REFRESHERS).forEach(function (k) { OFD1C_REFRESHERS[k](); }); }
+  function ofd1cBroadcast() {
+    Object.keys(OFD1C_REFRESHERS).forEach(function (k) { OFD1C_REFRESHERS[k](); });
+    if (root.OFDPlanning && root.OFDPlanning.refresh) root.OFDPlanning.refresh();
+  }
 
   // Результат офлайн-обогащения DaData (scripts/dadata-enrich.js) -- отдельный upload,
   // ТА ЖЕ схема, что "Обмен с 1С": грузится вручную как файл (не автоматически, инструмент
@@ -6364,7 +6367,10 @@
   function chSaveOverrides() {
     try { localStorage.setItem(CH_OVERRIDE_KEY, JSON.stringify(chOverrides)); } catch (e) { /* приватный режим */ }
   }
-  function chBroadcast() { Object.keys(CH_REFRESHERS).forEach(function (k) { CH_REFRESHERS[k](); }); }
+  function chBroadcast() {
+    Object.keys(CH_REFRESHERS).forEach(function (k) { CH_REFRESHERS[k](); });
+    if (root.OFDPlanning && root.OFDPlanning.refresh) root.OFDPlanning.refresh();
+  }
   function chEditCount() { return Object.keys(chOverrides).filter(function (k) { return chOverrides[k]; }).length; }
   function chAllChannels() { return root.OFDMetrics.CHANNELS.concat([CH_NOCHANNEL]); }
   // Канал клиента — по самой свежей кассе (Дима: 11,2% клиентов имеют кассы в разных
