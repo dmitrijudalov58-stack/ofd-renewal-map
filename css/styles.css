@@ -372,6 +372,25 @@ table.wtable tbody tr:hover { background: var(--paper); }
 }
 .threshold-row label { display: flex; align-items: center; gap: 5px; color: var(--muted); }
 
+/* B3: поиск и мультивыбор партнёров для отчёта по отдельным кодам. */
+.pc-controls { margin-top: 12px; }
+.pc-search { font: inherit; font-size: 12px; min-width: 230px; padding: 6px 9px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--paper); color: var(--ink); }
+.pc-options { display: flex; flex-wrap: wrap; gap: 5px; max-height: 130px; overflow-y: auto; margin-bottom: 8px; }
+.pc-option { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--paper); color: var(--ink); cursor: pointer; text-align: left; }
+.pc-option:hover, .pc-option:focus-visible { border-color: var(--brand); }
+.pc-selected-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.pc-selected { display: inline-flex; gap: 6px; align-items: center; padding: 4px 8px; border-radius: 8px;
+  color: var(--ink); background: color-mix(in oklab, var(--brand) 12%, var(--paper)); font-size: 12px; }
+.pc-selected button { border: 0; background: transparent; color: var(--ink); cursor: pointer; font: inherit; }
+.pc-selected button:hover, .pc-selected button:focus-visible { color: var(--brand); }
+.pc-table table.wtable { table-layout: fixed; }
+.pc-table table.wtable th, .pc-table table.wtable td { padding: 7px 5px; overflow-wrap: anywhere; }
+.pc-table table.wtable td:first-child, .pc-table table.wtable td:nth-child(3) {
+  font-family: var(--mono); font-size: 10.5px; white-space: nowrap;
+}
+
 /* Борд 7 -- "Календарь продлений" / "Переток тарифов" (2026-08-31). Блоки идут друг под
    другом внутри карточки (не отдельные карточки холста -- 4 блока на Борде 1, до 4 на
    Борде 2), каждый со своим горизонтально скроллящимся графиком -- десятки месяцев истории

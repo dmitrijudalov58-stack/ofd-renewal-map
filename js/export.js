@@ -281,12 +281,15 @@
     ].concat(files));
   }
 
-  function downloadXlsx(name, spec) {
-    var bytes = buildXlsx(spec);
+  function downloadXlsxBytes(name, bytes) {
     downloadBlob(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), safeFileName(name) + ".xlsx");
   }
 
-  var api = { downloadCSV: downloadCSV, toCSV: toCSV, buildXlsx: buildXlsx, downloadXlsx: downloadXlsx, crc32: crc32 };
+  function downloadXlsx(name, spec) {
+    downloadXlsxBytes(name, buildXlsx(spec));
+  }
+
+  var api = { downloadCSV: downloadCSV, toCSV: toCSV, buildXlsx: buildXlsx, downloadXlsx: downloadXlsx, downloadXlsxBytes: downloadXlsxBytes, crc32: crc32 };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OFDExport = api;
 })(typeof window !== "undefined" ? window : globalThis);

@@ -696,7 +696,7 @@
     opts = opts || {};
     var id = "t" + Math.random().toString(36).slice(2, 8);
     var thead = "<tr>" + headers.map(function (h, i) {
-      return '<th data-col="' + i + '" data-type="' + (h.num ? "num" : "str") + '">' + esc(h.label) + "</th>";
+      return '<th data-col="' + i + '" data-type="' + (h.date ? "date" : h.num ? "num" : "str") + '">' + esc(h.label) + "</th>";
     }).join("") + "</tr>";
     var tbody = rows.map(function (r) {
       return "<tr>" + r.map(function (cell, i) {
@@ -719,6 +719,10 @@
           var a = ra.children[col].textContent.replace(/\s/g, "").replace(",", ".");
           var b = rb.children[col].textContent.replace(/\s/g, "").replace(",", ".");
           if (type === "num") { a = parseFloat(a) || 0; b = parseFloat(b) || 0; }
+          if (type === "date") {
+            var dateKey = function (value) { var parts = value.split("."); return parts.length === 3 ? parts[2] + parts[1] + parts[0] : ""; };
+            a = dateKey(a); b = dateKey(b);
+          }
           // dir[col]=true после первого клика всегда означает "по возрастанию",
           // независимо от того, в каком порядке строки были на экране до клика
           if (a < b) return dir[col] ? -1 : 1;
@@ -1636,6 +1640,217 @@
       return wrap;
     },
     exportable: true,
+  };
+
+  // Новый отчёт по отдельным PIN, а не по текущему партнёру клиента/кассы.
+  // Исходные строки уже сведены по PIN при загрузке нескольких файлов (app.js).
+  var PC_SCREEN_LIMIT = 200;
+  var PC_OPTION_LIMIT = 40;
+  var PC_EXPORT_CHUNK = 2000;
+  var PC_SYNC_MAX_ROWS = 20000;
+  var PC_HEADERS = ["ИНН партнёра", "Наименование партнёра", "ИНН клиента", "Наименование клиента", "Дата создания", "Дата активации"];
+  var PC_STATE = new Map();
+  var PC_EXPORTS = new Map();
+  var PC_PARTNERS = { rows: null, list: [] };
+
+  function pcPartnerKey(row) {
+    var inn = String(row.partnerInn || "").trim();
+    if (inn) return "inn:" + inn;
+    var name = String(row.partner || "").trim().toLocaleLowerCase("ru-RU");
+    return name ? "name:" + name : "";
+  }
+
+  function pcPartners(rows) {
+    if (PC_PARTNERS.rows === rows) return PC_PARTNERS.list;
+    var byKey = new Map();
+    rows.forEach(function (row) {
+      if (!row.pin || row.status === "Отозвано" || !["Зарегистрировано", "Новый", "Выдан"].includes(row.status)) return;
+      var key = pcPartnerKey(row);
+      if (key && !byKey.has(key)) byKey.set(key, { key: key, inn: String(row.partnerInn || ""), name: String(row.partner || "") });
+    });
+    var list = Array.from(byKey.values()).sort(function (a, b) { return a.name.localeCompare(b.name, "ru") || a.inn.localeCompare(b.inn, "ru"); });
+    PC_PARTNERS = { rows: rows, list: list };
+    return list;
+  }
+
+  function pcState(instanceId, rows) {
+    var state = PC_STATE.get(instanceId);
+    if (state && state.rows === rows) return state;
+    state = { rows: rows, selected: new Set(), mode: "created", search: "" };
+    PC_STATE.set(instanceId, state);
+    return state;
+  }
+
+  function pcMatches(rows, selected, mode, ctx) {
+    if (!selected.size || !(ctx.periodStart instanceof Date) || !(ctx.periodEnd instanceof Date) || ctx.periodStart > ctx.periodEnd) return [];
+    // app.js задаёт конец 23:59:59; эксклюзивная граница следующего дня покрывает и миллисекунды.
+    var end = new Date(ctx.periodEnd.getFullYear(), ctx.periodEnd.getMonth(), ctx.periodEnd.getDate() + 1);
+    return rows.filter(function (row) {
+      if (!row.pin || !["Зарегистрировано", "Новый", "Выдан"].includes(row.status) || !selected.has(pcPartnerKey(row))) return false;
+      var date = row[mode];
+      return date instanceof Date && !isNaN(date.getTime()) && date >= ctx.periodStart && date < end;
+    });
+  }
+
+  function pcCells(row) {
+    return [row.partnerInn || "", row.partner || "", row.innOrg || row.innPhys || "", row.org || "",
+      row.created instanceof Date ? fmtDate(row.created) : "", row.activated instanceof Date ? fmtDate(row.activated) : ""];
+  }
+
+  function pcRenderPartners(wrap, partners, state) {
+    var term = state.search.trim().toLocaleLowerCase("ru-RU");
+    var digits = term.replace(/\D/g, "");
+    var options = term ? partners.filter(function (p) {
+      return !state.selected.has(p.key) && (p.name.toLocaleLowerCase("ru-RU").includes(term) || (digits && p.inn.replace(/\D/g, "").includes(digits)));
+    }).slice(0, PC_OPTION_LIMIT) : [];
+    wrap.querySelector(".pc-options").innerHTML = options.map(function (p) {
+      return '<button type="button" class="pc-option" data-key="' + esc(p.key) + '">' + esc(p.name || "Без названия") + (p.inn ? " · ИНН " + esc(p.inn) : " · без ИНН") + "</button>";
+    }).join("");
+    wrap.querySelector(".pc-selected-list").innerHTML = partners.filter(function (p) { return state.selected.has(p.key); }).map(function (p) {
+      return '<span class="pc-selected">' + esc(p.name || "Без названия") + (p.inn ? " · " + esc(p.inn) : " · без ИНН") +
+        '<button type="button" data-key="' + esc(p.key) + '" aria-label="Убрать партнёра ' + esc(p.name || p.inn) + '">×</button></span>';
+    }).join("");
+  }
+
+  function pcRenderResults(wrap, matched, selectedCount, isExporting) {
+    var table = wrap.querySelector(".pc-table");
+    var shown = matched.slice(0, PC_SCREEN_LIMIT);
+    table.innerHTML = "";
+    if (shown.length) table.appendChild(makeSortableTable(PC_HEADERS.map(function (label, i) { return { label: label, date: i >= 4 }; }), shown.map(pcCells)));
+    wrap.querySelector(".pc-count").textContent = selectedCount
+      ? "Найдено кодов: " + fmtNum(matched.length) + (matched.length > shown.length ? " · на экране первые " + fmtNum(shown.length) + ", в Excel — все" : "")
+      : "Выбери одного или нескольких партнёров";
+    wrap.querySelector(".pc-download").disabled = !selectedCount || !matched.length || isExporting;
+  }
+
+  function pcCancelExport(key) {
+    var operation = PC_EXPORTS.get(key);
+    if (operation) operation.cancel();
+  }
+
+  function pcDownload(wrap, matched, ctx, key, finished) {
+    var status = wrap.querySelector(".pc-export-status");
+    var name = "Коды партнёров " + fmtDate(ctx.periodStart) + "-" + fmtDate(ctx.periodEnd);
+    var config = { sheetName: "Коды партнёров", headers: PC_HEADERS,
+      colWidths: [17, 48, 17, 48, 18, 18], textCols: [0, 2] };
+    status.textContent = "Собираю Excel: " + fmtNum(matched.length) + " строк…";
+    if (typeof root.Worker !== "function") {
+      if (matched.length > PC_SYNC_MAX_ROWS) {
+        status.textContent = "Для большого Excel нужен браузер с поддержкой Web Worker";
+      } else {
+        try { root.OFDExport.downloadXlsx(name, { ...config, rows: matched.map(pcCells) }); status.textContent = "Excel отправлен на скачивание"; }
+        catch (error) { status.textContent = "Не удалось скачать Excel: " + error.message; }
+      }
+      finished();
+      return;
+    }
+    var worker, timer, isActive = true, position = 0;
+    function close() {
+      if (!isActive) return;
+      isActive = false;
+      root.clearTimeout(timer);
+      if (worker) worker.terminate();
+      PC_EXPORTS.delete(key);
+      finished();
+    }
+    function sendChunk() {
+      if (!isActive) return;
+      try {
+        if (position >= matched.length) { worker.postMessage({ type: "finish" }); return; }
+        var chunk = matched.slice(position, position + PC_EXPORT_CHUNK).map(pcCells);
+        worker.postMessage({ type: "rows", rows: chunk });
+        position += chunk.length;
+        timer = root.setTimeout(sendChunk, 0);
+      } catch (error) { status.textContent = "Не удалось передать данные в Excel: " + error.message; close(); }
+    }
+    try {
+      worker = new root.Worker("js/partner-codes-export-worker.js");
+      PC_EXPORTS.set(key, { cancel: function () { status.textContent = "Экспорт отменён: данные изменились"; close(); } });
+      worker.onmessage = function (event) {
+        if (!isActive) return;
+        try {
+          if (event.data.error) throw new Error(event.data.error);
+          root.OFDExport.downloadXlsxBytes(name, new Uint8Array(event.data.bytes));
+          status.textContent = "Excel отправлен на скачивание";
+        } catch (error) { status.textContent = "Не удалось скачать Excel: " + error.message; }
+        close();
+      };
+      worker.onerror = function (event) {
+        if (!isActive) return;
+        if (event.preventDefault) event.preventDefault();
+        status.textContent = "Не удалось собрать Excel в браузере";
+        close();
+      };
+      worker.postMessage({ type: "start", spec: config });
+      timer = root.setTimeout(sendChunk, 0);
+    } catch (error) {
+      status.textContent = "Не удалось запустить экспорт Excel: " + error.message;
+      close();
+    }
+  }
+
+  WIDGETS["b3-partner-codes"] = {
+    title: "Коды выбранных партнёров", type: "таблица + Excel", scope: "период", span: true,
+    onRemove: function (instanceId) { pcCancelExport(instanceId); PC_STATE.delete(instanceId); },
+    render: function (model, ctx, instanceId) {
+      var rows = root.OFDState && root.OFDState.rows || [];
+      var partners = pcPartners(rows);
+      var key = instanceId || "default";
+      pcCancelExport(key);
+      var state = pcState(key, rows);
+      var radioName = "pc-date-" + Math.random().toString(36).slice(2, 9);
+      var wrap = el('<div class="pc"><div class="stat-label">Период — из шапки. Строка = один код ОФД; дата продажи в выгрузке отсутствует.</div>' +
+        '<div class="threshold-row pc-controls"><label>Партнёр <input class="pc-search" type="search" autocomplete="off" placeholder="название или ИНН"></label>' +
+        '<label><input type="radio" class="pc-date-field" name="' + radioName + '" value="created"> Дата создания</label>' +
+        '<label><input type="radio" class="pc-date-field" name="' + radioName + '" value="activated"> Дата активации</label></div>' +
+        '<div class="pc-options"></div><div class="pc-selected-list"></div>' +
+        '<div class="threshold-row"><button type="button" class="refresh-chart-btn pc-download">Скачать Excel</button>' +
+        '<span class="stat-label pc-count" role="status"></span></div><div class="pc-export-status stat-label" role="status"></div><div class="pc-table"></div></div>');
+      var searchInput = wrap.querySelector(".pc-search");
+      var matched = [];
+      var isExporting = false;
+      searchInput.value = state.search;
+      wrap.querySelector('.pc-date-field[value="' + state.mode + '"]').checked = true;
+
+      function refresh() {
+        pcRenderPartners(wrap, partners, state);
+        matched = pcMatches(rows, state.selected, state.mode, ctx);
+        pcRenderResults(wrap, matched, state.selected.size, isExporting);
+      }
+      searchInput.addEventListener("input", function () { state = { ...state, search: searchInput.value }; PC_STATE.set(key, state); pcRenderPartners(wrap, partners, state); });
+      wrap.querySelector(".pc-options").addEventListener("click", function (e) {
+        var option = e.target.closest(".pc-option");
+        if (!option) return;
+        pcCancelExport(key);
+        state = { ...state, selected: new Set([...state.selected, option.dataset.key]) };
+        PC_STATE.set(key, state); refresh();
+      });
+      wrap.querySelector(".pc-selected-list").addEventListener("click", function (e) {
+        var button = e.target.closest("button[data-key]");
+        if (!button) return;
+        pcCancelExport(key);
+        state = { ...state, selected: new Set([...state.selected].filter(function (id) { return id !== button.dataset.key; })) };
+        PC_STATE.set(key, state); refresh();
+      });
+      wrap.querySelectorAll(".pc-date-field").forEach(function (radio) {
+        radio.addEventListener("change", function () {
+          if (!radio.checked) return;
+          pcCancelExport(key);
+          state = { ...state, mode: radio.value }; PC_STATE.set(key, state); refresh();
+        });
+      });
+      wrap.querySelector(".pc-download").addEventListener("click", function () {
+        if (isExporting || !state.selected.size || !matched.length) return;
+        isExporting = true;
+        wrap.querySelector(".pc-download").disabled = true;
+        pcDownload(wrap, matched, ctx, key, function () {
+          isExporting = false;
+          wrap.querySelector(".pc-download").disabled = !state.selected.size || !matched.length;
+        });
+      });
+      refresh();
+      return wrap;
+    },
   };
 
   WIDGETS["b3-reserve"] = {

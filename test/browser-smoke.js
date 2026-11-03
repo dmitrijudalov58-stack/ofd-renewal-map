@@ -69,6 +69,7 @@ async function main() {
   console.log("rows:", rows.length, "headerIssues:", headerIssues);
 
   const model = win.OFDMetrics.buildModel(rows);
+  win.OFDState.rows = rows;
   const asOf = new win.Date("2026-07-30T23:59:59");
   win.OFDState.model = model;
   win.OFDState.asOf = asOf;
