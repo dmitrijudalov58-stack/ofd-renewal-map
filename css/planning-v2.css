@@ -1,0 +1,49 @@
+/* Планирование 2.0 использует общие styles.css + glass.css боевой карты. */
+.planning2 .brand{text-decoration:none;color:var(--ink)}
+.planning2 .p2-file{cursor:pointer;white-space:nowrap}.planning2 .p2-onec{background:var(--s2);border-color:var(--s2);color:#fff}
+.planning2 .p2-canvas{min-width:0;padding:22px 24px 40px}
+.planning2 .p2-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}
+.planning2 h1{font-family:var(--sans);font-size:25px;font-weight:720;letter-spacing:-.035em;margin:4px 0 0}
+.planning2 .p2-eyebrow{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.planning2 .p2-rail-note{font-size:11px;color:var(--muted);line-height:1.65;margin:0 0 18px}
+.planning2 #tabs{display:flex;flex-direction:column;gap:5px}
+.planning2 #tabs button{font-family:var(--sans);width:100%;text-align:left;background:transparent;border:1px solid transparent;border-left:2px solid transparent;cursor:pointer;padding:11px 12px}
+.planning2 #tabs button.active{background:var(--brand-soft);border-color:transparent;border-left-color:var(--brand);color:var(--brand);font-weight:650}
+.planning2 .code{font-family:var(--mono);font-size:10px;color:var(--muted);margin-right:7px}
+.planning2 .widget{display:block;overflow:hidden;margin-bottom:18px}
+.planning2 .widget-head h3{margin:0;text-transform:uppercase;font-size:11px;letter-spacing:.09em;color:var(--muted)}
+.planning2 .controls{display:flex;flex-wrap:wrap;gap:15px;margin:0}
+.planning2 .controls label{display:flex;flex-direction:column;gap:6px;font-size:11px;font-weight:600;color:var(--muted)}
+.planning2 .controls input,.planning2 .controls select{font-size:12px;font-family:var(--sans);color:var(--ink);min-width:0}
+.planning2 #year{width:105px}.planning2 .controls input[type=date]{width:155px}
+.planning2 #status{font-size:12px;color:var(--muted);margin-top:15px;line-height:1.6}.planning2 #status.error{color:var(--crit)}
+.planning2 .p2-files{font-size:11px;margin-top:10px;color:var(--muted)}.planning2 .p2-files summary{cursor:pointer}.planning2 .p2-files p{overflow-wrap:anywhere;line-height:1.6;margin:8px 0}
+.planning2 .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:18px 0}
+.planning2 .stat{border:1px solid var(--glass-edge);border-radius:var(--r-lg);background:var(--glass);box-shadow:var(--shadow);backdrop-filter:blur(22px) saturate(170%);padding:20px 22px;min-width:0}
+.planning2 .stat h3{font-size:12px;font-weight:650;margin:0;display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.planning2 .number{font:750 30px var(--sans);letter-spacing:-.035em;margin:14px 0 12px;overflow-wrap:anywhere}
+.planning2 .meta{font-size:11px;display:flex;flex-wrap:wrap;gap:12px;color:var(--muted)}
+.planning2 .tag{font-size:9px;border-radius:999px;background:var(--brand-soft);color:var(--brand);padding:4px 8px;font-weight:600}
+.planning2 .tag.pending{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--ink)}
+.planning2 .tiny,.planning2 .muted{font-size:11px;color:var(--muted);line-height:1.65}
+.planning2 .notice{border:1px solid var(--glass-edge);border-left:3px solid var(--warn);background:var(--glass);backdrop-filter:blur(20px);border-radius:var(--r-md);padding:10px 16px;margin:14px 0;font-size:11px;line-height:1.6}
+.planning2 .notice p{margin:3px 0}
+.planning2 h2{font:650 17px var(--sans);letter-spacing:-.02em;margin:0}
+.planning2 .section-title{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px}
+.planning2 .intro{font-size:12px;color:var(--muted);line-height:1.7;margin:10px 0 20px;max-width:1120px}
+.planning2 .empty{text-align:center;padding:48px 15px;color:var(--muted);font-size:13px;line-height:1.9}
+.planning2 .scroll{overflow:auto;max-width:100%}
+.planning2 table{border-collapse:collapse;width:100%;font-size:12px;line-height:1.5}
+.planning2 th,.planning2 td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+.planning2 th{background:var(--fill);font-size:10px;font-weight:650;color:var(--muted);white-space:nowrap}
+.planning2 tbody tr:hover{background:var(--fill)}.planning2 .num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.planning2 input,.planning2 select{font:12px var(--sans);padding:8px 11px;border-radius:999px;border:1px solid var(--line);background:var(--glass-hi);color:var(--ink);max-width:100%}
+.planning2 input::placeholder{color:var(--muted)}.planning2 input.money{width:155px;text-align:right}.planning2 input.prob{width:95px}.planning2 input.reason{width:215px}
+.planning2 .reset{font:600 10px var(--sans);border:1px solid var(--glass-edge);border-radius:999px;padding:7px 10px;background:var(--glass-hi);color:var(--ink);cursor:pointer}
+.planning2 .reset:hover{background:var(--brand-soft);color:var(--brand)}
+.planning2 .toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:16px}.planning2 .toolbar input[type=search]{width:260px;max-width:100%}
+.planning2 .product-select{min-width:165px}.planning2 .nowrap{white-space:nowrap}.planning2 .missing{color:var(--muted)}
+.planning2 footer{font-size:10px;line-height:1.7;color:var(--muted);padding:6px 2px 0}
+.planning2 button:focus-visible,.planning2 input:focus-visible,.planning2 select:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+@media(max-width:1100px){.planning2 .cards{grid-template-columns:1fr}.planning2 .topbar{flex-wrap:wrap}.planning2 .topbar .spacer{min-width:10px}}
+@media(max-width:860px){.planning2 .p2-canvas{padding:12px 14px 30px}.planning2 .rail{margin:10px 14px;padding:14px;max-width:calc(100vw - 28px)}.planning2 #tabs{flex-direction:row;flex-wrap:wrap;gap:3px}.planning2 #tabs button{width:auto;font-size:11px;padding:8px}.planning2 .rail-footer{display:none}.planning2 .rail-divider,.planning2 .p2-rail-note{display:none}.planning2 .rail-title{margin-bottom:10px}.planning2 .p2-heading{align-items:flex-start}.planning2 h1{font-size:22px}.planning2 .section-title{align-items:flex-start;flex-direction:column}.planning2 .widget-body{padding:15px}.planning2 .topbar{margin:10px 14px;top:0}.planning2 .brand{font-size:15px}.planning2 .topbar .spacer{display:none}.planning2 .p2-heading .wchip{display:none}.planning2 .controls{gap:12px}.planning2 .controls input[type=date]{width:145px}}

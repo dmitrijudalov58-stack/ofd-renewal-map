@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'none'; object-src 'none';">
+<title>Планирование 2.0 · BI OFD</title>
+<link rel="icon" href="../../icons/favicon-32.png"><meta name="theme-color" content="#edf0f7">
+<link rel="stylesheet" href="../../css/styles.css?v=34"><link rel="stylesheet" href="../../css/glass.css?v=2"><link rel="stylesheet" href="../../css/planning-v2.css?v=1">
+</head><body class="planning2">
+<div class="topbar">
+ <a class="brand" href="../../"><span class="mark">🧾</span>BI OFD</a><span class="asof">Планирование 2.0</span>
+ <span class="spacer"></span>
+ <label class="btn primary p2-file">ОФД<input id="ofdFile" type="file" accept=".xlsx,.xls" multiple hidden></label>
+ <label class="btn p2-file p2-onec">Обмен с 1С<input id="onecFile" type="file" accept=".xlsx,.xls" multiple hidden></label>
+ <button id="export" class="btn primary" disabled>Выгрузить план в Excel</button>
+</div>
+<div class="shell">
+ <aside class="rail">
+  <div class="rail-scroll"><p class="rail-title">Планирование 2.0</p>
+   <p class="p2-rail-note">Клиенты · каналы · когорты</p>
+   <nav id="tabs" aria-label="Разделы плана">
+    <button class="lib-item active" data-tab="checks"><span class="code">01</span>Средние чеки</button>
+    <button class="lib-item" data-tab="retro"><span class="code">02</span>Когорты и вероятности</button>
+    <button class="lib-item" data-tab="channels"><span class="code">03</span>Каналы и когорты</button>
+    <button class="lib-item" data-tab="months"><span class="code">04</span>План по месяцам</button>
+    <button class="lib-item" data-tab="clients"><span class="code">05</span>Клиенты</button>
+   </nav>
+  </div>
+  <hr class="rail-divider"><div class="rail-footer"><a class="rail-footer-btn" href="../../">← Карта продлений</a><p class="p2-rail-note">Отдельная модель по ИНН.<br>Действующее планирование сохранено.</p></div>
+ </aside>
+ <main class="canvas-wrap p2-canvas">
+  <div class="p2-heading"><div><span class="p2-eyebrow">План продлений по клиентам</span><h1>Планирование 2.0</h1></div><span class="wchip">ОФД + Обмен с 1С</span></div>
+  <section class="widget p2-source">
+   <div class="widget-head"><h3>Параметры плана</h3></div>
+   <div class="widget-body">
+    <div class="controls threshold-row">
+     <label>Год плана<input id="year" type="number" min="2000" max="2100"></label>
+     <label>Ретро с<input id="retroFrom" type="date"></label><label>Ретро по<input id="retroTo" type="date"></label>
+     <label>Срез на начало дня<input id="asOf" type="date"></label>
+     <label>Средние чеки<select id="vat"><option value="">НДС не отмечен</option><option value="with">С НДС</option><option value="without">Без НДС</option></select></label>
+    </div>
+    <div id="status" role="status" aria-live="polite">Загрузите ОФД и сверку Обмена с 1С кнопками сверху. Файлы обрабатываются локально в браузере.</div>
+    <details class="p2-files"><summary>Загруженные данные</summary><p><strong>ОФД:</strong> <span id="ofdMeta">Файл не выбран</span></p><p><strong>Обмен с 1С:</strong> <span id="onecMeta">Файл не выбран</span></p></details>
+   </div>
+  </section>
+  <div id="warnings"></div><section id="summary" class="cards" aria-label="Итоги плана"></section>
+  <section class="widget p2-content"><div id="view" class="widget-body"></div></section>
+  <footer>Один ИНН — одна строка в каждом продукте. Годовой чек учитывается один раз, в месяце первого окончания. Вероятности — по ретро; средние чеки — по каналам.</footer>
+ </main>
+</div>
+<script src="../../js/vendor/xlsx.full.min.js"></script><script src="../../js/parser.js?v=2"></script><script src="../../js/metrics.js?v=28"></script><script src="../../js/export.js?v=2"></script><script src="../../js/planning-v2/core.js?v=1"></script><script src="../../js/planning-v2/app.js?v=1"></script>
+</body></html>

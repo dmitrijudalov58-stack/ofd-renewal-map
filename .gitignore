@@ -3,6 +3,7 @@ node_modules/
 .omc/
 tmp/
 cloudflare/public/
+cloudflare/.wrangler/
 
 # защита от случайного коммита реальной выгрузки с данными клиентов
 *.xlsx

@@ -25,4 +25,4 @@ cp -R "$REPO_ROOT/icons" "$CF_DIR/public/"
 echo "{\"build\":\"$(date +%s)\"}" > "$CF_DIR/public/version.json"
 
 cd "$CF_DIR"
-npx wrangler deploy
+npx wrangler deploy "$@"
