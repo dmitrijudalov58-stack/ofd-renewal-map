@@ -67,6 +67,26 @@
    upsellClients:rows.filter(r=>r.transitions&&r.transitions.length).length,upsellRate:actual?rows.filter(r=>r.transitions&&r.transitions.length).length/actual:null,
    renewedRegisters:new Set(rows.flatMap(r=>(r.renewedUnits||[]).map(u=>r.inn+'|'+u))).size,upsellRegisters:new Set(transitions.map(r=>r.inn+'|'+r.unit)).size,transitions,unknownTariffs:rows.reduce((s,r)=>s+(r.unknownTariffs||0),0)};
  }
- const api={build,select,summarize,attribution,searchText,findPartners};
+ function reconcile(rows,summary=summarize(rows)){
+  // Derive the outcome counts independently of the summary's residual pending count.
+  const expected={due:rows.length,actual:0,lost:0,pending:0,closed:0,closedRenewed:0,early:0},ids=new Set(),errors=[];let duplicates=0,invalid=0;
+  for(const r of rows){
+   if(ids.has(r.inn))duplicates++;ids.add(r.inn);
+   if(!r.inn||typeof r.renewed!=='boolean'||typeof r.complete!=='boolean'||!Number.isInteger(r.due)||r.due<1||!Number.isInteger(r.unitsRenewed)||r.unitsRenewed<0||r.unitsRenewed>r.due||r.renewed!==(r.unitsRenewed>0))invalid++;
+   if(r.renewed)expected.actual++;
+   if(r.complete){expected.closed++;if(r.renewed)expected.closedRenewed++;else expected.lost++;}
+   else if(r.renewed)expected.early++;else expected.pending++;
+  }
+  if(duplicates)errors.push('Повторяющихся ИНН: '+duplicates);
+  if(invalid)errors.push('Строк с некорректным исходом или количеством касс: '+invalid);
+  const labels={due:'Годовая база',actual:'Продлились',lost:'Ушли',pending:'Ожидают исхода',closed:'Завершённая база',closedRenewed:'Продлились из завершённых',early:'Продлились вне завершённой базы'};
+  for(const key of Object.keys(expected))if(summary[key]!==expected[key])errors.push('Не совпал показатель «'+labels[key]+'»: '+summary[key]+' / '+expected[key]);
+  const rate=expected.closed?expected.closedRenewed/expected.closed:null,churnRate=expected.closed?expected.lost/expected.closed:null;
+  if(rate==null?summary.rate!==null:typeof summary.rate!=='number'||!Number.isFinite(summary.rate)||Math.abs(summary.rate-rate)>1e-10)errors.push('Процент продлений не соответствует завершённой базе');
+  if(rate!=null&&Math.abs(rate+churnRate-1)>1e-10)errors.push('Продления и отток не дают 100%');
+  return {ok:!errors.length,state:errors.length?'error':!rows.length?'empty':!expected.closed?'pending':'ok',errors,expected,rate,churnRate,
+   annualGap:summary.due-summary.actual-summary.lost-summary.pending,closedGap:summary.closed-summary.closedRenewed-summary.lost};
+ }
+ const api={build,select,summarize,attribution,searchText,findPartners,reconcile};
  if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Planning2Retro=api;
 })(typeof window!=='undefined'?window:globalThis);

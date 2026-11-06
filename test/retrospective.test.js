@@ -41,4 +41,11 @@ const dormant=r('20','Q',d(2024),d(2028),36,'ООО «АТОЛ» (ОФД)','7700
 const future=r('21','Q',d(2027),d(2028),12,'Not yet known','future');
 const expanded=R.build(P.ledger([...records,dormant,future]),null,null,'ofd',2025,d(2025,11,1));
 assert.equal(R.findPartners(expanded.partners,'Атолл').length,1);assert.equal(R.select(expanded.rows,{mode:'partner',partner:'inn:7700000092'}).length,0);assert.equal(R.findPartners(expanded.partners,'Not yet known').length,0);assert.equal(expanded.rows.length,data.rows.length);assert.equal(expanded.partners.filter(p=>p.key==='unknown').length,1);
+const audit=R.reconcile(data.rows,s);assert.equal(audit.state,'ok');assert.equal(audit.rate,.4);assert.equal(audit.churnRate,.6);assert.equal(audit.annualGap,0);assert.equal(audit.closedGap,0);
+const wrong=R.reconcile(data.rows,{...s,actual:s.actual+1});assert.equal(wrong.ok,false);assert.equal(wrong.state,'error');assert.equal(wrong.annualGap,-1);
+assert.equal(R.reconcile(data.rows,{...s,rate:.99}).ok,false);
+assert.equal(R.reconcile([...data.rows,data.rows[0]]).state,'error','Balanced arithmetic must not hide duplicate INNs');
+assert.equal(R.reconcile([{...data.rows[0],unitsRenewed:999}]).state,'error');
+assert.equal(R.reconcile([]).state,'empty');assert.equal(R.reconcile([]).rate,null);
+const waiting=data.rows.filter(r=>!r.complete);assert.equal(R.reconcile(waiting).state,'pending');assert.equal(R.reconcile(waiting).rate,null);assert.equal(R.reconcile(waiting).annualGap,0);
 console.log('PASS retrospective: annual INNs, all/union/empty/partner/unknown filters, new clients, pending and early, cash/client upsell, duplicates, tariff gaps, promo INN linkage');

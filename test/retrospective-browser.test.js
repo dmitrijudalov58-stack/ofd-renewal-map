@@ -65,9 +65,17 @@ async function main(){
  }
 
  assert.deepEqual(await cards('[data-renew-summary]'),['1','1','0','0','100,00%']);
+ assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);assert.ok((await board.locator('[data-reconciliation]').innerText()).includes('отток 0,00%'));
+ if(process.env.RETRO_QA_DIR){await board.locator('[data-reconciliation]').screenshot({path:path.join(process.env.RETRO_QA_DIR,'reconciliation.png'),style:'.topbar{visibility:hidden}'});}
+ await reference.evaluate(()=>{window.originalRetroSummary=Planning2Retro.summarize;Planning2Retro.summarize=rows=>{const s=originalRetroSummary(rows);return {...s,actual:s.actual+1};};OFDPlanning2.refresh();});
+ assert.equal(await board.locator('[data-reconciliation="error"]').count(),1);
+ await reference.evaluate(()=>{Planning2Retro.summarize=originalRetroSummary;delete window.originalRetroSummary;OFDPlanning2.refresh();});
+ assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);
+ await change('year','2028');assert.equal(await board.locator('[data-reconciliation="pending"]').count(),1);await change('year','2025');
+
  assert.deepEqual(await cards('[data-upsell-summary]'),['1','100,00%','1 / 1']);
  await board.locator('[data-transitions] summary').click();assert.ok((await board.locator('[data-transitions]').innerText()).includes('0000000000000001'));
- await board.locator('[data-filter="renew"] [data-all]').uncheck();assert.equal((await cards('[data-renew-summary]'))[0],'0');
+ await board.locator('[data-filter="renew"] [data-all]').uncheck();assert.equal((await cards('[data-renew-summary]'))[0],'0');assert.equal(await board.locator('[data-reconciliation="empty"]').count(),1);
  await board.locator('[data-filter="renew"] [data-channel="Партнёры"]').check();assert.equal((await cards('[data-renew-summary]'))[0],'1');
  assert.equal((await cards('[data-new-summary]'))[0],'0');
  await board.locator('[data-filter="renew"] [data-mode]').selectOption('partner');
