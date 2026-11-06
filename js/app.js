@@ -272,6 +272,7 @@
         updateStrictButton();
 
         window.OFDState.ctx = currentCtx();
+        if (window.OFDPlanning2) window.OFDPlanning2.refresh();
 
         updateAsofStamp(asOf);
         updateFreshnessBanner();

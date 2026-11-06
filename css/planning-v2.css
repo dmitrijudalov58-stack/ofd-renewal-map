@@ -53,3 +53,9 @@
 
 .planning2 .p2-adjustments{border-top:1px solid var(--line);padding:18px 0;margin:14px 0}.planning2 .p2-adjustments .controls{align-items:flex-end}.planning2 #upsell{width:120px}.planning2 #comparison{margin-top:14px}.planning2 #exclusionsRows{padding-top:10px}
 .planning2 .p2-promo-info:not(:empty){border-top:1px solid var(--line);margin-top:16px;padding-top:16px}.planning2 #exclusionsRows .toolbar label{font-size:11px;color:var(--muted)}
+
+.p2-retrospective .card strong{display:block;font-size:1.45rem}.p2-retro-channels{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:8px}.p2-retrospective .controls{align-items:flex-end;flex-wrap:wrap}.p2-retrospective h3{margin:20px 0 10px}.p2-retrospective td,.p2-retrospective th{white-space:nowrap}.p2-retrospective .table-scroll{overflow:auto;max-width:100%}.p2-retrospective [data-partner]{max-width:420px}.p2-retrospective .cards{margin:12px 0}.p2-retrospective label{font-weight:normal}@media(max-width:600px){.p2-retrospective [data-partner]{max-width:260px}.p2-retrospective .cards{grid-template-columns:1fr 1fr}}
+
+.p2-retrospective{min-width:0;overflow-wrap:anywhere}.p2-retrospective .stat{padding:14px;min-width:0}.p2-retrospective .controls>label,.p2-retrospective .controls>div{min-width:0;max-width:100%}.p2-retrospective input[type=checkbox]{width:auto;max-width:none;padding:0}.p2-retrospective .p2-retro-channels label{display:inline-flex;flex-direction:row;align-items:center;gap:5px}.p2-retrospective [data-all]{align-self:flex-start}.p2-retrospective button{max-width:100%;white-space:normal}
+
+.p2-retrospective .controls label:has([data-all]){flex-direction:row;align-items:center;gap:6px}
