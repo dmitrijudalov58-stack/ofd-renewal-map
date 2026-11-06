@@ -4,7 +4,7 @@
   "description": "Карта продлений ОФД — статический BI-инструмент, dev-зависимости нужны только для локальных тестов, сайт их не использует",
   "private": true,
   "scripts": {
-    "test": "node test/export-xlsx.test.js && node test/planning.test.js && node test/planning-price-mode.test.js && node test/planning-remediation.test.js && node test/planning-ui.test.js && node test/channel-calendar-export.test.js && node test/retrospective.test.js && node test/center-export.test.js && node test/b3-partner-codes.test.js && node test/partner-codes-export.test.js && node test/smoke.js && node test/browser-smoke.js"
+    "test": "node test/export-xlsx.test.js && node test/planning.test.js && node test/planning-price-mode.test.js && node test/planning-remediation.test.js && node test/planning-ui.test.js && node test/channel-calendar-export.test.js && node test/retrospective.test.js && node test/bi-check.test.js && node test/center-export.test.js && node test/b3-partner-codes.test.js && node test/partner-codes-export.test.js && node test/smoke.js && node test/browser-smoke.js"
   },
   "license": "UNLICENSED",
   "type": "commonjs",

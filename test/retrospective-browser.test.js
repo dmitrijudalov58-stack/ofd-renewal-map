@@ -68,17 +68,27 @@ async function main(){
  }
 
  assert.deepEqual(await cards('[data-renew-summary]'),['1','1','0','0','100,00%']);
+ await board.locator('[data-internal-check]').evaluate(el=>el.open=true);
  assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);assert.ok((await board.locator('[data-reconciliation]').innerText()).includes('отток 0,00%'));
+ assert.equal(await board.locator('[data-bi-check="matched"]').count(),1);
+ await reference.evaluate(()=>{window.originalBIModel=OFDState.model;OFDState.model=OFDMetrics.buildModel(OFDState.rows.filter(r=>r.pin!=='A2'),{strict:true});OFDPlanning2.refresh();});
+ assert.equal(await board.locator('[data-bi-check="different"]').count(),1);await board.locator('[data-bi-details]').evaluate(el=>el.open=true);assert.ok((await board.locator('[data-bi-details]').innerText()).includes(a));
+ const biDownload=reference.waitForEvent('download');await board.locator('[data-retro-export]').click();await (await biDownload).saveAs(path.join(folder,'bi-differences.xlsx'));
+ const biResult=X.read(fs.readFileSync(path.join(folder,'bi-differences.xlsx')),{type:'buffer'});assert.equal(biResult.Sheets['Сверка B1'].B2.v,'Есть расхождения');assert.equal(biResult.Sheets['Сверка B1 по ИНН'].A2.v,a);assert.equal(biResult.Sheets['Сверка B1 по ИНН'].G2.v,1);
+ if(process.env.RETRO_QA_DIR)await board.locator('[data-bi-check]').screenshot({path:path.join(process.env.RETRO_QA_DIR,'bi-differences.png'),style:'.topbar{visibility:hidden}'});
+ await reference.evaluate(()=>{OFDState.model=originalBIModel;delete window.originalBIModel;OFDPlanning2.refresh();});assert.equal(await board.locator('[data-bi-check="matched"]').count(),1);await board.locator('[data-internal-check]').evaluate(el=>el.open=true);
+ if(process.env.RETRO_QA_DIR)await board.locator('[data-bi-check]').screenshot({path:path.join(process.env.RETRO_QA_DIR,'bi-comparison.png'),style:'.topbar{visibility:hidden}'});
  if(process.env.RETRO_QA_DIR){await board.locator('[data-reconciliation]').screenshot({path:path.join(process.env.RETRO_QA_DIR,'reconciliation.png'),style:'.topbar{visibility:hidden}'});}
  await reference.evaluate(()=>{window.originalRetroSummary=Planning2Retro.summarize;Planning2Retro.summarize=rows=>{const s=originalRetroSummary(rows);return {...s,actual:s.actual+1};};OFDPlanning2.refresh();});
  assert.equal(await board.locator('[data-reconciliation="error"]').count(),1);
  await reference.evaluate(()=>{Planning2Retro.summarize=originalRetroSummary;delete window.originalRetroSummary;OFDPlanning2.refresh();});
  assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);
  await change('year','2028');assert.equal(await board.locator('[data-reconciliation="pending"]').count(),1);await change('year','2025');
+ assert.equal(await board.locator('[data-bi-check="matched"]').count(),1);
 
  assert.deepEqual(await cards('[data-upsell-summary]'),['1','100,00%','1 / 1']);
  await board.locator('[data-transitions] summary').click();assert.ok((await board.locator('[data-transitions]').innerText()).includes('0000000000000001'));
- await board.locator('[data-filter="renew"] [data-all]').uncheck();assert.equal((await cards('[data-renew-summary]'))[0],'0');assert.equal(await board.locator('[data-reconciliation="empty"]').count(),1);
+ await board.locator('[data-filter="renew"] [data-all]').uncheck();assert.equal((await cards('[data-renew-summary]'))[0],'0');assert.equal(await board.locator('[data-reconciliation="empty"]').count(),1);assert.equal(await board.locator('[data-bi-check="empty"]').count(),1);
  await board.locator('[data-filter="renew"] [data-channel="Партнёры"]').check();assert.equal((await cards('[data-renew-summary]'))[0],'1');
  assert.equal((await cards('[data-new-summary]'))[0],'0');
  await board.locator('[data-filter="renew"] [data-mode]').selectOption('partner');
@@ -88,9 +98,11 @@ async function main(){
  assert.equal((await cards('[data-renew-summary]'))[0],'1');
  const dp=reference.waitForEvent('download');await board.locator('[data-retro-export]').click();await (await dp).saveAs(path.join(folder,'retro.xlsx'));
  const result=X.read(fs.readFileSync(path.join(folder,'retro.xlsx')),{type:'buffer',cellNF:true});
+ assert.ok(result.Sheets['Сверка B1']);assert.equal(result.Sheets['Сверка B1 по ИНН'].A2.v,a);
  assert.equal(result.Sheets['Итоги'].B2.v,1);assert.equal(result.Sheets['Итоги'].B8.z,'0.00%');assert.equal(result.Sheets['Продления'].A2.t,'s');assert.equal(result.Sheets['Апсейл кассы'].C2.v,'0000000000000001');assert.equal(result.Sheets['Апсейл кассы'].E2.v,36);
  await board.locator('[data-field="product"]').selectOption('onec');await reference.locator('#ofd1cFileInput').setInputFiles(path.join(folder,'onec.xlsx'));
  await reference.waitForFunction(()=>document.querySelector('[data-renew-summary] .card strong')?.textContent==='2');
+ assert.equal(await board.locator('[data-bi-check]').count(),0,'B1 OFD must not be compared with 1C');
  await change('year','2026');assert.equal((await cards('[data-new-summary]'))[0],'0');
  await reference.locator('#promoFileInput').setInputFiles(path.join(folder,'promos.xlsx'));
  await reference.waitForFunction(()=>document.querySelector('[data-new-summary] .card strong')?.textContent==='1');
@@ -100,6 +112,7 @@ async function main(){
  const changed=X.utils.book_new();const extra=row('7700000007','SN7',d(2024),d(2025,4,1),'E1');X.utils.book_append_sheet(changed,X.utils.aoa_to_sheet([...rows,extra]),'ОФД');fs.writeFileSync(path.join(folder,'ofd-replaced.xlsx'),X.write(changed,{type:'buffer',bookType:'xlsx'}));
  await reference.locator('#fileInput').setInputFiles(path.join(folder,'ofd-replaced.xlsx'));
  await reference.waitForFunction(()=>document.querySelector('[data-renew-summary] .card strong')?.textContent==='2');
+ assert.equal(await board.locator('[data-bi-check]').count(),1);
  assert.equal(await board.locator('[data-filter="renew"] [data-mode]').inputValue(),'partner');
  await reference.setViewportSize({width:390,height:844});
  await reference.waitForTimeout(300);
