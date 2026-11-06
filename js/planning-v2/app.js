@@ -9,19 +9,19 @@
  const money=v=>v==null?'Не задано':fmt(v,2)+' ₽';
  const title=p=>p==='ofd'?'ОФД':'Обмен с 1С';
  let saved=null;try{saved=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
- const state={params:P.normalizeParams(saved),ofd:null,onec:null,meta:{},plan:null,tab:options.tab||'checks',product:'ofd',query:'',channel:'',onlyUnknown:false,busy:false};
+ const state={params:P.normalizeParams(saved),ofd:null,onec:null,meta:{},exclusions:null,plan:null,tab:options.tab||'checks',product:'ofd',query:'',channel:'',onlyUnknown:false,busy:false};
  function persist(){try{localStorage.setItem(KEY,JSON.stringify(state.params));if(options.integrated)window.dispatchEvent(new CustomEvent('planning2-params',{detail:api}));}catch(e){status('Параметры рассчитаны, но браузер не разрешил их сохранить. Экспортируйте план в Excel.');}}
  function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'';}
- function syncInputs(){for(const k of ['year','retroFrom','retroTo','asOf','vat'])$(k).value=state.params[k];}
+ function syncInputs(){for(const k of ['year','retroFrom','retroTo','asOf','vat'])$(k).value=state.params[k];$('upsell').value=state.params.upsell*100;}
  function calculate(){
   if(!state.ofd&&!state.onec){state.plan=null;render();return;}
-  try{state.plan=(options.integrated?window.OFDPlanning2:P).build(state.ofd,state.onec,state.params);render();status('План пересчитан. '+(state.plan.complete?'Параметры заполнены.':'Проверьте незаполненные параметры.'));}catch(e){state.plan=null;render();status(e.message,true);}
+  try{state.plan=(options.integrated?window.OFDPlanning2:P).build(state.ofd,state.onec,state.params,state.exclusions);render();status('План пересчитан. '+(state.plan.complete?'Параметры заполнены.':'Проверьте незаполненные параметры.'));}catch(e){state.plan=null;render();status(e.message,true);}
  }
  function card(product){
   const pr=state.plan.products[product];if(!pr.loaded)return '<article class="card stat"><h3>'+title(product)+'</h3><div class="number">Нет файла</div><p class="tiny">Загрузите исходные данные продукта</p></article>';
   const t=pr.total;
   const value=pr.rows.length&&!pr.rows.some(r=>r.amount!=null)?null:t.money;
-  return '<article class="card stat"><h3>'+title(product)+' <span class="tag '+(t.complete?'':'pending')+'">'+(t.complete?'Расчёт заполнен':'Есть незаполненное')+'</span></h3><div class="number">'+money(value)+'</div><div class="meta"><span>Клиентов: '+fmt(t.base)+'</span><span>Ожидается: '+(t.missingProb?'Не завершено':fmt(t.expected,2))+'</span></div>'+(t.complete?'':'<p class="tiny">Показана рассчитанная часть. Без чека: '+t.missingCheck+', без вероятности: '+t.missingProb+'.</p>')+'</article>';
+  return '<article class="card stat"><h3>'+title(product)+' <span class="tag '+(t.complete?'':'pending')+'">'+(t.complete?'Расчёт заполнен':'Есть незаполненное')+'</span></h3><div class="number">'+money(value)+'</div><div class="meta"><span>Клиентов: '+fmt(t.base)+'</span><span>Ожидается: '+(t.missingProb?'Не завершено':fmt(t.expected,2))+'</span></div>'+(product==='ofd'?'<p class="tiny">Продления: '+money(pr.rows.length&&!pr.rows.some(r=>r.baseAmount!=null)?null:t.baseMoney)+' · Апсейл: '+money(pr.rows.length&&!pr.rows.some(r=>r.upsellAmount!=null)?null:t.upsellMoney)+'</p>':'')+(t.complete?'':'<p class="tiny">Показана рассчитанная часть. Без чека: '+t.missingCheck+', без вероятности: '+t.missingProb+'.</p>')+'</article>';
  }
  function productSelect(){return '<select class="product-select" id="productView" aria-label="Продукт"><option value="ofd" '+(state.product==='ofd'?'selected':'')+'>ОФД</option><option value="onec" '+(state.product==='onec'?'selected':'')+'>Обмен с 1С</option></select>';}
  function table(headers,rows){return '<div class="scroll"><table><thead><tr>'+headers.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>';}
@@ -80,12 +80,38 @@
  }
  function render(){
   const plan=state.plan;$('export').disabled=!plan||state.busy;
-  if(!plan){$('summary').innerHTML='';$('warnings').innerHTML='';renderView();return;}
+  if(!plan){$('summary').innerHTML='';$('warnings').innerHTML='';renderAdjustments();renderView();return;}
   $('warnings').innerHTML=plan.warnings.length?'<aside class="notice">'+plan.warnings.map(w=>'<p>'+esc(w)+'</p>').join('')+'</aside>':'';
   const totalMoney=plan.rows.length&&!plan.rows.some(r=>r.amount!=null)?null:plan.money;
   $('summary').innerHTML=card('ofd')+card('onec')+'<article class="card stat"><h3>Два продукта <span class="tag '+(plan.complete?'':'pending')+'">'+(plan.complete?'Расчёт заполнен':'Рассчитанная часть')+'</span></h3><div class="number">'+money(totalMoney)+'</div><p class="tiny">'+fmt(plan.uniqueClients)+' уникальных ИНН в объединённой базе. Один клиент может покупать оба продукта.</p></article>';
-  renderView();
+  renderAdjustments();renderView();
  }
+ function renderAdjustments(){
+  const plan=state.plan,data=options.integrated?window.OFDPlanning2.exclusionData:state.exclusions;
+  $('exclusionsClear').disabled=!data;
+  $('exclusionsInfo').textContent=data?data.files.join('; ')+' · строк '+fmt(data.sourceRows)+' · повторов '+fmt(data.duplicates)+'. Исключаются только однозначные совпадения ИНН + даты окончания + тарифа.':'Список исключений не загружен.';
+  $('comparison').innerHTML='';$('exclusionsRows').innerHTML='';$('exclusionsReview').hidden=true;
+  if(!plan||!plan.exclusions)return;
+  const b=plan.baseline,c=plan.comparison,ofd=plan.products.ofd.total;
+  const known=b.knownMoney;
+  $('comparison').innerHTML=table(['Показатель','Исходный прогноз','После исключений','Разница: исходный минус новый'],[
+   '<tr><td>Клиентов ОФД</td><td class="num">'+fmt(b.ofd?b.ofd.base:null)+'</td><td class="num">'+fmt(ofd?ofd.base:null)+'</td><td class="num">'+fmt(c.excludedClients)+'</td></tr>',
+   '<tr><td>Сумма двух продуктов с апсейлом'+(!b.complete||!plan.complete?' · рассчитанная часть':'')+'</td><td class="num">'+money(known?b.money:null)+'</td><td class="num">'+money(known?plan.money:null)+'</td><td class="num">'+money(known?c.moneyDrop:null)+'</td></tr>'
+  ])+'<p class="tiny">Исключено касс ОФД: '+fmt(c.excludedUnits)+'. Если у ИНН остались кассы к продлению, клиент сохраняется с одним средним чеком; сумма не уменьшается пропорционально числу исключённых касс. Апсейл пересчитывается по оставшимся кассам.</p>';
+  const report=plan.exclusions.report,counts=new Map();for(const r of report)counts.set(r.status,(counts.get(r.status)||0)+1);
+  $('exclusionsReview').hidden=false;
+  $('exclusionsRows').innerHTML=table(['Результат','Касс / строк'],[...counts].map(([s,n])=>'<tr><td>'+esc(s)+'</td><td class="num">'+fmt(n)+'</td></tr>'))+'<p class="tiny">Первые 100 строк; полный список и причины — в Excel.</p>'+table(['ИНН','Заводской номер','Окончание','Тариф, мес','Результат'],report.slice(0,100).map(r=>'<tr><td>'+esc(r.inn)+'</td><td>'+esc(r.serial)+'</td><td>'+P.displayDate(r.end)+'</td><td>'+esc(r.months)+'</td><td>'+esc(r.status)+'</td></tr>'));
+ }
+ async function loadExclusions(file){
+  if(!file||state.busy)return;state.busy=true;$('exclusionsFile').disabled=true;status('Читаю список касс без чеков…');await new Promise(r=>setTimeout(r,30));
+  try{const wb=XLSX.read(await file.arrayBuffer(),{type:'array',dense:true,cellDates:false}),data=P.parseExclusions(XLSX,wb,file.name);
+   if(options.integrated)window.OFDPlanning2.setExclusions(data);else{state.exclusions=data;calculate();}
+   status('Список загружен. Проверьте сравнение и результаты сопоставления.');
+  }catch(e){status(e.message,true);}finally{state.busy=false;$('exclusionsFile').disabled=false;$('export').disabled=!state.plan;}
+ }
+ $('exclusionsFile').addEventListener('change',e=>loadExclusions(e.target.files[0]));
+ $('exclusionsClear').addEventListener('click',()=>{if(options.integrated)window.OFDPlanning2.setExclusions(null);else{state.exclusions=null;calculate();}$('exclusionsFile').value='';});
+ $('upsell').addEventListener('change',()=>{const n=P.num($('upsell').value);if(n==null||n<0||n>100){status('Введите апсейл от 0 до 100%.',true);$('upsell').setCustomValidity('От 0 до 100%');$('upsell').reportValidity();return;}$('upsell').setCustomValidity('');if(state.params.upsell===n/100)return;state.params.upsell=n/100;persist();calculate();});
  async function loadFiles(files,product){
   if(!files.length||state.busy)return;state.busy=true;$('export').disabled=true;
   $('ofdFile').disabled=$('onecFile').disabled=true;status('Читаю '+title(product)+'. Большая выгрузка может обрабатываться несколько минут…');
@@ -109,7 +135,7 @@
   if(!state.plan||state.busy)return;$('export').disabled=true;status('Готовлю Excel со всеми клиентами и формулами…');await new Promise(r=>setTimeout(r,30));
   try{OFDExport.downloadXlsx('Планирование_2_Оксана_'+state.params.year,P.workbook(state.plan));status('Excel сформирован. Пустые чеки и вероятности сохранены пустыми.');}catch(e){status('Не удалось выгрузить Excel: '+e.message,true);}finally{$('export').disabled=false;}
  });
- const api={state,loadFiles,calculate,render,syncShared:function(){
+ const api={state,loadFiles,loadExclusions,calculate,render,syncShared:function(){
   if(!options.integrated)return;
   const shared=window.OFDState||{},one=window.OFDWidgets.ofd1cGetState();
   state.ofd=shared.planning2Data&&shared.planning2Data.ledger||null;

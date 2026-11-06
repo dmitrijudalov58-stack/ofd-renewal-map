@@ -15,6 +15,8 @@ wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
  ['X1',a,'SN1','2020-01-01','2025-02-01',15,100,10],['X2',a,'SN1','2025-02-02','2027-06-01',15,100,10],
  ['Y1',b,'SN1','2020-01-01','2025-03-01',15,100,10],['Y2',b,'SN1','2025-03-02','2027-08-01',15,100,10]
  ]),'2025-02');fs.writeFileSync(path.join(folder,'onec.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
+const exclusionRow=(serial,end)=>[a,'','Тестовая организация',serial,'',P.iso(end),'','15 мес',0,'',0,'Партнёр'];
+for(const [name,list]of [['exclude-one',[exclusionRow('FACTORY-A',d(2027,4,1))]],['exclude-all',[exclusionRow('FACTORY-A',d(2027,4,1)),exclusionRow('FACTORY-B',d(2027,7,1))]]]){const w=X.utils.book_new();X.utils.book_append_sheet(w,X.utils.aoa_to_sheet([P.EXCLUSION_HEADERS,...list]),'Без чеков');fs.writeFileSync(path.join(folder,name+'.xlsx'),X.write(w,{type:'buffer',bookType:'xlsx'}));}
 async function main(){
  const http=require('node:http'),base=path.resolve(__dirname,'..');
  const mime={'.html':'text/html; charset=utf-8','.js':'application/javascript','.css':'text/css','.png':'image/png','.webmanifest':'application/manifest+json'};
@@ -47,6 +49,7 @@ async function main(){
  const settings=reference.locator('.p2-integrated[data-p2-tab="checks"]');
  await settings.locator('#asOf').fill('2026-11-02');await settings.locator('#asOf').dispatchEvent('change');
  await settings.locator('#vat').selectOption('with');
+ await settings.locator('#upsell').fill('0');await settings.locator('#upsell').dispatchEvent('change');
  for(const [product,value]of [['ofd','1000'],['onec','7000']]){
   const input=settings.locator('[data-check="'+product+'"][data-channel="Партнёры"]');await input.fill(value);await input.dispatchEvent('change');
  }
@@ -56,6 +59,22 @@ async function main(){
  const downloadIntegrated=reference.waitForEvent('download');await settings.locator('#export').click();await (await downloadIntegrated).saveAs(path.join(folder,'integrated-export.xlsx'));
  const integratedXlsx=X.read(fs.readFileSync(path.join(folder,'integrated-export.xlsx')),{type:'buffer',cellFormula:true});
  assert.equal(integratedXlsx.Sheets['Проверки'].B8.v,15000);
+
+ await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-one.xlsx'));
+ await reference.waitForFunction(()=>OksanaPlanning.state.plan.exclusions&&OksanaPlanning.state.plan.comparison.excludedUnits===1);
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows[0].dueUnits),1);
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.comparison.excludedClients),0);
+ await settings.locator('#upsell').fill('10');await settings.locator('#upsell').dispatchEvent('change');
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[15100,15100,15100,15100,15100]);
+ await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-all.xlsx'));
+ await reference.waitForFunction(()=>OksanaPlanning.state.plan.comparison.excludedUnits===2);
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),14000);
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows.length),0);
+ await settings.screenshot({path:path.join(folder,'adjustments.png')});
+ const exclusionDownload=reference.waitForEvent('download');await settings.locator('#export').click();await (await exclusionDownload).saveAs(path.join(folder,'exclusions-export.xlsx'));
+ const ex=X.read(fs.readFileSync(path.join(folder,'exclusions-export.xlsx')),{type:'buffer',cellFormula:true});assert.ok(ex.Sheets['Исключения']);assert.ok(ex.Sheets['Сравнение']);assert.equal(ex.Sheets['Проверки'].B8.v,14000);
+ await settings.locator('#exclusionsClear').click();assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15100);
+ await settings.locator('#upsell').fill('0');await settings.locator('#upsell').dispatchEvent('change');
  // Removing a board unregisters its subscriptions; restoring renders the same model.
  await reference.locator('[data-widget-id="pl2-clients"] .remove-btn').click();
  assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),4);
@@ -79,6 +98,7 @@ async function main(){
  await page.locator('#onecFile').setInputFiles(path.join(folder,'onec.xlsx'));
  await page.waitForFunction(()=>window.OksanaPlanning.state.onec&&!window.OksanaPlanning.state.busy);
  await page.locator('#vat').selectOption('with');
+ await page.locator('#upsell').fill('0');await page.locator('#upsell').dispatchEvent('change');
  for(const [product,value]of [['ofd','1000'],['onec','7000']]){
   const input=page.locator('[data-check="'+product+'"][data-channel="Партнёры"]');await input.fill(value);await input.dispatchEvent('change');
  }

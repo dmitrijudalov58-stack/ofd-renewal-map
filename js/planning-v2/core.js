@@ -125,6 +125,56 @@
     return {channel:channels.length===1?channels[0]:UNKNOWN,
       partner:[...new Set(records.map(r=>r.partner).filter(Boolean))].join('; '),conflict:channels.length>1};
   }
+  const EXCLUSION_HEADERS=['ИНН клиента','КПП клиента','Наименование клиента','Заводской номер ККТ','ЗН ФН','Дата окончания ОФД','Дата окончания ФН','Срок действия текущего кода (1/3/6…мес)','Наличие Обмена с 1С 0/1','Тариф обмена с 1С (1/3/...Мес)','Наличие подключенных автоотчетов плюс (0/1)','Партнер'];
+  function parseExclusions(X,wb,file){
+    const records=[],issues=[];let sourceRows=0,duplicates=0;const seen=new Map(),conflicts=new Set();
+    for(const sheet of wb.SheetNames){
+      const ws=wb.Sheets[sheet];if(!ws||!ws['!ref'])continue;const range=X.utils.decode_range(ws['!ref']);if(range.e.r<1)continue;
+      if(!EXCLUSION_HEADERS.every((h,c)=>clean(readCell(X,ws,0,c))===h))throw new Error('Не совпали столбцы списка исключений на листе '+sheet+'.');
+      for(let row=1;row<=range.e.r;row++){
+        const get=c=>readCell(X,ws,row,c);if(EXCLUSION_HEADERS.every((_,c)=>get(c)==null||get(c)===''))continue;sourceRows++;
+        const id=inn(get(0)),serial=clean(get(3)),end=date(get(5),!!(wb.Workbook&&wb.Workbook.WBProps&&wb.Workbook.WBProps.date1904)),m=/\d+/.exec(clean(get(7))),months=m?+m[0]:null;
+        const r={inn:id,serial,org:clean(get(2)),end:end==null?null:Math.floor(end),months,partner:clean(get(11)),file,sheet,row:row+1};
+        if(!id||!serial||end==null||!months){issues.push({...r,status:'Некорректный ИНН, номер, дата или тариф'});continue;}
+        const key=id+'|'+serial,prior=seen.get(key);
+        if(prior){duplicates++;const conflict=prior.end!==r.end||prior.months!==r.months;if(conflict)conflicts.add(key);issues.push({...r,status:conflict?'Конфликтующий повтор заводского номера — не исключён':'Повтор записи — не учитывается повторно'});continue;}
+        seen.set(key,r);records.push(r);
+      }
+    }
+    if(!sourceRows)throw new Error('Список исключений пуст.');
+    return {records,issues,sourceRows,duplicates,conflicts,files:[file]};
+  }
+  const exclusionCache=new WeakMap();
+  function matchExclusions(led,input,year,cut){
+    const cached=exclusionCache.get(input);if(cached&&cached.led===led&&cached.year===year&&cached.cut===cut)return cached.result;
+    const groups=new Map(),excluded=new Set(),report=[];const snapshot=Math.min(cut,day(year));
+    if(led)for(const c of led.clients.values())for(const list of c.units.values()){
+      const known=list.filter(r=>r.start<snapshot);if(!known.length)continue;
+      const end=Math.max(...known.map(r=>r.end)),r=known.filter(r=>r.end===end).at(-1);
+      const key=[r.inn,Math.floor(r.end),r.months].join('|');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);
+    }
+    const counts=new Map();for(const r of input.records){if(input.conflicts.has(r.inn+'|'+r.serial))continue;const key=[r.inn,r.end,r.months].join('|');counts.set(key,(counts.get(key)||0)+1);}
+    for(const r of input.records){
+      const key=[r.inn,r.end,r.months].join('|'),matches=groups.get(key)||[];let status,unit='';
+      if(input.conflicts.has(r.inn+'|'+r.serial))status='Конфликт дат или тарифов одного заводского номера';
+      else if(!led||!led.clients.has(r.inn))status='ИНН отсутствует в базе ОФД';
+      else if(!matches.length)status='Нет совпадения по ИНН, дате окончания и тарифу';
+      else if(matches.length!==1||counts.get(key)!==1)status='Неоднозначное совпадение — не исключено';
+      else if(matches[0].end<day(year)||matches[0].end>=day(year+1))status='Совпало, вне планового года';
+      else{status='Исключено';unit=matches[0].unit;excluded.add(r.inn+'|'+unit);}
+      report.push({...r,status,unit});
+    }
+    report.push(...input.issues);
+    const result={excluded,report,sourceRows:input.sourceRows,duplicates:input.duplicates,files:input.files};
+    exclusionCache.set(input,{led,year,cut,result});return result;
+  }
+  function filterCandidate(r,excluded){
+    const endings=r.endings.filter(e=>!excluded.has(r.inn+'|'+e.unit));if(!endings.length)return null;if(endings.length===r.endings.length)return r;
+    const anchor=Math.min(...endings.map(e=>e.end)),first=endings.filter(e=>e.end===anchor),info=resolveChannel(first);
+    return {...r,endings,anchor,month:month(anchor),channel:info.channel,partner:info.partner,channelConflict:info.conflict,
+      dueUnits:endings.length,eligibleUpsellUnits:endings.filter(e=>e.months>0&&e.months<36).length,unknownTariffUnits:endings.filter(e=>e.months==null).length,
+      tariffs:[...new Set(first.map(e=>e.months).filter(v=>v!=null))].join(', '),file:first[0].file,sheet:first[0].sheet,sourceRow:first[0].row};
+  }
   function candidates(led,ofd,product,year,cut){
     const rows=[];
     // Past-year views use the information available at that year's opening.
@@ -148,17 +198,19 @@
         anchor,month:month(anchor),...feat,cohort:product==='ofd'?feat.cohort:'Все клиенты',
         channel:info.channel,partner:info.partner,channelConflict:!!info.conflict,
         channelSource:product==='onec'?'Партнёр ИНН из базы ОФД':'Первое окончание ОФД',
-        dueUnits:endings.length,tariffs:[...new Set(first.map(r=>r.months).filter(v=>v!=null))].join(', '),
+        dueUnits:endings.length,eligibleUpsellUnits:endings.filter(r=>r.months>0&&r.months<36).length,unknownTariffUnits:endings.filter(r=>r.months==null).length,endings,
+        tariffs:[...new Set(first.map(r=>r.months).filter(v=>v!=null))].join(', '),
         file:first[0].file,sheet:first[0].sheet,sourceRow:first[0].row,snapshot});
     }
     return rows.sort((a,b)=>a.anchor-b.anchor||a.inn.localeCompare(b.inn));
   }
-  function defaults(){return {year:2027,retroFrom:'2025-01-01',retroTo:'2025-12-31',asOf:'',vat:'',checks:{ofd:{},onec:{}},manual:{ofd:{},onec:{}},channels:{}};}
+  function defaults(){return {year:2027,retroFrom:'2025-01-01',retroTo:'2025-12-31',asOf:'',vat:'',upsell:0.05,checks:{ofd:{},onec:{}},manual:{ofd:{},onec:{}},channels:{}};}
   function normalizeParams(raw){
     const d=defaults();if(!raw||typeof raw!=='object')return d;
     const year=+raw.year;if(Number.isInteger(year)&&year>=2000&&year<=2100)d.year=year;
     for(const k of ['retroFrom','retroTo','asOf'])if(date(raw[k])!=null)d[k]=raw[k];
     if(['with','without'].includes(raw.vat))d.vat=raw.vat;
+    if(num(raw.upsell)!=null&&num(raw.upsell)>=0&&num(raw.upsell)<=1)d.upsell=num(raw.upsell);
     for(const k of ['checks','manual'])for(const p of ['ofd','onec'])if(raw[k]&&raw[k][p]&&typeof raw[k][p]==='object')d[k][p]={...raw[k][p]};
     if(raw.channels&&typeof raw.channels==='object')d.channels={...raw.channels};return d;
   }
@@ -168,17 +220,18 @@
     if(m&&num(m.value)!=null&&num(m.value)>=0&&num(m.value)<=1&&clean(m.reason))return {value:num(m.value),source:'Ручная: '+clean(m.reason)};
     const s=stats.get(key);return {value:s?s.rate:null,source:s&&s.rate!=null?'Ретро':'Нет завершённых данных'};
   }
-  function build(ofd,onec,params){
+  function build(ofd,onec,params,exclusions){
     if(params&&['retroFrom','retroTo','asOf'].some(k=>own(params,k)&&date(params[k])==null))throw new Error('Заполните период ретро и дату среза.');
     const p=normalizeParams(params),cut=date(p.asOf),from=date(p.retroFrom),to=date(p.retroTo);
     if(cut==null||from==null||to==null||from>to)throw new Error('Проверьте дату среза и период ретро.');
     const result={params:p,cut,from,to,products:{},warnings:[],channels:[],rows:[]};
+    const match=exclusions?matchExclusions(ofd,exclusions,p.year,cut):null;
     for(const product of ['ofd','onec']){
       const led=product==='ofd'?ofd:onec;
       if(!led){result.products[product]={loaded:false,rows:[],retro:null};continue;}
       const key=[product,from,to,cut,p.year].join('|');let analysis=cache.get(led);
       if(!analysis||analysis.key!==key||analysis.ofd!==ofd){analysis={key,ofd,rt:retro(led,product,from,to,cut),rows:candidates(led,ofd||ledger([]),product,p.year,cut)};cache.set(led,analysis);}
-      const rt=analysis.rt,rows=analysis.rows.map(r=>({...r}));
+      const rt=analysis.rt,rows=analysis.rows.map(r=>product==='ofd'&&match?filterCandidate(r,match.excluded):r).filter(Boolean).map(r=>({...r}));
       for(const row of rows){
         const override=p.channels[row.id];if(CHANNELS.includes(override)){row.channel=override;row.channelSource='Ручной выбор';}
         const prob=effectiveProb(rt.stats,row.cohort,p.manual[product]);
@@ -186,11 +239,16 @@
         row.check=row.channel===UNKNOWN?null:num(p.checks[product][row.channel]);
         if(row.check!=null&&row.check<0)row.check=null;
         row.expected=row.prob==null?null:row.prob;
-        row.amount=row.prob==null||row.check==null?null:row.prob*row.check;
+        row.baseAmount=row.prob==null||row.check==null?null:row.prob*row.check;
+        row.upsellShare=product==='ofd'?(row.unknownTariffUnits?null:row.eligibleUpsellUnits/row.dueUnits):0;
+        row.upsellAmount=row.baseAmount==null?null:product==='onec'||p.upsell===0?0:row.upsellShare==null?null:row.baseAmount*p.upsell*row.upsellShare;
+        row.amount=row.baseAmount==null||row.upsellAmount==null?null:row.baseAmount+row.upsellAmount;
       }
-      const total={base:rows.length,expected:0,money:0,missingProb:0,missingCheck:0,missingChannel:0};
+      const total={base:rows.length,expected:0,money:0,baseMoney:0,upsellMoney:0,missingUpsell:0,missingProb:0,missingCheck:0,missingChannel:0};
+      for(const r of rows){if(r.baseAmount!=null)total.baseMoney+=r.baseAmount;if(r.upsellAmount!=null)total.upsellMoney+=r.upsellAmount;else if(r.baseAmount!=null)total.missingUpsell++;}
       for(const r of rows){if(r.expected==null)total.missingProb++;else total.expected+=r.expected;if(r.amount!=null)total.money+=r.amount;if(r.check==null)total.missingCheck++;if(r.channel===UNKNOWN)total.missingChannel++;}
-      total.complete=total.missingProb===0&&total.missingCheck===0&&total.missingChannel===0;
+      total.complete=total.missingProb===0&&total.missingCheck===0&&total.missingChannel===0&&total.missingUpsell===0;
+      if(total.missingUpsell)result.warnings.push('ОФД: у '+total.missingUpsell+' клиентов неизвестен срок тарифа; сумма с апсейлом не определена.');
       result.products[product]={loaded:true,rows,retro:rt,total};result.rows.push(...rows);
       if(!rt.periodComplete)result.warnings.push((product==='ofd'?'ОФД':'Обмен с 1С')+': период ретро ещё не завершён с учётом 30 дней. Расчётные вероятности не используются.');
     }
@@ -203,6 +261,13 @@
     result.complete=!!ofd&&!!onec&&['ofd','onec'].every(k=>result.products[k].total.complete)&&!!p.vat;
     result.money=result.rows.reduce((s,r)=>s+(r.amount==null?0:r.amount),0);
     result.uniqueClients=new Set(result.rows.map(r=>r.inn)).size;
+    result.exclusions=match;
+    if(match){
+      const original=build(ofd,onec,p);result.baseline={money:original.money,knownMoney:original.rows.some(r=>r.amount!=null),complete:original.complete,ofd:original.products.ofd.total||null,onec:original.products.onec.total||null,uniqueClients:original.uniqueClients};
+      result.comparison={excludedUnits:match.excluded.size,excludedClients:original.products.ofd.rows.length-result.products.ofd.rows.length,moneyDrop:result.baseline.knownMoney?original.money-result.money:null};
+      const unresolved=match.report.filter(r=>r.status!=='Исключено'&&r.status!=='Совпало, вне планового года').length;
+      if(unresolved)result.warnings.push('Список без чеков: '+unresolved+' строк не исключены автоматически. Причины доступны в проверке и Excel.');
+    }
     return result;
   }
   function aggregate(rows,keyfn){
@@ -223,12 +288,17 @@
         parameters.push([product==='ofd'?'ОФД':'Обмен с 1С',key,eff.source,V(eff.value,eff.source.startsWith('Ручная')?3:5),'Доля клиентов']);
       }
     }
+    const upsellParam=parameters.length+2;
+    parameters.push(['ОФД','Тарифы менее 36 месяцев','Апсейл к доле суммы по кассам к продлению',V(p.upsell,3),'Доля суммы']);
     const rows=plan.rows.map((r,i)=>{
       const n=i+2,pr=probRow.get(r.product+'|'+r.cohort),cr=paramRow.get(r.product+'|'+r.channel);
       return [r.product==='ofd'?'ОФД':'Обмен с 1С',V(r.inn,7),r.org,r.cohort,r.channel,r.partner,V(r.anchor,6),r.month,r.kassas,r.dueUnits,
         pr?F("IF('Параметры'!D"+pr+'="","",\'Параметры\'!D'+pr+')',r.prob,5):null,
         cr?F("IF('Параметры'!D"+cr+'="","",\'Параметры\'!D'+cr+')',r.check,4):null,
-        F('IF(OR(K'+n+'="",L'+n+'=""),"",K'+n+'*L'+n+')',r.amount,4),r.probSource,r.file,r.sheet,r.sourceRow,r.channelSource];
+        F('IF(OR(U'+n+'="",V'+n+'=""),"",U'+n+'+V'+n+')',r.amount,4),r.probSource,r.file,r.sheet,r.sourceRow,r.channelSource,
+        r.product==='ofd'?r.eligibleUpsellUnits:0,V(r.upsellShare,5),
+        F('IF(OR(K'+n+'="",L'+n+'=""),"",K'+n+'*L'+n+')',r.baseAmount,4),
+        F('IF(U'+n+'="","",IF(\'Параметры\'!D'+upsellParam+'=0,0,IF(T'+n+'="","",U'+n+'*T'+n+'*\'Параметры\'!D'+upsellParam+')))',r.upsellAmount,4)];
     });
     const count=rows.length+1,range="'Клиенты'!";
     function sumFormula(col,predicate){return count<2?'0':'SUMIFS('+range+col+'$2:'+col+'$'+count+','+predicate+')';}
@@ -242,17 +312,23 @@
       for(const st of pr.retro.stats.values())retroRows.push([product==='ofd'?'ОФД':'Обмен с 1С',st.key,st.base,st.renewed,st.notRenewed,st.pending,V(st.rate,5)]);
     }
     const desc=[['Год плана',p.year],['Ретро',p.retroFrom+' — '+p.retroTo],['Срез на начало дня',p.asOf],['Средние чеки',p.vat==='with'?'С НДС':p.vat==='without'?'Без НДС':'Не отмечено'],['Формула','Клиенты × вероятность когорты × средний чек канала на одного продлившегося клиента'],['Кассы','На чек дополнительно не умножаются'],['Месяц','Первое окончание покрытия в плановом году, один годовой чек на ИНН в продукте'],['Канал ОФД','Канал покупки тарифа первого окончания. При неоднозначности требуется выбор'],['Канал 1С','Партнёр того же ИНН из ОФД, продукт и чеки отдельные'],['База','Известное покрытие на начало года; для будущего года — на дату среза. Уже продлённые за год плана кассы не включаются'],['Пустые значения','Не заданы. В суммах показана только рассчитанная часть'],['Статус при выгрузке',plan.complete?'Расчёт заполнен':'Расчёт не завершён'],...plan.warnings.map(w=>['Обратите внимание',w])];
+    const extra=[];
+    if(plan.exclusions){
+      extra.push({sheetName:'Исключения',headers:['ИНН','Заводской номер ККТ','Организация','Дата окончания ОФД','Тариф, мес','Статус','РНМ при однозначном совпадении','Файл','Лист','Строка'],rows:plan.exclusions.report.map(r=>[V(r.inn,7),V(r.serial,7),r.org,V(r.end,6),r.months,r.status,V(r.unit||'',7),r.file,r.sheet,r.row]),colWidths:[18,24,40,23,18,65,30,35,25,12],textCols:[0,1,6]});
+      extra.push({sheetName:'Сравнение',headers:['Показатель','Исходный прогноз','После исключений','Разница: исходный минус новый'],rows:[['Клиентов ОФД',plan.baseline.ofd?plan.baseline.ofd.base:null,plan.products.ofd.total?plan.products.ofd.total.base:null,plan.comparison.excludedClients],['Деньги рассчитанной части с апсейлом',V(plan.baseline.knownMoney?plan.baseline.money:null,4),V(plan.baseline.knownMoney?plan.money:null,4),V(plan.comparison.moneyDrop,4)],['Исключено касс ОФД',null,plan.comparison.excludedUnits,null]],colWidths:[55,25,25,36]});
+    }
+    desc.push(['Апсейл','К сумме ОФД пропорционально числу касс к продлению с тарифом менее 36 месяцев; 1С не затрагивает'],['Исключения','Только однозначное совпадение ИНН + даты окончания + тарифа. Заводской номер не приравнивается к РНМ. Когорты и ретро сохраняются']);
     return {sheets:[
       {sheetName:'Описание',headers:['Параметр','Значение'],rows:desc,colWidths:[32,110]},
       {sheetName:'Параметры',headers:['Продукт','Канал / когорта','Показатель / источник','Значение','Единица'],rows:parameters,colWidths:[24,42,55,24,22]},
-      {sheetName:'Клиенты',headers:['Продукт','ИНН','Организация','Когорта','Канал','Партнёр','Первое окончание','Месяц','Действующих касс','Касс к продлению','Вероятность','Чек клиента','Ожидаемая сумма','Источник вероятности','Файл','Лист','Строка','Источник канала'],rows,colWidths:[22,18,42,34,29,45,20,16,20,20,18,20,23,45,42,25,12,30],textCols:[1]},
+      {sheetName:'Клиенты',headers:['Продукт','ИНН','Организация','Когорта','Канал','Партнёр','Первое окончание','Месяц','Действующих касс до исключений','Касс к продлению','Вероятность','Чек клиента','Сумма с апсейлом','Источник вероятности','Файл','Лист','Строка','Источник канала','Касс с тарифом менее 36 мес','Доля для апсейла','Продления без апсейла','Прибавка за апсейл'],rows,colWidths:[22,18,42,34,29,45,20,16,29,20,18,20,23,45,42,25,12,30,28,22,25,24],textCols:[1]},
       groupSheet('По месяцам',aggregate(plan.rows,r=>r.month),'H'),
       groupSheet('По каналам',aggregate(plan.rows,r=>r.channel),'E'),
       groupSheet('По когортам',aggregate(plan.rows,r=>r.cohort),'D'),
       {sheetName:'Ретро',headers:['Продукт','Когорта','Клиентов','Продлились','Не продлились','Не завершены','Вероятность'],rows:retroRows,colWidths:[24,38,20,20,23,22,20]},
-      {sheetName:'Проверки',headers:['Проверка','Значение'],rows:[['Уникальность ИНН в каждом продукте',new Set(plan.rows.map(r=>r.product+'|'+r.inn)).size===plan.rows.length?'Да':'Ошибка'],['Строк клиентов продуктов',plan.rows.length],['Уникальных ИНН двух продуктов',plan.uniqueClients],['Строк без вероятности',F(rows.length?"COUNTBLANK('Клиенты'!K2:K"+count+')':'0',plan.rows.filter(r=>r.prob==null).length)],['Строк без чека',F(rows.length?"COUNTBLANK('Клиенты'!L2:L"+count+')':'0',plan.rows.filter(r=>r.check==null).length)],['Строк без канала',plan.rows.filter(r=>r.channel===UNKNOWN).length],['Деньги рассчитанной части',F(rows.length?"SUM('Клиенты'!M2:M"+count+')':'0',plan.money,4)]],colWidths:[62,28]}
+      {sheetName:'Проверки',headers:['Проверка','Значение'],rows:[['Уникальность ИНН в каждом продукте',new Set(plan.rows.map(r=>r.product+'|'+r.inn)).size===plan.rows.length?'Да':'Ошибка'],['Строк клиентов продуктов',plan.rows.length],['Уникальных ИНН двух продуктов',plan.uniqueClients],['Строк без вероятности',F(rows.length?"COUNTBLANK('Клиенты'!K2:K"+count+')':'0',plan.rows.filter(r=>r.prob==null).length)],['Строк без чека',F(rows.length?"COUNTBLANK('Клиенты'!L2:L"+count+')':'0',plan.rows.filter(r=>r.check==null).length)],['Строк без канала',plan.rows.filter(r=>r.channel===UNKNOWN).length],['Деньги рассчитанной части',F(rows.length?"SUM('Клиенты'!M2:M"+count+')':'0',plan.money,4)]],colWidths:[62,28]},...extra
     ]};
   }
-  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,num,day,date,iso,displayDate,inn,age,classify,parseWorkbook,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
+  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,EXCLUSION_HEADERS,num,day,date,iso,displayDate,inn,age,classify,parseWorkbook,parseExclusions,matchExclusions,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Planning2=api;
 })(typeof window!=='undefined'?window:globalThis);

@@ -50,3 +50,5 @@
 
 /* Native boards inherit the main widget shell. */
 .p2-integrated{min-width:0}.p2-integrated .p2-actions{margin:14px 0}.p2-integrated .p2-settings{padding:4px 0}.p2-integrated .cards[hidden],.p2-integrated [hidden]{display:none!important}.p2-integrated #view{padding-top:12px}.p2-integrated .controls{margin-bottom:12px}.p2-integrated .card{min-width:0}
+
+.planning2 .p2-adjustments{border-top:1px solid var(--line);padding:18px 0;margin:14px 0}.planning2 .p2-adjustments .controls{align-items:flex-end}.planning2 #upsell{width:120px}.planning2 #comparison{margin-top:14px}.planning2 #exclusionsRows{padding-top:10px}
