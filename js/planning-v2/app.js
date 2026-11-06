@@ -1,19 +1,21 @@
 (function(){
+ window.mountPlanning2=function(container,options){
+ options=options||{};
  'use strict';
- const P=window.Planning2,$=id=>document.getElementById(id),KEY='ofd.planning2.oksana.v1';
+ const P=window.Planning2,$=id=>container.querySelector('[id="'+id+'"]'),KEY='ofd.planning2.oksana.v1';
  const esc=v=>String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const fmt=(v,d=0)=>v==null?'Не задано':v.toLocaleString('ru-RU',{maximumFractionDigits:d});
  const pct=v=>v==null?'Нет данных':fmt(v*100,2)+'%';
  const money=v=>v==null?'Не задано':fmt(v,2)+' ₽';
  const title=p=>p==='ofd'?'ОФД':'Обмен с 1С';
  let saved=null;try{saved=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
- const state={params:P.normalizeParams(saved),ofd:null,onec:null,meta:{},plan:null,tab:'checks',product:'ofd',query:'',channel:'',onlyUnknown:false,busy:false};
- function persist(){try{localStorage.setItem(KEY,JSON.stringify(state.params));}catch(e){status('Параметры рассчитаны, но браузер не разрешил их сохранить. Экспортируйте план в Excel.');}}
+ const state={params:P.normalizeParams(saved),ofd:null,onec:null,meta:{},plan:null,tab:options.tab||'checks',product:'ofd',query:'',channel:'',onlyUnknown:false,busy:false};
+ function persist(){try{localStorage.setItem(KEY,JSON.stringify(state.params));if(options.integrated)window.dispatchEvent(new CustomEvent('planning2-params',{detail:api}));}catch(e){status('Параметры рассчитаны, но браузер не разрешил их сохранить. Экспортируйте план в Excel.');}}
  function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'';}
  function syncInputs(){for(const k of ['year','retroFrom','retroTo','asOf','vat'])$(k).value=state.params[k];}
  function calculate(){
   if(!state.ofd&&!state.onec){state.plan=null;render();return;}
-  try{state.plan=P.build(state.ofd,state.onec,state.params);render();status('План пересчитан. '+(state.plan.complete?'Параметры заполнены.':'Проверьте незаполненные параметры.'));}catch(e){state.plan=null;render();status(e.message,true);}
+  try{state.plan=(options.integrated?window.OFDPlanning2:P).build(state.ofd,state.onec,state.params);render();status('План пересчитан. '+(state.plan.complete?'Параметры заполнены.':'Проверьте незаполненные параметры.'));}catch(e){state.plan=null;render();status(e.message,true);}
  }
  function card(product){
   const pr=state.plan.products[product];if(!pr.loaded)return '<article class="card stat"><h3>'+title(product)+'</h3><div class="number">Нет файла</div><p class="tiny">Загрузите исходные данные продукта</p></article>';
@@ -63,16 +65,16 @@
   if(!state.plan){$('view').innerHTML='<div class="empty">Начните с загрузки исходных файлов.<br>Чеки можно вводить после загрузки; выдуманных цен и вероятностей нет.</div>';return;}
   const views={checks:checksView,retro:retroView,channels:channelsView,months:monthsView,clients:clientsView};$('view').innerHTML=views[state.tab]();
   const pv=$('productView');if(pv)pv.addEventListener('change',()=>{state.product=pv.value;renderView();});
-  document.querySelectorAll('[data-check]').forEach(el=>el.addEventListener('change',()=>{
+  container.querySelectorAll('[data-check]').forEach(el=>el.addEventListener('change',()=>{
    const n=P.num(el.value);if(n!=null&&n<0){el.setCustomValidity('Чек не может быть отрицательным');el.reportValidity();return;}el.setCustomValidity('');
    state.params.checks[el.dataset.check][el.dataset.channel]=n;persist();calculate();
   }));
-  document.querySelectorAll('tr[data-cohort]').forEach(row=>{
+  container.querySelectorAll('tr[data-cohort]').forEach(row=>{
    const change=()=>{const value=P.num(row.querySelector('.prob').value),reason=row.querySelector('.reason').value.trim();if(value!=null&&(value<0||value>100)){status('Вероятность должна быть от 0 до 100%.',true);return;}state.params.manual[state.product][row.dataset.cohort]={value:value==null?null:value/100,reason};persist();calculate();};
    row.querySelector('.prob').addEventListener('change',change);row.querySelector('.reason').addEventListener('change',change);
   });
-  document.querySelectorAll('[data-reset]').forEach(el=>el.addEventListener('click',()=>{delete state.params.manual[state.product][el.dataset.reset];persist();calculate();}));
-  document.querySelectorAll('[data-client-channel]').forEach(el=>el.addEventListener('change',()=>{if(el.value)state.params.channels[el.dataset.clientChannel]=el.value;else delete state.params.channels[el.dataset.clientChannel];persist();calculate();}));
+  container.querySelectorAll('[data-reset]').forEach(el=>el.addEventListener('click',()=>{delete state.params.manual[state.product][el.dataset.reset];persist();calculate();}));
+  container.querySelectorAll('[data-client-channel]').forEach(el=>el.addEventListener('change',()=>{if(el.value)state.params.channels[el.dataset.clientChannel]=el.value;else delete state.params.channels[el.dataset.clientChannel];persist();calculate();}));
   const q=$('query');if(q)q.addEventListener('input',()=>{state.query=q.value;const pos=q.selectionStart;renderView();$('query').focus();$('query').setSelectionRange(pos,pos);});
   const unknown=$('unknownOnly');if(unknown)unknown.addEventListener('change',()=>{state.onlyUnknown=unknown.checked;renderView();});
  }
@@ -102,10 +104,29 @@
   if(k==='year'&&(!Number.isInteger(+$(k).value)||+$(k).value<2000||+$(k).value>2100)){state.plan=null;render();status('Год плана должен быть от 2000 до 2100.',true);return;}
   state.params[k]=k==='year'?+$(k).value:$(k).value;persist();calculate();
  });
- $('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(!b)return;state.tab=b.dataset.tab;document.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el===b));renderView();});
+ $('tabs').addEventListener('click',e=>{const b=e.target.closest('[data-tab]');if(!b)return;state.tab=b.dataset.tab;container.querySelectorAll('[data-tab]').forEach(el=>el.classList.toggle('active',el===b));renderView();});
  $('export').addEventListener('click',async()=>{
   if(!state.plan||state.busy)return;$('export').disabled=true;status('Готовлю Excel со всеми клиентами и формулами…');await new Promise(r=>setTimeout(r,30));
   try{OFDExport.downloadXlsx('Планирование_2_Оксана_'+state.params.year,P.workbook(state.plan));status('Excel сформирован. Пустые чеки и вероятности сохранены пустыми.');}catch(e){status('Не удалось выгрузить Excel: '+e.message,true);}finally{$('export').disabled=false;}
  });
- window.OksanaPlanning={state,loadFiles,calculate,render};syncInputs();render();
+ const api={state,loadFiles,calculate,render,syncShared:function(){
+  if(!options.integrated)return;
+  const shared=window.OFDState||{},one=window.OFDWidgets.ofd1cGetState();
+  state.ofd=shared.planning2Data&&shared.planning2Data.ledger||null;
+  state.onec=one.planning2Data&&one.planning2Data.ledger||null;
+  for(const product of ['ofd','onec']){
+   const data=product==='ofd'?shared.planning2Data:one.planning2Data;
+   $(product==='ofd'?'ofdMeta':'onecMeta').textContent=data?(data.error||data.files.join('; ')+' · '+fmt(data.ledger.clients.size)+' ИНН · исключено '+fmt(data.issues.length)):'Файл не выбран';
+  }
+  if(!state.params.asOf&&state.ofd&&state.ofd.maxStart!=null)state.params.asOf=P.iso(Math.floor(state.ofd.maxStart));
+  syncInputs();calculate();
+  const errors=[shared.planning2Data,one.planning2Data].filter(x=>x&&x.error).map(x=>x.error);
+  if(errors.length)status(errors.join(' '),true);
+ }};
+ const onParams=e=>{if(e.detail===api)return;try{state.params=P.normalizeParams(JSON.parse(localStorage.getItem(KEY)));syncInputs();calculate();}catch(e){status(e.message,true);}};
+ if(options.integrated)window.addEventListener('planning2-params',onParams);
+ api.destroy=()=>window.removeEventListener('planning2-params',onParams);
+ window.OksanaPlanning=api;syncInputs();render();if(options.integrated)api.syncShared();return api;
+ };
+ if(document.body.classList.contains('planning2'))window.mountPlanning2(document.body);
 })();

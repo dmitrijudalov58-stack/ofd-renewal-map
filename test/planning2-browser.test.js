@@ -9,7 +9,7 @@ const rows=[parser.EXPECTED_HEADERS,
  row(a,'0000000000000001',d(2020),d(2025,2,1),'A1'),row(a,'0000000000000001',d(2025,2,15),d(2027,4,1),'A2'),
  row(a,'0000000000000002',d(2021),d(2025,5,1),'B1'),row(a,'0000000000000002',d(2025,6,5),d(2027,7,1),'B2'),
  row(b,'0000000000000003',d(2022),d(2028),'C1')];
-let wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet(rows),'ОФД');fs.writeFileSync(path.join(folder,'ofd.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
+let wb=X.utils.book_new();const sourceSheet=X.utils.aoa_to_sheet(rows);for(let r=2;r<=rows.length;r++)for(const c of ['J','K','L'])sourceSheet[c+r].z='dd.mm.yyyy hh:mm:ss';X.utils.book_append_sheet(wb,sourceSheet,'ОФД');fs.writeFileSync(path.join(folder,'ofd.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
 wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
  ['Ключ доступа','ИНН покупателя','Заводской номер ККТ','Начало действия тарифа','Окончание действия тарифа','Количество месяцев','Итоговая сумма','Сумма роялти'],
  ['X1',a,'SN1','2020-01-01','2025-02-01',15,100,10],['X2',a,'SN1','2025-02-02','2027-06-01',15,100,10],
@@ -32,10 +32,42 @@ async function main(){
 
  const browser=await chromium.launch({headless:true,executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'});
  try{
- const context=await browser.newContext({viewport:{width:1440,height:1050},acceptDownloads:true});
+ const context=await browser.newContext({viewport:{width:1440,height:1050},timezoneId:'Europe/Moscow',acceptDownloads:true});
  const reference=await context.newPage();await reference.goto(origin+'/');
- assert.equal(await reference.locator('#planning2Link').count(),1);
- await reference.screenshot({path:path.join(folder,'reference.png'),fullPage:true});await reference.close();
+ assert.equal(await reference.locator('details[data-group="b12"] [data-widget]').count(),5);
+ assert.equal(await reference.locator('#planning2Link').count(),0);
+
+ const integratedErrors=[];reference.on('pageerror',e=>integratedErrors.push(e.message));
+ await reference.locator('#fileInput').setInputFiles(path.join(folder,'ofd.xlsx'));
+ await reference.waitForFunction(()=>window.OFDState&&OFDState.planning2Data&&OFDState.ctx);
+ await reference.evaluate(()=>['checks','retro','channels','months','clients'].forEach(t=>OFDCanvas.addWidget('pl2-'+t)));
+ await reference.waitForFunction(()=>OFDPlanning2.instances.size===5);
+ await reference.locator('#ofd1cFileInput').setInputFiles(path.join(folder,'onec.xlsx'));
+ await reference.waitForFunction(()=>[...OFDPlanning2.instances.values()].every(a=>a.state.onec));
+ const settings=reference.locator('.p2-integrated[data-p2-tab="checks"]');
+ await settings.locator('#asOf').fill('2026-11-02');await settings.locator('#asOf').dispatchEvent('change');
+ await settings.locator('#vat').selectOption('with');
+ for(const [product,value]of [['ofd','1000'],['onec','7000']]){
+  const input=settings.locator('[data-check="'+product+'"][data-channel="Партнёры"]');await input.fill(value);await input.dispatchEvent('change');
+ }
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[15000,15000,15000,15000,15000]);
+ assert.equal(await reference.locator('.p2-integrated[data-p2-tab="retro"] tr[data-cohort]').count(),8);
+ assert.equal(await reference.locator('.p2-integrated[data-p2-tab="months"] tbody tr').count(),12);
+ const downloadIntegrated=reference.waitForEvent('download');await settings.locator('#export').click();await (await downloadIntegrated).saveAs(path.join(folder,'integrated-export.xlsx'));
+ const integratedXlsx=X.read(fs.readFileSync(path.join(folder,'integrated-export.xlsx')),{type:'buffer',cellFormula:true});
+ assert.equal(integratedXlsx.Sheets['Проверки'].B8.v,15000);
+ // Removing a board unregisters its subscriptions; restoring renders the same model.
+ await reference.locator('[data-widget-id="pl2-clients"] .remove-btn').click();
+ assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),4);
+ await reference.evaluate(()=>OFDCanvas.addWidget('pl2-clients'));
+ assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),5);
+ assert.deepEqual(integratedErrors,[]);
+ await reference.screenshot({path:path.join(folder,'integrated.png'),fullPage:true});
+ await reference.close();
+ await context.clearCookies();
+ // Standalone regression starts with clean, isolated parameters.
+ const cleaner=await context.newPage();await cleaner.goto(origin+'/');await cleaner.evaluate(()=>localStorage.removeItem('ofd.planning2.oksana.v1'));await cleaner.close();
+
  const page=await context.newPage(),errors=[],network=[];
  page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(/^https?:/.test(r.url())&&!r.url().startsWith(origin+'/'))network.push(r.url());});
  await page.goto(origin+'/docs/planning/v2.html');

@@ -4242,6 +4242,7 @@
   var OFD1C_STATE = { records: null, fileName: null, sheetsCount: null, headerMismatch: false };
   var OFD1C_REFRESHERS = {}; // instanceId -> function() -- живой пересчёт остальных B8-бордов после загрузки файла (тот же приём, что ccActiveRefreshers у B5)
   function ofd1cBroadcast() {
+    if (root.OFDPlanning2) root.OFDPlanning2.refresh();
     Object.keys(OFD1C_REFRESHERS).forEach(function (k) { OFD1C_REFRESHERS[k](); });
     if (root.OFDPlanning && root.OFDPlanning.refresh) root.OFDPlanning.refresh();
   }
@@ -4352,7 +4353,13 @@
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
       reader.onload = function (e) {
-        try { resolve(root.XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true })); }
+        try {
+          var buffer = new Uint8Array(e.target.result);
+          var planning2Part = root.OFDPlanning2 && root.OFDPlanning2.parseBuffer(root.XLSX, buffer, "onec", file.name);
+          var workbook = root.XLSX.read(buffer, { type: "array", cellDates: true });
+          workbook._planning2Part = planning2Part;
+          resolve(workbook);
+        }
         catch (err) { reject(err); }
       };
       reader.onerror = function () { reject(new Error("Не удалось прочитать файл «" + file.name + "»")); };
@@ -4374,7 +4381,9 @@
       // 2026-09-05, "Ключ доступа" для этого не годится (повторяется на разных записях).
       var allRecords = [], headerMismatch = false, sheetsCount = 0;
       var seenKeys = new Set();
+      var planning2Parts = [];
       workbooks.forEach(function (wb) {
+        if (wb._planning2Part) planning2Parts.push(wb._planning2Part);
         var parsed = ofd1cParseWorkbook(wb);
         if (parsed.headerMismatch) headerMismatch = true;
         sheetsCount += wb.SheetNames.length;
@@ -4386,6 +4395,7 @@
         });
       });
       OFD1C_STATE = { records: allRecords, fileName: files.map(function (f) { return f.name; }).join(", "), sheetsCount: sheetsCount, headerMismatch: headerMismatch };
+      if (root.OFDPlanning2) OFD1C_STATE.planning2Data = root.OFDPlanning2.combine(planning2Parts);
       ofd1cBroadcast();
       return { recordsCount: allRecords.length, sheetsCount: sheetsCount, headerMismatch: headerMismatch, fileNames: OFD1C_STATE.fileName };
     });

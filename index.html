@@ -19,6 +19,7 @@
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=28">
 <link rel="stylesheet" href="css/styles.css?v=34">
 <link rel="stylesheet" href="css/glass.css?v=2">
+<link rel="stylesheet" href="css/planning-v2.css?v=2">
 </head>
 <body>
 
@@ -166,6 +167,15 @@
       <div class="lib-item" data-widget="pl-params"><span class="grip">⋮⋮</span>Параметры и проверка бюджета<span class="lchip">план</span></div>
     </details>
 
+    <details class="board-group" data-group="b12">
+      <summary><span class="lib-item lib-group" data-group="b12" title="Перетащи на холст — добавятся все борды раздела"><span class="grip" aria-hidden="true">⋮⋮</span><span class="code">План 2</span>Планирование 2.0</span></summary>
+      <div class="lib-item" data-widget="pl2-checks"><span class="grip">⋮⋮</span>Параметры, средние чеки и сводный план<span class="lchip">план</span></div>
+      <div class="lib-item" data-widget="pl2-retro"><span class="grip">⋮⋮</span>Когорты и вероятности<span class="lchip">план</span></div>
+      <div class="lib-item" data-widget="pl2-channels"><span class="grip">⋮⋮</span>Каналы и когорты<span class="lchip">план</span></div>
+      <div class="lib-item" data-widget="pl2-months"><span class="grip">⋮⋮</span>План по месяцам<span class="lchip">план</span></div>
+      <div class="lib-item" data-widget="pl2-clients"><span class="grip">⋮⋮</span>Клиенты по ИНН<span class="lchip">план</span></div>
+    </details>
+
     <!-- B10: видят все залогиненные (решение Димы 2026-10-21); по умолчанию скрыта только B8 (hidden-1c).
          Данные портрета в сам сайт не кладутся: их загружает пользователь кнопкой «Портрет». -->
     <details class="board-group" data-group="b10">
@@ -200,7 +210,6 @@
 
    <hr class="rail-divider">
    <div class="rail-footer">
-     <a class="rail-footer-btn" href="docs/planning/v2.html" id="planning2Link"><span class="code">План 2</span>Планирование 2.0</a>
      <a class="rail-footer-btn" href="docs/guide.html" target="_blank" rel="noopener">
        <span class="rail-footer-icon">📖</span>Инструкция
      </a>
@@ -222,13 +231,16 @@
 <script src="js/vendor/gridstack-all.js?v=28"></script>
 <script src="js/parser.js?v=29"></script>
 <script src="js/metrics.js?v=29"></script>
-<script src="js/widgets.js?v=32"></script>
+<script src="js/widgets.js?v=33"></script>
 <script src="js/planning.js?v=3"></script>
 <script src="js/portrait-util.js?v=1"></script>
 <script src="js/portrait.js?v=3"></script>
+<script src="js/planning-v2/core.js?v=2"></script>
+<script src="js/planning-v2/app.js?v=2"></script>
+<script src="js/planning-v2/boards.js?v=1"></script>
 <script src="js/dnd.js?v=29"></script>
 <script src="js/export.js?v=31"></script>
-<script src="js/app.js?v=29"></script>
+<script src="js/app.js?v=30"></script>
 <script src="js/pwa.js?v=1"></script>
 </body>
 </html>

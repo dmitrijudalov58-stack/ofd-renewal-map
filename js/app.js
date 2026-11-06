@@ -190,6 +190,7 @@
   function readAndParseFiles(files) {
     var entries = [];
     var headerIssues = [];
+    var planning2Parts = [];
     var idx = 0;
     function next() {
       if (idx >= files.length) return Promise.resolve();
@@ -202,6 +203,7 @@
           requestAnimationFrame(function () {
             setStatus("Разбираю файл " + fileNo + " из " + files.length + " (" + file.name + ")…");
             requestAnimationFrame(function () {
+              if (window.OFDPlanning2) planning2Parts.push(window.OFDPlanning2.parseBuffer(window.XLSX, buf, "ofd", file.name));
               var wb = window.XLSX.read(buf, { type: "array", cellDates: true });
               var parsed = window.OFDParser.parseWorkbook(window.XLSX, wb);
               if (parsed.headerIssues.length) {
@@ -217,7 +219,7 @@
       }).then(next);
     }
     return next().then(function () {
-      return { entries: entries, headerIssues: headerIssues };
+      return { entries: entries, headerIssues: headerIssues, planning2Parts: planning2Parts };
     });
   }
 
@@ -253,6 +255,7 @@
 
         window.OFDState.model = model;
         window.OFDState.rows = merged.rows;
+        if (window.OFDPlanning2) window.OFDState.planning2Data = window.OFDPlanning2.combine(parsedFiles.planning2Parts);
         window.OFDState.sourceFiles = files.map(function (f) { return f.name; });
         window.OFDState.asOf = asOf;
         window.OFDState.loadTimeAsOf = asOf; // зафиксирован раз и навсегда, для риск-бордов
