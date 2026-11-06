@@ -10,11 +10,15 @@
  }
  function findPartners(partners,query){
   const terms=searchText(query).split(/\s+/).filter(Boolean);
-  return partners.filter(p=>{const hay=searchText(p.label).replace(/\s/g,'');return terms.every(t=>hay.includes(t));})
+  return partners.filter(p=>{const words=searchText(p.label).split(/\s+/);return terms.every(t=>{const partial=/^\d+$/.test(t)||t.length>3;return words.some(w=>partial?w.includes(t):w.startsWith(t));});})
    .sort((a,b)=>a.label.localeCompare(b.label,'ru'));
  }
+ function partnerKey(r){
+  const name=String(r.partner||'').trim(),id=String(r.partnerInn||'').trim();
+  return name||id?'partner:'+JSON.stringify([name,id]):'unknown';
+ }
  function attribution(records){
-  return {channels:union(records.map(r=>P.classify(r.partner,r.center))),partners:union(records.map(r=>r.partnerInn?'inn:'+r.partnerInn:r.partner?'name:'+r.partner:'unknown'))};
+  return {channels:union(records.map(r=>P.classify(r.partner,r.center))),partners:union(records.map(partnerKey))};
  }
  function sourcePartners(ofd,inn,year,cut){
   const c=ofd&&ofd.clients.get(inn);if(!c)return [];
@@ -28,9 +32,8 @@
   if(!led)return null;
   const from=P.day(year),to=P.day(year+1),rows=[],newRows=[],partners=new Map();
   function addPartner(r){
-   const key=r.partnerInn?'inn:'+r.partnerInn:r.partner?'name:'+r.partner:'unknown';
-   if(!partners.has(key))partners.set(key,{key,inn:r.partnerInn||'',names:[]});
-   const p=partners.get(key);if(r.partner&&!p.names.includes(r.partner))p.names.push(r.partner);
+   const key=partnerKey(r),name=String(r.partner||'').trim(),id=String(r.partnerInn||'').trim();
+   if(!partners.has(key))partners.set(key,{key,inn:id,name,names:name?[name]:[]});
   }
   // The search directory is not restricted to clients with events in the selected year.
   if(ofd)for(const r of ofd.records)if(r.start<cut)addPartner(r);
@@ -58,7 +61,7 @@
    newRows.push({inn:c.inn,org:known[0].org,start:first,...attrs(c,known.filter(r=>r.start===first))});
   }
   const channels=union([...P.CHANNELS,P.UNKNOWN,...rows.flatMap(r=>r.channels),...newRows.flatMap(r=>r.channels)]);
-  return {product,year,cut,rows,newRows,channels,partners:[...partners.values()].filter(p=>p.key!=='unknown').map(p=>({...p,label:p.names.join(' / ')+(p.inn?' · '+p.inn:'')})).concat([{key:'unknown',label:'Партнёр не определён',inn:'',names:[]}])};
+  return {product,year,cut,rows,newRows,channels,partners:[...partners.values()].filter(p=>p.key!=='unknown').map(p=>({...p,label:(p.name||'Партнёр без названия')+(p.inn?' · '+p.inn:'')})).concat([{key:'unknown',label:'Партнёр не определён',inn:'',names:[]}])};
  }
  function select(rows,filter){return rows.filter(r=>filter.mode==='partner'?r.partners.includes(filter.partner):filter.channels==null||r.channels.some(c=>filter.channels.includes(c)));}
  function summarize(rows){
@@ -87,6 +90,6 @@
   return {ok:!errors.length,state:errors.length?'error':!rows.length?'empty':!expected.closed?'pending':'ok',errors,expected,rate,churnRate,
    annualGap:summary.due-summary.actual-summary.lost-summary.pending,closedGap:summary.closed-summary.closedRenewed-summary.lost};
  }
- const api={build,select,summarize,attribution,searchText,findPartners,reconcile};
+ const api={build,select,summarize,attribution,searchText,findPartners,reconcile,partnerKey};
  if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Planning2Retro=api;
 })(typeof window!=='undefined'?window:globalThis);

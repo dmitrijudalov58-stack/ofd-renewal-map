@@ -1,5 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),{pathToFileURL}=require('node:url');
-const P=require('../js/planning-v2/core.js'),X=require('../js/vendor/xlsx.full.min.js'),parser=require('../js/parser.js');
+const P=require('../js/planning-v2/core.js'),X=require('../js/vendor/xlsx.full.min.js'),parser=require('../js/parser.js'),R=require('../js/planning-v2/retro.js');
+const pk=(name,inn)=>R.partnerKey({partner:name,partnerInn:inn});
 const {chromium}=require('/Users/dmitrij/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
 const folder='/private/tmp/retrospective-browser';fs.mkdirSync(folder,{recursive:true});
 const d=P.day;
@@ -11,6 +12,8 @@ const rows=[parser.EXPECTED_HEADERS,
  row(b,'0000000000000003',d(2022),d(2028),'C1'),row('7700000005','0000000000000005',d(2022),d(2028),'D1')];
 // Partners without 2025 events must still be searchable in both blocks.
 for(const [id,name,pin]of [['7700000091','АО "Калуга Астрал" (ЛК ОФД)','LK'],['7700000092','ООО "АТОЛ" (ОФД)','ATOL']]){const r=row(id,pin,d(2020),d(2028),pin);r[19]=name;r[20]=id;rows.push(r);}
+const pinPartner=row('7700000094','PINS',d(2020),d(2028),'PINS');pinPartner[19]='АО "Калуга Астрал" (Пин-коды)';pinPartner[20]='7700000091';rows.push(pinPartner);
+const elkom=row('7700000093','ELKOM',d(2020),d(2028),'ELKOM');elkom[19]='ООО "РУС-ЭЛКОМ" ОФД';elkom[20]='7700000093';rows.push(elkom);
 let wb=X.utils.book_new();const sourceSheet=X.utils.aoa_to_sheet(rows);for(let r=2;r<=rows.length;r++)for(const c of ['J','K','L'])sourceSheet[c+r].z='dd.mm.yyyy hh:mm:ss';X.utils.book_append_sheet(wb,sourceSheet,'ОФД');fs.writeFileSync(path.join(folder,'ofd.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
 wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
  ['Ключ доступа','ИНН покупателя','Заводской номер ККТ','Начало действия тарифа','Окончание действия тарифа','Количество месяцев','Итоговая сумма','Сумма роялти'],
@@ -52,15 +55,15 @@ async function main(){
  for(const key of ['renew','fresh']){
   const filter=board.locator('[data-filter="'+key+'"]');await filter.locator('[data-mode]').selectOption('partner');
   const input=filter.locator('[data-partner-search]'),suggestions=filter.locator('[data-partner-suggestions]');
-  await input.fill('OFD');assert.equal(await suggestions.locator('button').count(),2);assert.equal(await suggestions.isVisible(),true);
+  await input.fill('OFD');assert.equal(await suggestions.locator('button').count(),3);assert.equal(await suggestions.isVisible(),true);
   if(process.env.RETRO_QA_DIR){fs.mkdirSync(process.env.RETRO_QA_DIR,{recursive:true});await filter.screenshot({path:path.join(process.env.RETRO_QA_DIR,key+'-partner-search.png'),style:'.topbar{visibility:hidden}'});}
-  for(const term of ['ЛК','lk']){await input.fill(term);assert.equal(await suggestions.locator('button').count(),1);assert.ok((await suggestions.innerText()).includes('Калуга Астрал'));}
-  await suggestions.locator('button').click();assert.equal(await filter.locator('[data-partner]').inputValue(),'inn:7700000091');
+  for(const term of ['ЛК','lk','лк офд']){await input.fill(term);assert.equal(await suggestions.locator('button').count(),1);assert.ok((await suggestions.innerText()).includes('Калуга Астрал'));}
+  await suggestions.locator('button').click();assert.equal(await filter.locator('[data-partner]').inputValue(),pk('АО \"Калуга Астрал\" (ЛК ОФД)','7700000091'));
   assert.equal((await cards(key==='renew'?'[data-renew-summary]':'[data-new-summary]'))[0],'0');
   await input.fill('Атолл');assert.equal(await suggestions.locator('button').count(),1);assert.ok((await suggestions.innerText()).includes('АТОЛ'));
-  await input.press('ArrowDown');await reference.keyboard.press('Enter');assert.equal(await filter.locator('[data-partner]').inputValue(),'inn:7700000092');
+  await input.press('ArrowDown');await reference.keyboard.press('Enter');assert.equal(await filter.locator('[data-partner]').inputValue(),pk('ООО \"АТОЛ\" (ОФД)','7700000092'));
   await input.fill('not-in-file');assert.ok((await suggestions.innerText()).includes('Ничего не найдено'));assert.equal(await suggestions.locator('button').count(),0);
-  await input.fill('7700000091');assert.equal(await suggestions.locator('button').count(),1);await input.press('Escape');assert.equal(await suggestions.isVisible(),false);
+  await input.fill('7700000091');assert.equal(await suggestions.locator('button').count(),2);assert.ok((await suggestions.innerText()).includes('Пин-коды'));assert.ok(!(await suggestions.innerText()).includes(' / '));await input.press('Escape');assert.equal(await suggestions.isVisible(),false);
   await filter.locator('[data-mode]').selectOption('channel');
  }
 
@@ -81,7 +84,7 @@ async function main(){
  await board.locator('[data-filter="renew"] [data-mode]').selectOption('partner');
  await board.locator('[data-filter="renew"] [data-partner-search]').fill('7700000000');
  assert.equal(await board.locator('[data-filter="renew"] [data-partner-suggestions] button').count(),1);
- await board.locator('[data-filter="renew"] [data-partner]').selectOption('inn:7700000000');
+ await board.locator('[data-filter="renew"] [data-partner]').selectOption(pk('Партнёр','7700000000'));
  assert.equal((await cards('[data-renew-summary]'))[0],'1');
  const dp=reference.waitForEvent('download');await board.locator('[data-retro-export]').click();await (await dp).saveAs(path.join(folder,'retro.xlsx'));
  const result=X.read(fs.readFileSync(path.join(folder,'retro.xlsx')),{type:'buffer',cellNF:true});
