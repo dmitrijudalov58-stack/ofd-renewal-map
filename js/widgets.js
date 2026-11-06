@@ -7308,15 +7308,13 @@
   }
   function chCalForecastSum(series) { return series.reduce(function (a, s) { return a + s.forecast; }, 0); }
 
-  // Excel-выгрузка борда: лист «Сводка» (все каналы) + по листу на канал. Строки: месяц
-  // («Итого»), под ним по строке на тариф. Цифры те же, что на экране: единица, «только
-  // действующие» и исключение ликвидированных берутся из текущих настроек борда; каналы
-  // выгружаются все, независимо от выбранных вкладок.
+  // Месячные итоги и тарифная детализация разделены: сумму колонки можно брать
+  // без двойного счёта. Настройки и выбранные каналы фиксируются в момент клика.
   var CH_CAL_SHEET_HEAD = ["Месяц", "Тариф", "Новые", "Продлилось", "Отток", "Грейс", "План (код истекает)", "Исключено ликвидированных"];
-  function chCalSheetRows(merged, p) {
+  function chCalSheetRows(merged, p, detail) {
     var rows = [];
     for (var i = p.from; i <= p.to; i++) {
-      [null].concat(p.tariffs).forEach(function (t) {
+      (detail ? (p.tariff == null ? p.tariffs : [p.tariff]) : [p.tariff == null ? null : p.tariff]).forEach(function (t) {
         var key = t == null ? "total" : t, s = merged.buckets[key][i];
         rows.push([rcMonthLabel(p.cal.months[i]), t == null ? "Итого" : rcTariffLabel(t),
           s.new, s.renewedFirst + s.renewedRepeat, s.churn, s.pending, s.forecast,
@@ -7325,13 +7323,14 @@
     }
     return rows;
   }
-  // p: { cal, tariffs, from, to, useExcl, unit, onlyActive, asOf }
+  // p: { cal, tariffs, from, to, useExcl, unit, onlyActive, asOf, selectedChannels, tariff }
   function chCalBuildWorkbook(XLSX, p) {
     var wb = XLSX.utils.book_new();
     var settings = "as-of " + fmtDate(p.asOf) + " · единица: " + (p.unit === "client" ? "ИНН (клиенты)" : "РНМ (кассы)") +
       " · " + (p.onlyActive ? "только действующие" : "все") +
       " · ликвидированные: " + (p.useExcl ? "исключены из плана" : "не исключаются") +
-      " · месяцы: " + rcMonthLabel(p.cal.months[p.from]) + " — " + rcMonthLabel(p.cal.months[p.to]);
+      " · месяцы: " + rcMonthLabel(p.cal.months[p.from]) + " — " + rcMonthLabel(p.cal.months[p.to]) +
+      " · тариф: " + (p.tariff == null ? "все" : rcTariffLabel(p.tariff));
     function addSheet(name, title, channelSet) {
       var merged = chCalMerge(p.cal, channelSet, p.tariffs, p.useExcl);
       var aoa = [[title], [settings], []].concat([CH_CAL_SHEET_HEAD], chCalSheetRows(merged, p));
@@ -7339,9 +7338,17 @@
       ws["!cols"] = [{ wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 10 }, { wch: 20 }, { wch: 26 }];
       XLSX.utils.book_append_sheet(wb, ws, name.replace(/[\\\/?*\[\]:]/g, "-").slice(0, 31));
     }
-    var channels = chAllChannels().filter(function (ch) { return p.cal.groups[ch]; });
-    addSheet("Сводка", "Календарь продлений — сводка по всем каналам", new Set(channels));
+    var channels = chAllChannels().filter(function (ch) { return p.cal.groups[ch] && (!p.selectedChannels || p.selectedChannels.has(ch)); });
+    settings += " · каналы: " + channels.join(", ");
+    addSheet("Сводка", "Календарь продлений — выбранные каналы", new Set(channels));
     channels.forEach(function (ch) { addSheet(ch, "Календарь продлений — канал «" + ch + "»", new Set([ch])); });
+    var detailRows = [];
+    channels.forEach(function (ch) {
+      chCalSheetRows(chCalMerge(p.cal, new Set([ch]), p.tariffs, p.useExcl), p, true).forEach(function (row) { detailRows.push(row.concat([ch])); });
+    });
+    var detailSheet = XLSX.utils.aoa_to_sheet([["Детализация по тарифам — без повторения месячных итогов"], [settings], [], CH_CAL_SHEET_HEAD.concat(["Канал"])].concat(detailRows));
+    detailSheet["!cols"] = [{wch:12},{wch:12},{wch:12},{wch:14},{wch:12},{wch:12},{wch:22},{wch:28},{wch:28}];
+    XLSX.utils.book_append_sheet(wb, detailSheet, "По тарифам");
     return wb;
   }
 
@@ -7405,7 +7412,7 @@
           '<label' + (hasDadata ? "" : ' style="opacity:.5"') + '><input type="checkbox" class="chc-liq"' + (useExcl ? " checked" : "") + (hasDadata ? "" : " disabled") + '> Исключить ликвидированных (будущие месяцы)</label>' +
           '<span class="wchip">' + (hasDadata ? "DaData загружен" : "нужен файл DaData (кнопка в топбаре)") + '</span>' +
           '<span class="wchip chc-badge" style="display:none;border-color:var(--crit);color:var(--crit)"></span>' +
-          '<button type="button" class="refresh-chart-btn chc-xlsx" style="margin-left:auto" title="Один Excel: сводка по всем каналам и отдельный лист на каждый канал, под месяцем разбивка по тарифам">Скачать Excel</button>' +
+          '<button type="button" class="refresh-chart-btn chc-xlsx" style="margin-left:auto" title="Выбранные каналы и диапазон: месячные итоги отдельно от тарифной детализации">Скачать Excel</button>' +
           '</div>');
         if (useExcl) {
           // оба юнита в бейдже: сколько касс и сколько клиентов убрано из прогноза
@@ -7482,7 +7489,7 @@
           var headers = [{ label: "Месяц" }].concat(chans.map(function (ch) { return { label: ch, num: true }; }), [{ label: "Итого", num: true }]);
           if (useExcl) headers.push({ label: "ликвид.", num: true });
           var rows = [];
-          for (var i = asOfIdx + 1; i < months.length; i++) {
+          for (var i = Math.max(asOfIdx + 1, vp.from); i <= vp.to; i++) {
             var rowSum = 0, rowEx = 0;
             var cells = chans.map(function (ch) {
               var g = cal.groups[ch], v = g.buckets[tKey][i].forecast;
@@ -7500,8 +7507,8 @@
         wrap.appendChild(unitRow);
         wrap.appendChild(chRow);
         wrap.appendChild(liqRow);
+        wrap.appendChild(rangeRow);
         if (st.view === "chart") {
-          wrap.appendChild(rangeRow);
           wrap.appendChild(legendRow);
           wrap.appendChild(blocksHolder);
           renderBlocks();
@@ -7522,10 +7529,11 @@
         });
         liqRow.querySelector(".chc-liq").addEventListener("change", function (e) { st.excl = e.target.checked; draw(); });
         liqRow.querySelector(".chc-xlsx").addEventListener("click", function () {
+          var exportState = { cal: cal, tariffs: tariffs.slice(), from: vp.from, to: vp.to, useExcl: useExcl, unit: RC_UNIT, onlyActive: RC_CAL_ONLY_ACTIVE, asOf: asOf, selectedChannels: new Set(st.sel), tariff: st.view === "table" ? st.tariff : null };
           ofd1cEnsureXLSX().then(function () {
-            var wb = chCalBuildWorkbook(root.XLSX, { cal: cal, tariffs: tariffs, from: vp.from, to: vp.to, useExcl: useExcl, unit: RC_UNIT, onlyActive: RC_CAL_ONLY_ACTIVE, asOf: asOf });
+            var wb = chCalBuildWorkbook(root.XLSX, exportState);
             var stamp = asOf.getFullYear() + "-" + String(asOf.getMonth() + 1).padStart(2, "0") + "-" + String(asOf.getDate()).padStart(2, "0");
-            root.XLSX.writeFile(wb, "Календарь продлений по каналам " + stamp + ".xlsx");
+            root.XLSX.writeFile(wb, "Календарь продлений по каналам " + stamp + " " + (exportState.unit === "client" ? "ИНН" : "РНМ") + ".xlsx");
           }).catch(function (e) {
             drillHolder.innerHTML = '<div class="stat-label" style="color:var(--crit)">Не удалось собрать Excel: ' + esc(e.message) + "</div>";
           });
