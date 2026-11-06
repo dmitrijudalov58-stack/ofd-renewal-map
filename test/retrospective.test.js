@@ -33,4 +33,12 @@ assert.equal(R.build(null,null,null,'ofd',2025,d(2026)),null);
 // Partner label variants must not duplicate the same underlying transition.
 const variants=P.ledger([old,{...old,partner:'Renamed partner'},next]);assert.equal(R.summarize(R.build(variants,null,null,'ofd',2025,d(2026)).rows).transitions.length,1);
 const advance=P.ledger([r('10','A',d(2024),d(2025,6,1),15),r('10','A',d(2025,1,1),d(2028),36)]);assert.equal(R.summarize(R.build(advance,null,null,'ofd',2025,d(2025,2,1)).rows).upsellClients,1);
+const directory=[{key:'lk',label:'АО «Калуга Астрал» (ЛК ОФД) · 7700000091'},{key:'atol',label:'ООО «АТОЛ» (ОФД) · 7700000092'}];
+for(const term of ['ЛК','лк','LK'])assert.deepEqual(R.findPartners(directory,term).map(p=>p.key),['lk']);
+for(const term of ['Атолл','АТОЛ','atoll','Атол ОФД'])assert.deepEqual(R.findPartners(directory,term).map(p=>p.key),['atol']);
+assert.equal(R.findPartners(directory,'OFD').length,2);assert.equal(R.findPartners(directory,'7700000091')[0].key,'lk');assert.equal(R.findPartners(directory,'never-matches').length,0);
+const dormant=r('20','Q',d(2024),d(2028),36,'ООО «АТОЛ» (ОФД)','7700000092');
+const future=r('21','Q',d(2027),d(2028),12,'Not yet known','future');
+const expanded=R.build(P.ledger([...records,dormant,future]),null,null,'ofd',2025,d(2025,11,1));
+assert.equal(R.findPartners(expanded.partners,'Атолл').length,1);assert.equal(R.select(expanded.rows,{mode:'partner',partner:'inn:7700000092'}).length,0);assert.equal(R.findPartners(expanded.partners,'Not yet known').length,0);assert.equal(expanded.rows.length,data.rows.length);assert.equal(expanded.partners.filter(p=>p.key==='unknown').length,1);
 console.log('PASS retrospective: annual INNs, all/union/empty/partner/unknown filters, new clients, pending and early, cash/client upsell, duplicates, tariff gaps, promo INN linkage');

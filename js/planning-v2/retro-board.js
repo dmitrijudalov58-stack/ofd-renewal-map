@@ -13,7 +13,7 @@
    const results=box.querySelector('[data-results]');let current=null,selectedRenew=[],selectedNew=[],notices='';
    function filters(key,data){
     const s=state[key],partners=data.partners;
-    return '<div class="controls p2-retro-filters" data-filter="'+key+'"><label>Срез<select data-mode>'+options([['channel','Каналы продаж'],['partner','Конкретный партнёр']],s.mode)+'</select></label>'+(s.mode==='channel'?'<div><label><input type="checkbox" data-all'+(s.channels==null?' checked':'')+'> Все каналы — вся база</label><div class="p2-retro-channels">'+data.channels.map(c=>'<label><input type="checkbox" data-channel="'+esc(c)+'"'+(s.channels==null||s.channels.includes(c)?' checked':'')+'> '+esc(c)+'</label>').join('')+'</div></div>':'<label>Поиск по названию или ИНН<input type="search" data-partner-search placeholder="Название или ИНН"></label><label>Партнёр<select data-partner>'+options([['','Выберите партнёра'],...partners.map(p=>[p.key,p.label])],s.partner)+'</select></label>')+'</div>';
+    return '<div class="controls p2-retro-filters" data-filter="'+key+'"><label>Срез<select data-mode>'+options([['channel','Каналы продаж'],['partner','Конкретный партнёр']],s.mode)+'</select></label>'+(s.mode==='channel'?'<div><label><input type="checkbox" data-all'+(s.channels==null?' checked':'')+'> Все каналы — вся база</label><div class="p2-retro-channels">'+data.channels.map(c=>'<label><input type="checkbox" data-channel="'+esc(c)+'"'+(s.channels==null||s.channels.includes(c)?' checked':'')+'> '+esc(c)+'</label>').join('')+'</div></div>':'<div class="p2-partner-search"><label>Поиск по названию или ИНН<input type="search" data-partner-search autocomplete="off" placeholder="Например: ЛК, OFD, Атолл" value="'+esc(s.query||'')+'"></label><div data-partner-suggestions hidden></div></div><label>Партнёр<select data-partner>'+options([['','Выберите партнёра'],...partners.map(p=>[p.key,p.label])],s.partner)+'</select></label>')+'</div>';
    }
    function bindFilters(data){
     results.querySelectorAll('[data-filter]').forEach(el=>{
@@ -22,8 +22,25 @@
      const all=el.querySelector('[data-all]');if(all)all.onchange=e=>{s.channels=e.target.checked?null:[];state.page=0;drawData(data);};
      el.querySelectorAll('[data-channel]').forEach(c=>c.onchange=()=>{s.channels=[...el.querySelectorAll('[data-channel]:checked')].map(x=>x.dataset.channel);if(s.channels.length===data.channels.length)s.channels=null;state.page=0;drawData(data);});
      const input=el.querySelector('[data-partner-search]'),select=el.querySelector('[data-partner]');
-     if(select)select.onchange=e=>{s.partner=e.target.value;state.page=0;drawData(data);};
-     if(input)input.oninput=()=>{const term=input.value.trim().toLowerCase();select.innerHTML=options([['','Выберите партнёра'],...data.partners.filter(p=>p.key===s.partner||p.label.toLowerCase().includes(term)).map(p=>[p.key,p.label])],s.partner);};
+     if(!input)return;
+     const suggestions=el.querySelector('[data-partner-suggestions]'),search=el.querySelector('.p2-partner-search');
+     function choose(partner){s.partner=partner.key;s.query=partner.label;state.page=0;drawData(data);}
+     function suggest(){
+      s.query=input.value;const matches=R.findPartners(data.partners,s.query),shown=matches.slice(0,20),selected=data.partners.find(p=>p.key===s.partner);
+      const listed=selected&&!matches.some(p=>p.key===selected.key)?[selected,...matches]:matches;
+      select.innerHTML=options([['','Выберите партнёра'],...listed.map(p=>[p.key,p.label])],s.partner);
+      suggestions.hidden=false;
+      suggestions.innerHTML='<p class="tiny" role="status">'+(matches.length?'Найдено: '+f(matches.length)+(matches.length>20?' · показаны первые 20, уточните запрос':'')+'. Выберите партнёра, чтобы применить фильтр.':'Ничего не найдено в загруженных данных. Попробуйте часть названия или ИНН.')+'</p><div class="p2-partner-options" role="group" aria-label="Найденные партнёры">'+shown.map(p=>'<button type="button" data-partner-key="'+esc(p.key)+'">'+esc(p.label)+'</button>').join('')+'</div>';
+      suggestions.querySelectorAll('[data-partner-key]').forEach(b=>{
+       b.onmousedown=e=>e.preventDefault();
+       b.onclick=()=>choose(shown.find(p=>p.key===b.dataset.partnerKey));
+       b.onkeydown=e=>{const buttons=[...suggestions.querySelectorAll('button')],i=buttons.indexOf(b);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();buttons[(i+(e.key==='ArrowDown'?1:buttons.length-1))%buttons.length].focus();}if(e.key==='Escape'){input.focus();suggestions.hidden=true;}};
+      });
+     }
+     select.onchange=e=>{const p=data.partners.find(p=>p.key===e.target.value);s.partner=e.target.value;s.query=p?p.label:'';state.page=0;drawData(data);};
+     input.oninput=input.onfocus=suggest;
+     input.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();suggestions.hidden=true;return;}if(e.key==='ArrowDown'||e.key==='Enter'){e.preventDefault();if(suggestions.hidden)suggest();const first=suggestions.querySelector('button');if(first)first.focus();}};
+     search.onfocusout=e=>{if(!search.contains(e.relatedTarget))suggestions.hidden=true;};
     });
    }
    function table(headers,rows){return '<div class="table-scroll"><table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(v=>'<td>'+esc(v)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';}
