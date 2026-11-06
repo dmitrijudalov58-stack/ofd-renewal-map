@@ -19,7 +19,7 @@
 <link rel="stylesheet" href="css/vendor/gridstack.min.css?v=28">
 <link rel="stylesheet" href="css/styles.css?v=34">
 <link rel="stylesheet" href="css/glass.css?v=2">
-<link rel="stylesheet" href="css/planning-v2.css?v=3">
+<link rel="stylesheet" href="css/planning-v2.css?v=4">
 </head>
 <body>
 
@@ -60,6 +60,11 @@
   <label class="btn" style="cursor:pointer;background:var(--s2);border-color:var(--s2);color:#fff;" title="Файл(ы) сверки «Обмен с 1С» — можно выбрать сразу несколько (например, за разные периоды)">
     Обмен с 1С
     <input type="file" id="ofd1cFileInput" accept=".xlsx,.xls" multiple style="display:none;">
+  </label>
+  <span class="file-loader" id="promoFileLoader" aria-hidden="true"></span>
+  <label class="btn" style="cursor:pointer;" title="Промокоды А-Систем — активированные коды Обмена с 1С">
+    Промо-коды
+    <input type="file" id="promoFileInput" accept=".xlsx,.xls" style="display:none;">
   </label>
   <!-- Тоже видна всем, по той же причине. dadata-cache.json генерируется офлайн-скриптом
        scripts/dadata-enrich.js (не в браузере) -- см. reference/… в скилле репозитория. -->
@@ -235,12 +240,12 @@
 <script src="js/planning.js?v=3"></script>
 <script src="js/portrait-util.js?v=1"></script>
 <script src="js/portrait.js?v=3"></script>
-<script src="js/planning-v2/core.js?v=3"></script>
-<script src="js/planning-v2/app.js?v=3"></script>
-<script src="js/planning-v2/boards.js?v=2"></script>
+<script src="js/planning-v2/core.js?v=4"></script>
+<script src="js/planning-v2/app.js?v=4"></script>
+<script src="js/planning-v2/boards.js?v=3"></script>
 <script src="js/dnd.js?v=29"></script>
 <script src="js/export.js?v=31"></script>
-<script src="js/app.js?v=30"></script>
+<script src="js/app.js?v=31"></script>
 <script src="js/pwa.js?v=1"></script>
 </body>
 </html>

@@ -23,6 +23,33 @@
   function clean(v){return v==null?'':String(v).trim();}
   function inn(v){let s=clean(v);if(/^\d+$/.test(s)&&[9,11].includes(s.length))s='0'+s;return s;}
   function month(v){return iso(v).slice(0,7);}
+  function addMonths(start,months){const dt=new Date(EPOCH+start*DAY),last=new Date(Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth()+months+1,0)).getUTCDate();return day(dt.getUTCFullYear(),dt.getUTCMonth()+months+1,Math.min(dt.getUTCDate(),last))+(start-Math.floor(start));}
+  const PROMO_HEADERS=['Дата генерации','Наименование организации','ИНН','КПП','Тариф','Промокод','Статус промокода','Дата активации','Признак партнера'];
+  function parsePromos(X,wb,file){
+    const records=[],report=[],issues=[],seen=new Map(),conflicts=new Set();let sourceRows=0,inactive=0,duplicates=0;
+    for(const sheet of wb.SheetNames){const ws=wb.Sheets[sheet];if(!ws||!ws['!ref'])continue;const range=X.utils.decode_range(ws['!ref']);if(range.e.r<1)continue;
+      if(!PROMO_HEADERS.every((h,c)=>clean(readCell(X,ws,0,c))===h))throw new Error('Не совпали столбцы промокодов на листе '+sheet+'.');
+      for(let row=1;row<=range.e.r;row++){const get=c=>readCell(X,ws,row,c);if(PROMO_HEADERS.every((_,c)=>get(c)==null||get(c)===''))continue;sourceRows++;
+        const id=inn(get(2)),pin=clean(get(5)),start=date(get(7),!!(wb.Workbook&&wb.Workbook.WBProps&&wb.Workbook.WBProps.date1904)),m=/\d+/.exec(clean(get(4))),months=m?+m[0]:null;
+        const r={inn:id,unit:'promo-client:'+id,pin,start,end:start==null||!months?null:addMonths(start,months),months,source:'promo',overall:null,partner:'',partnerInn:'',center:'',org:clean(get(1)),file,sheet,row:row+1};
+        if(clean(get(6)).toLowerCase()!=='активирован'){inactive++;report.push({...r,status:'Не активирован — не учитывается'});continue;}
+        if(!id||!pin||start==null||!months){const item={...r,status:'Некорректные данные активации'};issues.push(item);report.push(item);continue;}
+        if(seen.has(pin)){duplicates++;const prior=seen.get(pin);if(prior.inn!==id||prior.start!==start||prior.end!==r.end)conflicts.add(pin);report.push({...r,status:'Повтор промокода'});continue;}
+        seen.set(pin,r);records.push(r);report.push({...r,status:'Активирован'});
+      }
+    }
+    if(!sourceRows)throw new Error('Файл промокодов пуст.');
+    for(const item of report)if(conflicts.has(item.pin))item.status='Конфликт одного промокода — не учитывается';
+    return {records:records.filter(r=>!conflicts.has(r.pin)),report,issues,sourceRows,inactive,duplicates,files:[file]};
+  }
+  const mergedPromoCache=new WeakMap();
+  function mergePromos(base,data){
+    const old=mergedPromoCache.get(data);if(old&&old.base===base)return old.result;
+    const key=r=>[r.inn,Math.floor(r.start),Math.floor(r.end),r.months].join('|'),existing=new Set((base?base.records:[]).map(key)),seen=new Set(existing),extra=[];let overlap=0,repeatedCoverage=0;
+    for(const r of data.records){const k=key(r);if(existing.has(k)){overlap++;continue;}if(seen.has(k)){repeatedCoverage++;continue;}seen.add(k);extra.push(r);}
+    const merged=ledger([...(base?base.records:[]),...extra]);
+    const result={ledger:merged,addedCoverage:extra.length,overlap,repeatedCoverage};mergedPromoCache.set(data,{base,result});return result;
+  }
   function age(first,at){if(first==null)return 'Нет даты';const a=new Date(EPOCH+first*DAY),b=new Date(EPOCH+at*DAY);let years=b.getUTCFullYear()-a.getUTCFullYear();if(b.getUTCMonth()<a.getUTCMonth()||(b.getUTCMonth()===a.getUTCMonth()&&b.getUTCDate()<a.getUTCDate()))years--;return years<1?AGES[0]:years<3?AGES[1]:years<5?AGES[2]:AGES[3];}
   function classify(partner,center){const m=root.OFDMetrics||(typeof require==='function'?require('../metrics.js'):null);return partner||center?m.classifyChannel(partner,center):UNKNOWN;}
   function readCell(X,ws,r,c){if(Array.isArray(ws))return ws[r]&&ws[r][c]?ws[r][c].v:null;const cell=ws[X.utils.encode_cell({r,c})];return cell?cell.v:null;}
@@ -63,7 +90,7 @@
       const key=JSON.stringify([r.inn,r.unit,r.pin,r.start,r.end,r.overall,r.months,r.partner,r.partnerInn,r.org,r.center]);
       if(seen.has(key)){duplicates++;continue;}seen.add(key);records.push(r);
       let c=clients.get(r.inn);if(!c){c={inn:r.inn,units:new Map(),records:[]};clients.set(r.inn,c);}
-      c.records.push(r);if(!c.units.has(r.unit))c.units.set(r.unit,[]);c.units.get(r.unit).push(r);
+      c.records.push(r);if(r.source==='promo'){if(!c.promoRecords)c.promoRecords=[];c.promoRecords.push(r);}if(!c.units.has(r.unit))c.units.set(r.unit,[]);c.units.get(r.unit).push(r);
       if(maxStart==null||r.start>maxStart)maxStart=r.start;
     }
     for(const c of clients.values()){
@@ -92,9 +119,9 @@
     const group=age(first,anchor);
     return {first,age:group,kassas:count,cohort:group==='Нет даты'||!count?'Нет данных':group+' / '+(count===1?'1 касса':'2+ кассы')};
   }
-  function outcome(list,r,cut){
+  function outcome(list,r,cut,calendar){
     let next=null;
-    for(const n of list)if(n.start>r.start&&n.end>r.end&&(next==null||n.start<next))next=n.start;
+    for(const n of list)if((calendar?Math.floor(n.start)>Math.floor(r.start)&&Math.floor(n.end)>Math.floor(r.end):n.start>r.start&&n.end>r.end)&&(next==null||n.start<next))next=n.start;
     const deadline=Math.floor(r.end)+31;
     return {renewed:next!=null&&next<deadline&&next<cut,mature:deadline<=cut,next};
   }
@@ -106,7 +133,9 @@
       const events=[];
       for(const list of c.units.values())for(const r of list){
         if(r.start>=cut||r.end<from||r.end>=Math.floor(to)+1)continue;
-        events.push({...r,...outcome(list,r,cut)});
+        let state=outcome(list,r,cut);
+        if(product==='onec'&&c.promoRecords){const extra=outcome(r.source==='promo'?c.records:c.promoRecords,r,cut,true);state={...state,renewed:state.renewed||extra.renewed,next:state.next==null?extra.next:extra.next==null?state.next:Math.min(state.next,extra.next)};}
+        events.push({...r,...state});
       }
       if(!events.length)continue;
       const anchor=Math.min(...events.map(r=>r.end)),feat=features(c,anchor,cut);
@@ -162,11 +191,16 @@
       else if(matches.length!==1||counts.get(key)!==1)status='Неоднозначное совпадение — не исключено';
       else if(matches[0].end<day(year)||matches[0].end>=day(year+1))status='Совпало, вне планового года';
       else{status='Исключено';unit=matches[0].unit;excluded.add(r.inn+'|'+unit);}
-      report.push({...r,status,unit});
+      const info=metadata(led&&led.clients.get(r.inn),snapshot),direct=unit?matches[0]:null;
+      report.push({...r,status,unit,month:month(r.end),ofdPartner:direct?direct.partner:info.partner,channel:direct?classify(direct.partner,direct.center):info.channel});
     }
-    report.push(...input.issues);
+    report.push(...input.issues.map(r=>{const info=metadata(led&&led.clients.get(r.inn),snapshot);return {...r,month:month(r.end),ofdPartner:info.partner,channel:info.channel};}));
     const result={excluded,report,sourceRows:input.sourceRows,duplicates:input.duplicates,files:input.files};
     exclusionCache.set(input,{led,year,cut,result});return result;
+  }
+  function filterExclusions(report,year,filters){
+    const unique=new Map();for(const r of report){const key=r.inn&&r.serial?r.inn+'|'+r.serial:[r.file,r.sheet,r.row].join('|');if(!unique.has(key))unique.set(key,r);}
+    const f=filters||{};return [...unique.values()].filter(r=>(!f.status||f.status==='all'||(r.status==='Исключено')===(f.status==='excluded'))&&(!f.period||f.period==='all'||(r.end!=null&&r.end>=day(year)&&r.end<day(year+1))===(f.period==='plan'))&&(!f.month||month(r.end)===f.month));
   }
   function filterCandidate(r,excluded){
     const endings=r.endings.filter(e=>!excluded.has(r.inn+'|'+e.unit));if(!endings.length)return null;if(endings.length===r.endings.length)return r;
@@ -185,8 +219,11 @@
         const known=list.filter(r=>r.start<snapshot);if(!known.length)continue;
         const end=Math.max(...known.map(r=>r.end));
         if(end<day(year)||end>=day(year+1))continue;
-        const choices=known.filter(r=>r.end===end),r=choices[choices.length-1];
-        endings.push({...r,end});
+        const choices=known.filter(r=>r.end===end);let r=choices[choices.length-1];
+        if(product==='onec'&&c.promoRecords){const cross=(r.source==='promo'?c.records:c.promoRecords).filter(n=>n.start<snapshot&&Math.floor(n.start)>Math.floor(r.start)&&n.end>r.end);if(cross.length)r=cross.reduce((a,b)=>b.end>a.end?b:a,r);}
+        if(r.end<day(year)||r.end>=day(year+1))continue;
+        if(product==='onec'&&c.promoRecords&&endings.some(e=>Math.floor(e.start)===Math.floor(r.start)&&Math.floor(e.end)===Math.floor(r.end)&&e.months===r.months))continue;
+        endings.push({...r,end:r.end});
       }
       if(!endings.length)continue;
       const anchor=Math.min(...endings.map(r=>r.end));
@@ -275,6 +312,23 @@
     for(const r of rows){const key=keyfn(r);let s=map.get(key);if(!s){s={key,base:0,expected:0,money:0,missing:0};map.set(key,s);}s.base++;if(r.expected==null||r.amount==null)s.missing++;if(r.expected!=null)s.expected+=r.expected;if(r.amount!=null)s.money+=r.amount;}
     return [...map.values()].sort((a,b)=>a.key.localeCompare(b.key));
   }
+  function buildWithPromos(ofd,onec,params,exclusions,promos){
+    if(!promos)return build(ofd,onec,params,exclusions);
+    const merged=mergePromos(onec,promos),plan=build(ofd,merged.ledger,params,exclusions),before=onec?build(ofd,onec,params).products.onec:null;
+    const snapshot=Math.min(plan.cut,day(plan.params.year)),due=promos.records.filter(r=>r.start<snapshot&&r.end>=day(plan.params.year)&&r.end<day(plan.params.year+1)),ids=new Set(due.map(r=>r.inn));
+    const beforeStats=before&&before.retro.stats.get('Все клиенты'),afterStats=plan.products.onec.retro.stats.get('Все клиенты');
+    const originalPeriods=new Set((onec?onec.records:[]).map(r=>[r.inn,Math.floor(r.start),Math.floor(r.end),r.months].join('|'))),seen=new Set();
+    const report=promos.report.map(r=>{let status=r.status;if(status==='Активирован'){
+      const key=[r.inn,Math.floor(r.start),Math.floor(r.end),r.months].join('|');
+      status=r.start>=plan.cut?'Активация после среза':originalPeriods.has(key)?'Покрытие уже есть в сверке 1С':seen.has(key)?'Покрытие уже учтено по другому промокоду':'Добавлено в историю 1С';seen.add(key);
+    }const info=metadata(ofd&&ofd.clients.get(r.inn),snapshot);return {...r,status,partner:info.partner,channel:info.channel};});
+    const related=plan.products.onec.rows.filter(r=>ids.has(r.inn));
+    plan.promo={files:promos.files,sourceRows:promos.sourceRows,activated:promos.records.length,inactive:promos.inactive,issues:promos.issues.length,duplicates:promos.duplicates,clients:new Set(promos.records.map(r=>r.inn)).size,addedCoverage:merged.addedCoverage,overlap:merged.overlap,repeatedCoverage:merged.repeatedCoverage,
+      expiringCodes:due.length,expiringClients:ids.size,clientsInPlan:related.length,expectedClients:related.some(r=>r.expected==null)?null:related.reduce((s,r)=>s+r.expected,0),beforeStats:beforeStats||null,afterStats,beforeClients:before?before.rows.length:null,afterClients:plan.products.onec.rows.length,report};
+    if(!onec){plan.complete=false;plan.warnings.push('Сверка Обмена с 1С не загружена. История и план 1С рассчитаны только по промокодам и неполны.');}
+    if(promos.issues.length)plan.warnings.push('Промокоды: '+promos.issues.length+' некорректных строк не включены.');
+    return plan;
+  }
   function workbook(plan){
     const p=plan.params,F=(f,v,s=8)=>({f,v,s}),V=(v,s)=>({v,s});
     const parameters=[],paramRow=new Map(),probRow=new Map();
@@ -292,7 +346,7 @@
     parameters.push(['ОФД','Тарифы менее 36 месяцев','Апсейл к доле суммы по кассам к продлению',V(p.upsell,3),'Доля суммы']);
     const rows=plan.rows.map((r,i)=>{
       const n=i+2,pr=probRow.get(r.product+'|'+r.cohort),cr=paramRow.get(r.product+'|'+r.channel);
-      return [r.product==='ofd'?'ОФД':'Обмен с 1С',V(r.inn,7),r.org,r.cohort,r.channel,r.partner,V(r.anchor,6),r.month,r.kassas,r.dueUnits,
+      return [r.product==='ofd'?'ОФД':'Обмен с 1С',V(r.inn,7),r.org,r.cohort,r.channel,r.partner,V(r.anchor,6),r.month,r.product==='ofd'?r.kassas:null,r.dueUnits,
         pr?F("IF('Параметры'!D"+pr+'="","",\'Параметры\'!D'+pr+')',r.prob,5):null,
         cr?F("IF('Параметры'!D"+cr+'="","",\'Параметры\'!D'+cr+')',r.check,4):null,
         F('IF(OR(U'+n+'="",V'+n+'=""),"",U'+n+'+V'+n+')',r.amount,4),r.probSource,r.file,r.sheet,r.sourceRow,r.channelSource,
@@ -314,14 +368,15 @@
     const desc=[['Год плана',p.year],['Ретро',p.retroFrom+' — '+p.retroTo],['Срез на начало дня',p.asOf],['Средние чеки',p.vat==='with'?'С НДС':p.vat==='without'?'Без НДС':'Не отмечено'],['Формула','Клиенты × вероятность когорты × средний чек канала на одного продлившегося клиента'],['Кассы','На чек дополнительно не умножаются'],['Месяц','Первое окончание покрытия в плановом году, один годовой чек на ИНН в продукте'],['Канал ОФД','Канал покупки тарифа первого окончания. При неоднозначности требуется выбор'],['Канал 1С','Партнёр того же ИНН из ОФД, продукт и чеки отдельные'],['База','Известное покрытие на начало года; для будущего года — на дату среза. Уже продлённые за год плана кассы не включаются'],['Пустые значения','Не заданы. В суммах показана только рассчитанная часть'],['Статус при выгрузке',plan.complete?'Расчёт заполнен':'Расчёт не завершён'],...plan.warnings.map(w=>['Обратите внимание',w])];
     const extra=[];
     if(plan.exclusions){
-      extra.push({sheetName:'Исключения',headers:['ИНН','Заводской номер ККТ','Организация','Дата окончания ОФД','Тариф, мес','Статус','РНМ при однозначном совпадении','Файл','Лист','Строка'],rows:plan.exclusions.report.map(r=>[V(r.inn,7),V(r.serial,7),r.org,V(r.end,6),r.months,r.status,V(r.unit||'',7),r.file,r.sheet,r.row]),colWidths:[18,24,40,23,18,65,30,35,25,12],textCols:[0,1,6]});
+      extra.push({sheetName:'Исключения',headers:['ИНН','Заводской номер ККТ','Организация','Дата окончания ОФД','Тариф, мес','Статус','РНМ при однозначном совпадении','Файл','Лист','Строка','Партнёр по ОФД','Канал по ОФД','Месяц окончания'],rows:plan.exclusions.report.map(r=>[V(r.inn,7),V(r.serial,7),r.org,V(r.end,6),r.months,r.status,V(r.unit||'',7),r.file,r.sheet,r.row,r.ofdPartner,r.channel,r.month]),colWidths:[18,24,40,23,18,65,30,35,25,12,42,28,22],textCols:[0,1,6]});
       extra.push({sheetName:'Сравнение',headers:['Показатель','Исходный прогноз','После исключений','Разница: исходный минус новый'],rows:[['Клиентов ОФД',plan.baseline.ofd?plan.baseline.ofd.base:null,plan.products.ofd.total?plan.products.ofd.total.base:null,plan.comparison.excludedClients],['Деньги рассчитанной части с апсейлом',V(plan.baseline.knownMoney?plan.baseline.money:null,4),V(plan.baseline.knownMoney?plan.money:null,4),V(plan.comparison.moneyDrop,4)],['Исключено касс ОФД',null,plan.comparison.excludedUnits,null]],colWidths:[55,25,25,36]});
     }
+    if(plan.promo){const pr=plan.promo;extra.push({sheetName:'Промокоды',headers:['ИНН','Организация','Активация','Расчётное окончание','Тариф, мес','Результат','Партнёр по ОФД','Канал по ОФД','Файл','Лист','Строка'],rows:pr.report.map(r=>[V(r.inn,7),r.org,V(r.start,6),V(r.end,6),r.months,r.status,r.partner,r.channel,r.file,r.sheet,r.row]),colWidths:[18,40,22,26,18,50,42,28,42,25,12],textCols:[0]});extra.push({sheetName:'Сверка промокодов',headers:['Показатель','Без промокодов','С промокодами'],rows:[['Клиентов ретро',pr.beforeStats?pr.beforeStats.base:null,pr.afterStats.base],['Продлились',pr.beforeStats?pr.beforeStats.renewed:null,pr.afterStats.renewed],['Процент продления',V(pr.beforeStats?pr.beforeStats.rate:null,5),V(pr.afterStats.rate,5)],['Клиентов плана',pr.beforeClients,pr.afterClients],['Активированных промокодов',null,pr.activated],['Промокодов с окончанием в плановом году',null,pr.expiringCodes],['ИНН этих промокодов',null,pr.expiringClients],['Из них ИНН в общем плане',null,pr.clientsInPlan]],colWidths:[55,25,25]});}
     desc.push(['Апсейл','К сумме ОФД пропорционально числу касс к продлению с тарифом менее 36 месяцев; 1С не затрагивает'],['Исключения','Только однозначное совпадение ИНН + даты окончания + тарифа. Заводской номер не приравнивается к РНМ. Когорты и ретро сохраняются']);
     return {sheets:[
       {sheetName:'Описание',headers:['Параметр','Значение'],rows:desc,colWidths:[32,110]},
       {sheetName:'Параметры',headers:['Продукт','Канал / когорта','Показатель / источник','Значение','Единица'],rows:parameters,colWidths:[24,42,55,24,22]},
-      {sheetName:'Клиенты',headers:['Продукт','ИНН','Организация','Когорта','Канал','Партнёр','Первое окончание','Месяц','Действующих касс до исключений','Касс к продлению','Вероятность','Чек клиента','Сумма с апсейлом','Источник вероятности','Файл','Лист','Строка','Источник канала','Касс с тарифом менее 36 мес','Доля для апсейла','Продления без апсейла','Прибавка за апсейл'],rows,colWidths:[22,18,42,34,29,45,20,16,29,20,18,20,23,45,42,25,12,30,28,22,25,24],textCols:[1]},
+      {sheetName:'Клиенты',headers:['Продукт','ИНН','Организация','Когорта','Канал','Партнёр','Первое окончание','Месяц','Действующих касс до исключений','Касс / покрытий к продлению','Вероятность','Чек клиента','Сумма с апсейлом','Источник вероятности','Файл','Лист','Строка','Источник канала','Касс с тарифом менее 36 мес','Доля для апсейла','Продления без апсейла','Прибавка за апсейл'],rows,colWidths:[22,18,42,34,29,45,20,16,29,20,18,20,23,45,42,25,12,30,28,22,25,24],textCols:[1]},
       groupSheet('По месяцам',aggregate(plan.rows,r=>r.month),'H'),
       groupSheet('По каналам',aggregate(plan.rows,r=>r.channel),'E'),
       groupSheet('По когортам',aggregate(plan.rows,r=>r.cohort),'D'),
@@ -329,6 +384,6 @@
       {sheetName:'Проверки',headers:['Проверка','Значение'],rows:[['Уникальность ИНН в каждом продукте',new Set(plan.rows.map(r=>r.product+'|'+r.inn)).size===plan.rows.length?'Да':'Ошибка'],['Строк клиентов продуктов',plan.rows.length],['Уникальных ИНН двух продуктов',plan.uniqueClients],['Строк без вероятности',F(rows.length?"COUNTBLANK('Клиенты'!K2:K"+count+')':'0',plan.rows.filter(r=>r.prob==null).length)],['Строк без чека',F(rows.length?"COUNTBLANK('Клиенты'!L2:L"+count+')':'0',plan.rows.filter(r=>r.check==null).length)],['Строк без канала',plan.rows.filter(r=>r.channel===UNKNOWN).length],['Деньги рассчитанной части',F(rows.length?"SUM('Клиенты'!M2:M"+count+')':'0',plan.money,4)]],colWidths:[62,28]},...extra
     ]};
   }
-  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,EXCLUSION_HEADERS,num,day,date,iso,displayDate,inn,age,classify,parseWorkbook,parseExclusions,matchExclusions,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
+  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,EXCLUSION_HEADERS,PROMO_HEADERS,num,day,date,iso,displayDate,inn,age,classify,addMonths,parsePromos,mergePromos,buildWithPromos,filterExclusions,parseWorkbook,parseExclusions,matchExclusions,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Planning2=api;
 })(typeof window!=='undefined'?window:globalThis);

@@ -51,10 +51,10 @@
   // в одну строку, оно не читается") -- три источника (ОФД/Обмен с 1С/DaData) копятся
   // здесь, рендерятся в statsBanner по клику на "ⓘ". Ошибка -- ИСКЛЮЧЕНИЕ: баннер
   // раскрывается принудительно, ошибку нельзя спрятать за клик, который никто не сделает.
-  var topbarStats = { ofd: null, ofd1c: null, dadata: null };
-  var STATS_LABELS = { ofd: "ОФД", ofd1c: "Обмен с 1С", dadata: "DaData" };
+  var topbarStats = { ofd: null, ofd1c: null, promo: null, dadata: null };
+  var STATS_LABELS = { ofd: "ОФД", ofd1c: "Обмен с 1С", promo: "Промо-коды", dadata: "DaData" };
   function renderStatsBanner() {
-    var keys = ["ofd", "ofd1c", "dadata"].filter(function (k) { return topbarStats[k]; });
+    var keys = ["ofd", "ofd1c", "promo", "dadata"].filter(function (k) { return topbarStats[k]; });
     if (!keys.length) { statsBanner.textContent = "Пока ничего не загружено."; return; }
     var lines = keys.map(function (k) {
       var line = document.createElement("div");
@@ -336,6 +336,24 @@
       });
     });
   }
+
+  var promoInput = document.getElementById("promoFileInput"), promoLoader = document.getElementById("promoFileLoader");
+  window.addEventListener("planning2-promos-change", function () {
+    if (window.OFDPlanning2.promoData) return;
+    topbarStats.promo = null; if (promoInput) promoInput.value = ""; renderStatsBanner();
+  });
+  if (promoInput) promoInput.addEventListener("change", function () {
+    var file = promoInput.files[0]; if (!file || promoInput.disabled) return;
+    promoInput.disabled = true; promoLoader.classList.add("active");
+    ensureXLSX().then(function () { return file.arrayBuffer(); }).then(function (buffer) {
+      var data = window.Planning2.parsePromos(window.XLSX, window.XLSX.read(buffer, { type: "array", dense: true, cellDates: false }), file.name);
+      window.OFDPlanning2.setPromos(data);
+      topbarStats.promo = { text: file.name + " — строк: " + data.sourceRows + ", активировано: " + data.records.length + ", ИНН: " + new Set(data.records.map(function (r) { return r.inn; })).size, isError: false };
+      renderStatsBanner();
+    }).catch(function (error) {
+      topbarStats.promo = { text: "Ошибка промокодов: " + error.message, isError: true }; renderStatsBanner(); statsBanner.classList.remove("hidden");
+    }).finally(function () { promoInput.disabled = false; promoLoader.classList.remove("active"); });
+  });
 
   // Кнопка "DaData" в топбаре (2026-09-17) -- заменяет инпут, который раньше жил внутри
   // борда "Обогащение DaData" (b8-1c-dadata-upload, теперь только показывает данные, см.

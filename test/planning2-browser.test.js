@@ -8,7 +8,7 @@ const a='7700000001',b='7700000003';
 const rows=[parser.EXPECTED_HEADERS,
  row(a,'0000000000000001',d(2020),d(2025,2,1),'A1'),row(a,'0000000000000001',d(2025,2,15),d(2027,4,1),'A2'),
  row(a,'0000000000000002',d(2021),d(2025,5,1),'B1'),row(a,'0000000000000002',d(2025,6,5),d(2027,7,1),'B2'),
- row(b,'0000000000000003',d(2022),d(2028),'C1')];
+ row(b,'0000000000000003',d(2022),d(2028),'C1'),row('7700000005','0000000000000005',d(2022),d(2028),'D1')];
 let wb=X.utils.book_new();const sourceSheet=X.utils.aoa_to_sheet(rows);for(let r=2;r<=rows.length;r++)for(const c of ['J','K','L'])sourceSheet[c+r].z='dd.mm.yyyy hh:mm:ss';X.utils.book_append_sheet(wb,sourceSheet,'ОФД');fs.writeFileSync(path.join(folder,'ofd.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
 wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
  ['Ключ доступа','ИНН покупателя','Заводской номер ККТ','Начало действия тарифа','Окончание действия тарифа','Количество месяцев','Итоговая сумма','Сумма роялти'],
@@ -17,6 +17,8 @@ wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
  ]),'2025-02');fs.writeFileSync(path.join(folder,'onec.xlsx'),X.write(wb,{type:'buffer',bookType:'xlsx'}));
 const exclusionRow=(serial,end)=>[a,'','Тестовая организация',serial,'',P.iso(end),'','15 мес',0,'',0,'Партнёр'];
 for(const [name,list]of [['exclude-one',[exclusionRow('FACTORY-A',d(2027,4,1))]],['exclude-all',[exclusionRow('FACTORY-A',d(2027,4,1)),exclusionRow('FACTORY-B',d(2027,7,1))]]]){const w=X.utils.book_new();X.utils.book_append_sheet(w,X.utils.aoa_to_sheet([P.EXCLUSION_HEADERS,...list]),'Без чеков');fs.writeFileSync(path.join(folder,name+'.xlsx'),X.write(w,{type:'buffer',bookType:'xlsx'}));}
+const filterBook=X.utils.book_new();X.utils.book_append_sheet(filterBook,X.utils.aoa_to_sheet([P.EXCLUSION_HEADERS,exclusionRow('FACTORY-A',d(2027,4,1)),exclusionRow('NO-MATCH',d(2027,11,1)),[b,'','Client','OTHER-YEAR','',P.iso(d(2028)),'','15 months',0,'',0,'Partner']]),'filter');fs.writeFileSync(path.join(folder,'exclude-filter.xlsx'),X.write(filterBook,{type:'buffer',bookType:'xlsx'}));
+const promoBook=X.utils.book_new();X.utils.book_append_sheet(promoBook,X.utils.aoa_to_sheet([P.PROMO_HEADERS,['2026-05-01','Client','7700000005','','12 months','PROMO1','Активирован','2026-05-01','A-System'],['2026-05-01','Client','7700000005','','12 months','PROMO2','Активирован','2026-05-01','A-System'],['2026-09-01','Client',b,'','12 months','PROMO3','Активирован','2026-09-01','A-System'],['2026-09-01','','','','12 months','PROMO4','Не активирован','','A-System']]),'promo');fs.writeFileSync(path.join(folder,'promos.xlsx'),X.write(promoBook,{type:'buffer',bookType:'xlsx'}));
 async function main(){
  const http=require('node:http'),base=path.resolve(__dirname,'..');
  const mime={'.html':'text/html; charset=utf-8','.js':'application/javascript','.css':'text/css','.png':'image/png','.webmanifest':'application/manifest+json'};
@@ -75,6 +77,31 @@ async function main(){
  const ex=X.read(fs.readFileSync(path.join(folder,'exclusions-export.xlsx')),{type:'buffer',cellFormula:true});assert.ok(ex.Sheets['Исключения']);assert.ok(ex.Sheets['Сравнение']);assert.equal(ex.Sheets['Проверки'].B8.v,14000);
  await settings.locator('#exclusionsClear').click();assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15100);
  await settings.locator('#upsell').fill('0');await settings.locator('#upsell').dispatchEvent('change');
+
+ await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-filter.xlsx'));
+ await reference.waitForFunction(()=>OksanaPlanning.state.plan.exclusions&&OksanaPlanning.state.plan.exclusions.sourceRows===3);
+ await settings.locator('#exclusionsReview').evaluate(el=>el.open=true);
+ await settings.locator('[data-exclusion-filter="status"]').selectOption('remaining');
+ await settings.locator('[data-exclusion-filter="period"]').selectOption('plan');
+ assert.match(await settings.locator('[data-exclusion-count]').innerText(),/^1 /);
+ await settings.locator('[data-exclusion-filter="month"]').selectOption('2027-11');
+ const filterDownload=reference.waitForEvent('download');await settings.locator('[data-export-exclusions]').click();await (await filterDownload).saveAs(path.join(folder,'filtered.xlsx'));
+ const filtered=X.read(fs.readFileSync(path.join(folder,'filtered.xlsx')),{type:'buffer'});assert.equal(filtered.Sheets[filtered.SheetNames[0]].C2.v,'NO-MATCH');assert.equal(filtered.Sheets[filtered.SheetNames[0]].G2.v,'Партнёр');
+ await settings.locator('[data-exclusion-filter="month"]').selectOption('');
+ await settings.locator('[data-exclusion-filter="period"]').selectOption('other');
+ assert.match(await settings.locator('[data-exclusion-count]').innerText(),/^1 /);
+ await settings.screenshot({path:path.join(folder,'fast-filters.png')});
+ await settings.locator('#exclusionsClear').click();
+ await reference.locator('#promoFileInput').setInputFiles(path.join(folder,'promos.xlsx'));
+ await reference.waitForFunction(()=>OFDPlanning2.promoData&&OksanaPlanning.state.plan.promo);
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[22000,22000,22000,22000,22000]);
+ const promoSummary=await reference.evaluate(()=>({active:OksanaPlanning.state.plan.promo.activated,before:OksanaPlanning.state.plan.promo.beforeClients,after:OksanaPlanning.state.plan.promo.afterClients,rate:OksanaPlanning.state.plan.promo.afterStats.rate}));assert.deepEqual(promoSummary,{active:3,before:2,after:3,rate:1});
+ assert.doesNotMatch(await reference.locator('#statsBanner').innerText(),/undefined/);
+ assert.match(await settings.locator('#promoInfo').innerText(),/Промокоды/);
+ const promoDownload=reference.waitForEvent('download');await settings.locator('#export').click();await (await promoDownload).saveAs(path.join(folder,'promo-export.xlsx'));
+ const promoExport=X.read(fs.readFileSync(path.join(folder,'promo-export.xlsx')),{type:'buffer',cellFormula:true});assert.ok(promoExport.Sheets['Промокоды']);assert.ok(promoExport.Sheets['Сверка промокодов']);assert.equal(promoExport.Sheets['Проверки'].B8.v,22000);
+ await settings.screenshot({path:path.join(folder,'promos.png')});
+ await settings.locator('[data-clear-promos]').click();assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15000);
  // Removing a board unregisters its subscriptions; restoring renders the same model.
  await reference.locator('[data-widget-id="pl2-clients"] .remove-btn').click();
  assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),4);
