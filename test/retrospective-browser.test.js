@@ -69,7 +69,9 @@ async function main(){
 
  assert.deepEqual(await cards('[data-renew-summary]'),['1','1','0','0','100,00%']);
  await board.locator('[data-internal-check]').evaluate(el=>el.open=true);
- assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);assert.ok((await board.locator('[data-reconciliation]').innerText()).includes('отток 0,00%'));
+ assert.equal(await board.locator('[data-reconciliation="ok"]').count(),1);assert.ok((await board.locator('[data-reconciliation]').innerText()).includes('без продления 0,00%'));
+ assert.deepEqual(await cards('[data-retention-summary]'),['1','1','0','100,00%','0,00%','0']);
+ await board.locator('[data-retention-note]').evaluate(el=>el.open=true);assert.ok((await board.locator('[data-retention-note]').innerText()).includes('Продление тарифа показываем отдельно.'));assert.equal((await board.locator('[data-retention-note]').innerText()).includes('Старый B1 не меняем'),false);
  assert.equal(await board.locator('[data-bi-check="matched"]').count(),1);
  await reference.evaluate(()=>{window.originalBIModel=OFDState.model;OFDState.model=OFDMetrics.buildModel(OFDState.rows.filter(r=>r.pin!=='A2'),{strict:true});OFDPlanning2.refresh();});
  assert.equal(await board.locator('[data-bi-check="different"]').count(),1);await board.locator('[data-bi-details]').evaluate(el=>el.open=true);assert.ok((await board.locator('[data-bi-details]').innerText()).includes(a));
@@ -114,6 +116,14 @@ async function main(){
  await reference.waitForFunction(()=>document.querySelector('[data-renew-summary] .card strong')?.textContent==='2');
  assert.equal(await board.locator('[data-bi-check]').count(),1);
  assert.equal(await board.locator('[data-filter="renew"] [data-mode]').inputValue(),'partner');
+ // Real input fixture: day30 after noon is a B1 event, but calendar retention stays matched.
+ const boundaryRows=[...rows,extra,row('7700000008','0000000000000008',d(2024),d(2025,5,4),'G1'),row('7700000008','0000000000000008',d(2025,6,3)+14/24,d(2027),'G2')],boundaryBook=X.utils.book_new(),boundarySheet=X.utils.aoa_to_sheet(boundaryRows);
+ for(let r=2;r<=boundaryRows.length;r++)for(const c of ['J','K','L'])boundarySheet[c+r].z='dd.mm.yyyy hh:mm:ss';X.utils.book_append_sheet(boundaryBook,boundarySheet,'ОФД');fs.writeFileSync(path.join(folder,'ofd-boundary.xlsx'),X.write(boundaryBook,{type:'buffer',bookType:'xlsx'}));
+ await reference.locator('#fileInput').setInputFiles(path.join(folder,'ofd-boundary.xlsx'));await reference.waitForFunction(()=>document.querySelector('[data-renew-summary] .card strong')?.textContent==='3');
+ assert.deepEqual(await cards('[data-retention-summary]'),['3','2','1','66,67%','33,33%','0']);assert.equal(await board.locator('[data-bi-check="matched"]').count(),1);
+ await board.locator('[data-bi-boundaries]').evaluate(el=>el.open=true);assert.ok((await board.locator('[data-bi-boundaries]').innerText()).includes('7700000008'));assert.ok((await board.locator('[data-bi-boundaries]').innerText()).includes('14:00:00'));
+ const boundaryDownload=reference.waitForEvent('download');await board.locator('[data-retro-export]').click();await (await boundaryDownload).saveAs(path.join(folder,'retention-boundary.xlsx'));
+ const boundaryResult=X.read(fs.readFileSync(path.join(folder,'retention-boundary.xlsx')),{type:'buffer'});assert.equal(boundaryResult.Sheets['Сверка B1'].B2.v,'Совпало');assert.equal(boundaryResult.Sheets['Граница 30-го дня'].A2.v,'7700000008');assert.equal(boundaryResult.Sheets['Граница 30-го дня'].A2.t,'s');assert.equal(X.utils.sheet_to_json(boundaryResult.Sheets['Удержание']).length,3);assert.ok(X.utils.sheet_to_json(boundaryResult.Sheets['Описание']).some(r=>r['Значение']==='Продление тарифа показываем отдельно.'));
  await reference.setViewportSize({width:390,height:844});
  await reference.waitForTimeout(300);
  assert.equal(await board.evaluate(el=>el.scrollWidth<=el.clientWidth+2),true,'Board itself fits mobile width');
