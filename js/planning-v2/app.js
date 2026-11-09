@@ -10,6 +10,7 @@
  const title=p=>p==='ofd'?'ОФД':'Обмен с 1С';
  let saved=null;try{saved=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
  const state={params:P.normalizeParams(saved),ofd:null,onec:null,promos:null,meta:{},exclusions:null,plan:null,exclusionFilters:{status:'all',period:'all',month:''},exclusionPage:0,tab:options.tab||'checks',product:'ofd',query:'',channel:'',onlyUnknown:false,busy:false};
+ let planCheck=null;
  $('exclusionsReview').querySelector('summary').textContent='Кассы без чеков: список и быстрые фильтры';
  function persist(){try{localStorage.setItem(KEY,JSON.stringify(state.params));if(options.integrated)window.dispatchEvent(new CustomEvent('planning2-params',{detail:api}));}catch(e){status('Параметры рассчитаны, но браузер не разрешил их сохранить. Экспортируйте план в Excel.');}}
  function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'';}
@@ -80,6 +81,7 @@
   const unknown=$('unknownOnly');if(unknown)unknown.addEventListener('change',()=>{state.onlyUnknown=unknown.checked;renderView();});
  }
  function render(){
+  if(planCheck)planCheck.sync();
   const plan=state.plan;$('export').disabled=!plan||state.busy;
   if(!plan){$('summary').innerHTML='';$('warnings').innerHTML='';renderPromos();renderAdjustments();renderView();return;}
   $('warnings').innerHTML=plan.warnings.length?'<aside class="notice">'+plan.warnings.map(w=>'<p>'+esc(w)+'</p>').join('')+'</aside>':'';
@@ -171,7 +173,8 @@
  }};
  const onParams=e=>{if(e.detail===api)return;try{state.params=P.normalizeParams(JSON.parse(localStorage.getItem(KEY)));syncInputs();calculate();}catch(e){status(e.message,true);}};
  if(options.integrated)window.addEventListener('planning2-params',onParams);
- api.destroy=()=>window.removeEventListener('planning2-params',onParams);
+ api.destroy=()=>{window.removeEventListener('planning2-params',onParams);if(planCheck)planCheck.destroy();};
+ const checkHolder=container.querySelector('[data-plan-check-holder]');if(checkHolder&&window.Planning2PlanCheckUI){planCheck=window.Planning2PlanCheckUI.mount(checkHolder,()=>state);api.planCheck=planCheck;}
  window.OksanaPlanning=api;syncInputs();render();if(options.integrated)api.syncShared();return api;
  };
  if(document.body.classList.contains('planning2'))window.mountPlanning2(document.body);

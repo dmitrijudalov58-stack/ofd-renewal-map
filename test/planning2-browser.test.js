@@ -26,6 +26,8 @@ const rnmBook=X.utils.book_new();X.utils.book_append_sheet(rnmBook,X.utils.aoa_t
  ['0000000000000002',...exclusionRow('FACTORY-B',d(2027,7,1)).map((v,i)=>i===7?'16 мес':v)],
  ['',...exclusionRow('MISSING-RNM',d(2027,7,1))]
 ]),'RNM');fs.writeFileSync(path.join(folder,'exclude-rnm.xlsx'),X.write(rnmBook,{type:'buffer',bookType:'xlsx'}));
+for(const[name,list]of [['activity-zero',[b]],['activity-partial',[a,a]],['activity-overlap',[a]]]){const w=X.utils.book_new();X.utils.book_append_sheet(w,X.utils.aoa_to_sheet([['ИНН','Наименование организации'],...list.map(id=>[id,'Client '+id])]),'Activity');fs.writeFileSync(path.join(folder,name+'.xlsx'),X.write(w,{type:'buffer',bookType:'xlsx'}));}
+const badActivity=X.utils.book_new();X.utils.book_append_sheet(badActivity,X.utils.aoa_to_sheet([['wrong'],['no INN']]),'Bad');fs.writeFileSync(path.join(folder,'activity-bad.xlsx'),X.write(badActivity,{type:'buffer',bookType:'xlsx'}));
 const promoBook=X.utils.book_new();X.utils.book_append_sheet(promoBook,X.utils.aoa_to_sheet([P.PROMO_HEADERS,['2026-05-01','Client','7700000005','','12 months','PROMO1','Активирован','2026-05-01','A-System'],['2026-05-01','Client','7700000005','','12 months','PROMO2','Активирован','2026-05-01','A-System'],['2026-09-01','Client',b,'','12 months','PROMO3','Активирован','2026-09-01','A-System'],['2026-09-01','','','','12 months','PROMO4','Не активирован','','A-System']]),'promo');fs.writeFileSync(path.join(folder,'promos.xlsx'),X.write(promoBook,{type:'buffer',bookType:'xlsx'}));
 async function main(){
  const http=require('node:http'),base=path.resolve(__dirname,'..');
@@ -70,6 +72,21 @@ async function main(){
  const integratedXlsx=X.read(fs.readFileSync(path.join(folder,'integrated-export.xlsx')),{type:'buffer',cellFormula:true});
  assert.equal(integratedXlsx.Sheets['Проверки'].B8.v,15000);
 
+ await reference.evaluate(()=>window.planCheckTest=[...OFDPlanning2.instances.values()].find(a=>a.planCheck));
+ const activity=settings.locator('.p2-plan-check');assert.equal(await activity.count(),1);assert.equal(await reference.locator('.p2-plan-check').count(),1,'Only the first board mounts the additional check');
+ await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-zero.xlsx'));assert.equal(await activity.locator('[data-check-export]').isDisabled(),true);
+ await activity.locator('[data-check-file="partial"]').setInputFiles(path.join(folder,'activity-partial.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.status==='ready');
+ assert.deepEqual(await reference.evaluate(()=>{const m=planCheckTest.planCheck.model;return [m.after.base,m.after.expected,m.after.money,m.one.money,m.bothAfter,OksanaPlanning.state.plan.money];}),[1,.5,500,14000,14500,15000]);
+ const mean=settings.locator('[data-check="ofd"][data-channel="Партнёры"]');await mean.fill('2000');await mean.dispatchEvent('change');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),1000);await mean.fill('1000');await mean.dispatchEvent('change');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),500,'Check automatically follows current channel price');
+ await activity.screenshot({path:path.join(folder,'activity-check.png')});
+ await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-bad.xlsx'));await reference.waitForFunction(()=>document.querySelector('[data-check-status]').textContent.includes('Прежний загруженный файл сохранён'));assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),500,'Invalid replacement keeps the previously accepted file');
+ const activityDownload=reference.waitForEvent('download');await activity.locator('[data-check-export]').click();await (await activityDownload).saveAs(path.join(folder,'activity-check.xlsx'));
+ const activityBook=X.read(fs.readFileSync(path.join(folder,'activity-check.xlsx')),{type:'buffer'});assert.equal(activityBook.Sheets['Клиенты'].A2.v,a);assert.equal(activityBook.Sheets['Клиенты'].A2.t,'s');assert.equal(activityBook.Sheets['Клиенты'].J2.v,.5);assert.equal(activityBook.Sheets['Каналы'].B2.v,1000);assert.equal(activityBook.Sheets['Сравнение'].C3.v,.5);
+ await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-overlap.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.groups?.conflict.length===1);assert.equal(await activity.getAttribute('data-plan-check-state'),'partial');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.expected),null);assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15000);await activity.locator('[data-check-conflicts]').evaluate(el=>el.open=true);assert.ok((await activity.locator('[data-check-conflicts]').innerText()).includes(a));
+ await activity.screenshot({path:path.join(folder,'activity-conflict.png')});assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.comparable.expected.base),0);
+ await activity.locator('[data-check-clear="zero"]').click();assert.equal(await activity.getAttribute('data-plan-check-state'),'pending');assert.equal(await activity.locator('[data-check-export]').isDisabled(),true);
+ await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-zero.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.status==='ready');
+
  await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-one.xlsx'));
  await reference.waitForFunction(()=>OksanaPlanning.state.plan.exclusions&&OksanaPlanning.state.plan.comparison.excludedUnits===1);
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows[0].dueUnits),1);
@@ -80,6 +97,7 @@ async function main(){
  await reference.waitForFunction(()=>OksanaPlanning.state.plan.comparison.excludedUnits===2);
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),14000);
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows.length),0);
+ assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.base),1,'Activity model restores full base instead of removing clients first');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),550,'Activity probability is not multiplied by retro or exclusions a second time');
  await settings.screenshot({path:path.join(folder,'adjustments.png')});
  const exclusionDownload=reference.waitForEvent('download');await settings.locator('#export').click();await (await exclusionDownload).saveAs(path.join(folder,'exclusions-export.xlsx'));
  const ex=X.read(fs.readFileSync(path.join(folder,'exclusions-export.xlsx')),{type:'buffer',cellFormula:true});assert.ok(ex.Sheets['Исключения']);assert.ok(ex.Sheets['Сравнение']);assert.equal(ex.Sheets['Проверки'].B8.v,14000);

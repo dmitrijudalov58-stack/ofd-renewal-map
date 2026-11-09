@@ -29,6 +29,7 @@
     if(instances.has(id))instances.get(id).destroy();
     const holder=document.createElement('div');holder.innerHTML=template;const box=holder.firstElementChild;
     box.dataset.p2Tab=tab;
+    if(tab==='checks'){const check=document.createElement('section');check.dataset.planCheckHolder='';box.appendChild(check);}
     if(tab!=='checks'){box.querySelector('.p2-settings').hidden=true;box.querySelector('#summary').hidden=true;box.querySelector('#warnings').hidden=true;box.querySelector('#adjustments').hidden=true;box.querySelector('.p2-actions').hidden=true;}
     box.querySelector('#status').textContent='Данные загружаются общими кнопками ОФД и Обмен с 1С вверху сайта.';
     const api=root.mountPlanning2(box,{integrated:true,tab});instances.set(id,api);return box;
