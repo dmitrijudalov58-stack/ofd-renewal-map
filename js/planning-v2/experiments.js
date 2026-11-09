@@ -9,7 +9,7 @@
    const filters=states.get(id)||{};states.set(id,filters);
    const state={params:saved(),ofd:null,onec:null,promos:null,plan:null};
    const box=document.createElement('div');box.className='planning2 p2-experiment';box.dataset.experiment=kind;
-   const fields=kind===1?[['year','Год плана','number'],['retroFrom','Ретро с','date'],['retroTo','Ретро по','date'],['asOf','Срез на начало дня','date']]:[['retroFrom','Ретро с','date'],['retroTo','Ретро по','date'],['asOf','Срез на начало дня','date']];
+   const fields=[['year','Год плана','number'],['retroFrom','Ретро с','date'],['retroTo','Ретро по','date'],['asOf','Срез на начало дня','date']];
    box.innerHTML='<div class="controls">'+fields.map(([key,label,type])=>'<label>'+label+'<input data-experiment-param="'+key+'" type="'+type+'"'+(type==='number'?' min="2000" max="2100"':'')+'></label>').join('')+'</div><p class="tiny">Период можно менять отдельно от основного плана. Списки активности общие для двух экспериментов; повторная загрузка заменяет список в обоих.</p><section data-experiment-view></section>';
    const panel=root.Planning2PlanCheckUI.mount(box.querySelector('[data-experiment-view]'),()=>state,{experiment:kind});
    function sync(){
