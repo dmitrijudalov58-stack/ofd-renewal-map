@@ -18,6 +18,14 @@ wb=X.utils.book_new();X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([
 const exclusionRow=(serial,end)=>[a,'','Тестовая организация',serial,'',P.iso(end),'','15 мес',0,'',0,'Партнёр'];
 for(const [name,list]of [['exclude-one',[exclusionRow('FACTORY-A',d(2027,4,1))]],['exclude-all',[exclusionRow('FACTORY-A',d(2027,4,1)),exclusionRow('FACTORY-B',d(2027,7,1))]]]){const w=X.utils.book_new();X.utils.book_append_sheet(w,X.utils.aoa_to_sheet([P.EXCLUSION_HEADERS,...list]),'Без чеков');fs.writeFileSync(path.join(folder,name+'.xlsx'),X.write(w,{type:'buffer',bookType:'xlsx'}));}
 const filterBook=X.utils.book_new();X.utils.book_append_sheet(filterBook,X.utils.aoa_to_sheet([P.EXCLUSION_HEADERS,exclusionRow('FACTORY-A',d(2027,4,1)),exclusionRow('NO-MATCH',d(2027,11,1)),[b,'','Client','OTHER-YEAR','',P.iso(d(2028)),'','15 months',0,'',0,'Partner']]),'filter');fs.writeFileSync(path.join(folder,'exclude-filter.xlsx'),X.write(filterBook,{type:'buffer',bookType:'xlsx'}));
+const rnmBook=X.utils.book_new();X.utils.book_append_sheet(rnmBook,X.utils.aoa_to_sheet([
+ ['РНМ ККТ',...P.EXCLUSION_HEADERS],
+ ['0000000000000001',...exclusionRow('FACTORY-A',d(2027,4,2)).map((v,i)=>i===4?'0000000000000801':v)],
+ ['0000000000000999',...exclusionRow('NOT-FOUND',d(2027,7,1))],
+ ['0000000000000003',b,'','Client','OTHER-YEAR','','2028-01-01','','15 мес',0,'',0,'Партнёр'],
+ ['0000000000000002',...exclusionRow('FACTORY-B',d(2027,7,1)).map((v,i)=>i===7?'16 мес':v)],
+ ['',...exclusionRow('MISSING-RNM',d(2027,7,1))]
+]),'RNM');fs.writeFileSync(path.join(folder,'exclude-rnm.xlsx'),X.write(rnmBook,{type:'buffer',bookType:'xlsx'}));
 const promoBook=X.utils.book_new();X.utils.book_append_sheet(promoBook,X.utils.aoa_to_sheet([P.PROMO_HEADERS,['2026-05-01','Client','7700000005','','12 months','PROMO1','Активирован','2026-05-01','A-System'],['2026-05-01','Client','7700000005','','12 months','PROMO2','Активирован','2026-05-01','A-System'],['2026-09-01','Client',b,'','12 months','PROMO3','Активирован','2026-09-01','A-System'],['2026-09-01','','','','12 months','PROMO4','Не активирован','','A-System']]),'promo');fs.writeFileSync(path.join(folder,'promos.xlsx'),X.write(promoBook,{type:'buffer',bookType:'xlsx'}));
 async function main(){
  const http=require('node:http'),base=path.resolve(__dirname,'..');
@@ -91,6 +99,20 @@ async function main(){
  await settings.locator('[data-exclusion-filter="period"]').selectOption('other');
  assert.match(await settings.locator('[data-exclusion-count]').innerText(),/^1 /);
  await settings.screenshot({path:path.join(folder,'fast-filters.png')});
+ await settings.locator('#exclusionsClear').click();
+ await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-rnm.xlsx'));
+ await reference.waitForFunction(()=>OksanaPlanning.state.plan.exclusions?.mode==='rnm');
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.comparison.excludedUnits),1);
+ assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows[0].month),'2027-07');
+ assert.match(await settings.locator('#exclusionsInfo').innerText(),/ИНН \+ РНМ/);
+ await settings.locator('[data-exclusion-filter="status"]').selectOption('excluded');await settings.locator('[data-exclusion-filter="period"]').selectOption('plan');
+ assert.match(await settings.locator('[data-exclusion-count]').innerText(),/^1 /);assert.ok((await settings.locator('#exclusionsRows').innerText()).includes('0000000000000001'));assert.ok((await settings.locator('#exclusionsRows').innerText()).includes('ФН: 0000000000000801'));
+ const rnmDownload=reference.waitForEvent('download');await settings.locator('[data-export-exclusions]').click();await (await rnmDownload).saveAs(path.join(folder,'rnm-filtered.xlsx'));
+ const rnmFiltered=X.read(fs.readFileSync(path.join(folder,'rnm-filtered.xlsx')),{type:'buffer',cellNF:true}).Sheets['Кассы без чеков'];assert.equal(rnmFiltered.D2.z,'DD.MM.YYYY');assert.equal(rnmFiltered.J2.v,'0000000000000001');assert.equal(rnmFiltered.J2.t,'s');assert.equal(rnmFiltered.K2.v,'0000000000000001');assert.equal(rnmFiltered.L2.v,'0000000000000801');assert.match(rnmFiltered.Q2.v,/Дата окончания/);
+ await settings.locator('[data-exclusion-filter="status"]').selectOption('remaining');assert.match(await settings.locator('[data-exclusion-count]').innerText(),/^3 /);assert.ok((await settings.locator('#exclusionsRows').innerText()).includes('расхождения — не исключено'));
+ const rnmAllDownload=reference.waitForEvent('download');await settings.locator('#export').click();await (await rnmAllDownload).saveAs(path.join(folder,'rnm-full.xlsx'));
+ const rnmAll=X.read(fs.readFileSync(path.join(folder,'rnm-full.xlsx')),{type:'buffer'}).Sheets['Исключения'];assert.equal(rnmAll.G2.v,'0000000000000001');assert.equal(rnmAll.N2.v,'0000000000000001');assert.equal(rnmAll.O2.v,'0000000000000801');assert.equal(rnmAll.S2.v,'ИНН + РНМ');
+ await settings.screenshot({path:path.join(folder,'rnm-exclusions.png')});
  await settings.locator('#exclusionsClear').click();
  await reference.locator('#promoFileInput').setInputFiles(path.join(folder,'promos.xlsx'));
  await reference.waitForFunction(()=>OFDPlanning2.promoData&&OksanaPlanning.state.plan.promo);

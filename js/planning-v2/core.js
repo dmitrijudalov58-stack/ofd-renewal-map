@@ -155,7 +155,39 @@
       partner:[...new Set(records.map(r=>r.partner).filter(Boolean))].join('; '),conflict:channels.length>1};
   }
   const EXCLUSION_HEADERS=['ИНН клиента','КПП клиента','Наименование клиента','Заводской номер ККТ','ЗН ФН','Дата окончания ОФД','Дата окончания ФН','Срок действия текущего кода (1/3/6…мес)','Наличие Обмена с 1С 0/1','Тариф обмена с 1С (1/3/...Мес)','Наличие подключенных автоотчетов плюс (0/1)','Партнер'];
+  function exclusionHeader(v){return clean(v).normalize('NFKC').toLowerCase().replace(/ё/g,'е').replace(/[_.-]+/g,' ').replace(/\s+/g,' ');}
+  const RNM_HEADERS=['РНМ','РНМ ККТ','RNM','RNM KKT','RNM ККТ','Регистрационный номер ККТ','Регистрационный номер кассы'].map(exclusionHeader);
+  function exclusionColumn(headers,names,sheet){const aliases=names.map(exclusionHeader),found=headers.map((h,i)=>aliases.includes(exclusionHeader(h))?i:-1).filter(i=>i>=0);if(found.length>1)throw new Error('На листе '+sheet+' несколько столбцов «'+names[0]+'». Оставьте один.');return found.length?found[0]:-1;}
+  function normalizeRnm(value){
+    if(typeof value==='number'&&(!Number.isSafeInteger(value)||value<0||String(value).length>15))return {value:'',error:'РНМ записан числом с возможной потерей точности — сохраните его текстом'};
+    const s=clean(value).replace(/\s/g,'');if(!s)return {value:'',error:'Не указан РНМ — строка не исключена'};
+    if(!/^\d{1,16}$/.test(s))return {value:'',error:'Некорректный РНМ — требуется до 16 цифр без экспоненты'};
+    return {value:s.padStart(16,'0'),error:''};
+  }
+  function exclusionKey(r){return r.mode==='rnm'?(r.inn&&r.rnm?r.inn+'|РНМ:'+r.rnm:[r.file,r.sheet,r.row].join('|')):(r.inn&&r.serial?r.inn+'|'+r.serial:[r.file,r.sheet,r.row].join('|'));}
+  function parseRnmExclusions(X,wb,file){
+    const records=[],issues=[],seen=new Map(),conflicts=new Set(),owners=new Map();let sourceRows=0,duplicates=0;
+    const date1904=!!(wb.Workbook&&wb.Workbook.WBProps&&wb.Workbook.WBProps.date1904);
+    for(const sheet of wb.SheetNames){const ws=wb.Sheets[sheet];if(!ws||!ws['!ref'])continue;const range=X.utils.decode_range(ws['!ref']);if(range.e.r<1)continue;
+      const headers=Array.from({length:range.e.c+1},(_,i)=>readCell(X,ws,0,i)),col=(...names)=>exclusionColumn(headers,names,sheet),cols={inn:col('ИНН клиента','ИНН организации','ИНН'),rnm:exclusionColumn(headers,RNM_HEADERS,sheet),serial:col('Заводской номер ККТ','ЗН ККТ'),fn:col('ЗН ФН','Заводской номер ФН'),org:col('Наименование клиента','Организация'),end:col('Дата окончания ОФД','Дата окончания'),months:col('Срок действия текущего кода (1/3/6…мес)','Срок действия тарифа','Тариф, мес'),partner:col('Партнер'),partnerInn:col('ИНН партнера')};
+      if(cols.inn<0||cols.rnm<0)throw new Error('На листе '+sheet+' нужны столбцы «ИНН клиента» и «РНМ ККТ». В файле с РНМ сопоставление без номера не применяется.');
+      for(let row=1;row<=range.e.r;row++){const get=k=>cols[k]<0?null:readCell(X,ws,row,cols[k]);if(headers.every((_,c)=>readCell(X,ws,row,c)==null||readCell(X,ws,row,c)===''))continue;sourceRows++;
+        const id=inn(get('inn')),number=normalizeRnm(get('rnm')),rawEnd=get('end'),end=date(rawEnd,date1904),rawMonths=clean(get('months')),m=/\d+/.exec(rawMonths),r={mode:'rnm',inn:id,rnm:number.value,rawRnm:clean(get('rnm')),serial:clean(get('serial')),fn:clean(get('fn')),org:clean(get('org')),end:end==null?null:Math.floor(end),months:m?+m[0]:null,partner:clean(get('partner')),partnerInn:inn(get('partnerInn')),validationWarnings:[],file,sheet,row:row+1};
+        if(rawEnd!=null&&clean(rawEnd)!==''&&end==null)r.validationWarnings.push('Дата окончания в списке не прочитана');if(rawMonths&&!m)r.validationWarnings.push('Срок тарифа в списке не прочитан');
+        const reason=!/^\d{10}(?:\d{2})?$/.test(id)?'Некорректный ИНН клиента':number.error;
+        if(reason){issues.push({...r,status:reason});continue;}
+        const key=exclusionKey(r),prior=seen.get(key);if(!owners.has(r.rnm))owners.set(r.rnm,new Set());owners.get(r.rnm).add(key);
+        if(prior){duplicates++;const conflict=['serial','fn','partner','partnerInn'].some(k=>prior[k]&&r[k]&&exclusionHeader(prior[k])!==exclusionHeader(r[k]))||['end','months'].some(k=>prior[k]!=null&&r[k]!=null&&prior[k]!==r[k]);if(conflict)conflicts.add(key);else{for(const k of ['serial','fn','partner','partnerInn','end','months','org'])if(prior[k]==null||prior[k]==='')prior[k]=r[k];prior.validationWarnings=[...new Set([...prior.validationWarnings,...r.validationWarnings])];}issues.push({...r,status:conflict?'Конфликтующий повтор РНМ — не исключён':'Повтор РНМ — не учитывается повторно'});continue;}
+        seen.set(key,r);records.push(r);
+      }
+    }
+    for(const keys of owners.values())if(keys.size>1)for(const k of keys)conflicts.add(k);
+    if(!sourceRows)throw new Error('Список исключений пуст.');return {mode:'rnm',records,issues,sourceRows,duplicates,conflicts,files:[file]};
+  }
   function parseExclusions(X,wb,file){
+    let possibleRnm=false;const hasRnm=wb.SheetNames.some(sheet=>{const ws=wb.Sheets[sheet];if(!ws||!ws['!ref'])return false;const range=X.utils.decode_range(ws['!ref']);return Array.from({length:range.e.c+1},(_,i)=>readCell(X,ws,0,i)).some(h=>{const name=exclusionHeader(h);if(/^(?:рнм|rnm)(?:\s|$)/.test(name))possibleRnm=true;return RNM_HEADERS.includes(name);});});
+    if(hasRnm)return parseRnmExclusions(X,wb,file);
+    if(possibleRnm)throw new Error('Не распознан столбец РНМ. Назовите его «РНМ ККТ» или «RNM».');
     const records=[],issues=[];let sourceRows=0,duplicates=0;const seen=new Map(),conflicts=new Set();
     for(const sheet of wb.SheetNames){
       const ws=wb.Sheets[sheet];if(!ws||!ws['!ref'])continue;const range=X.utils.decode_range(ws['!ref']);if(range.e.r<1)continue;
@@ -163,7 +195,7 @@
       for(let row=1;row<=range.e.r;row++){
         const get=c=>readCell(X,ws,row,c);if(EXCLUSION_HEADERS.every((_,c)=>get(c)==null||get(c)===''))continue;sourceRows++;
         const id=inn(get(0)),serial=clean(get(3)),end=date(get(5),!!(wb.Workbook&&wb.Workbook.WBProps&&wb.Workbook.WBProps.date1904)),m=/\d+/.exec(clean(get(7))),months=m?+m[0]:null;
-        const r={inn:id,serial,org:clean(get(2)),end:end==null?null:Math.floor(end),months,partner:clean(get(11)),file,sheet,row:row+1};
+        const r={inn:id,serial,fn:clean(get(4)),org:clean(get(2)),end:end==null?null:Math.floor(end),months,partner:clean(get(11)),file,sheet,row:row+1};
         if(!id||!serial||end==null||!months){issues.push({...r,status:'Некорректный ИНН, номер, дата или тариф'});continue;}
         const key=id+'|'+serial,prior=seen.get(key);
         if(prior){duplicates++;const conflict=prior.end!==r.end||prior.months!==r.months;if(conflict)conflicts.add(key);issues.push({...r,status:conflict?'Конфликтующий повтор заводского номера — не исключён':'Повтор записи — не учитывается повторно'});continue;}
@@ -171,11 +203,34 @@
       }
     }
     if(!sourceRows)throw new Error('Список исключений пуст.');
-    return {records,issues,sourceRows,duplicates,conflicts,files:[file]};
+    return {mode:'legacy',records,issues,sourceRows,duplicates,conflicts,files:[file]};
   }
   const exclusionCache=new WeakMap();
+  function identifyRnmExclusions(led,input,year,cut){
+    const snapshot=Math.min(cut,day(year)),groups=new Map(),owners=new Map(),report=[];
+    if(led)for(const c of led.clients.values())for(const list of c.units.values()){const known=list.filter(r=>r.start<snapshot);if(!known.length)continue;const end=Math.max(...known.map(r=>r.end)),source=known.filter(r=>r.end===end).at(-1),number=normalizeRnm(source.unit).value;if(!number)continue;const key=source.inn+'|'+number;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(source);if(!owners.has(number))owners.set(number,new Set());owners.get(number).add(source.inn);}
+    const partnerName=s=>exclusionHeader(s).replace(/[«»"']/g,'');
+    for(const r of input.records){const candidates=groups.get(r.inn+'|'+r.rnm)||[],knownOwners=owners.get(r.rnm),fallback=metadata(led&&led.clients.get(r.inn),snapshot);let status='',direct=null;
+      if(input.conflicts.has(exclusionKey(r)))status='Конфликт повторов РНМ — не исключено';
+      else if(knownOwners&&knownOwners.size>1)status='РНМ связан с несколькими ИНН в ОФД — требуется проверка';
+      else if(candidates.length>1)status='Несколько записей одного РНМ в базе ОФД — требуется проверка';
+      else if(candidates.length===1){direct=candidates[0];status='Найдено по ИНН + РНМ';}
+      else if(knownOwners&&knownOwners.size)status='РНМ найден у другого ИНН — не исключено';
+      else if(!led||!led.clients.has(r.inn))status='ИНН отсутствует в базе ОФД';
+      else status='РНМ не найден в ОФД на дату среза';
+      const warnings=[...(r.validationWarnings||[])],blockingChecks=[...(r.validationWarnings||[])],ofdEnd=direct?Math.floor(direct.end):null;
+      if(direct){if(r.end!=null&&r.end!==ofdEnd)warnings.push('Дата окончания: в списке '+displayDate(r.end)+', в ОФД '+displayDate(ofdEnd));if(r.end!=null&&iso(r.end).slice(0,4)!==iso(ofdEnd).slice(0,4))blockingChecks.push('Различается год окончания');if(r.months!=null&&r.months!==direct.months){const text='Тариф: в списке '+r.months+' мес, в ОФД '+(direct.months==null?'не определён':direct.months+' мес');warnings.push(text);blockingChecks.push(text);}if(r.partner&&partnerName(r.partner)!==partnerName(direct.partner)){warnings.push('Различается название партнёра');blockingChecks.push('Различается название партнёра');}if(r.partnerInn&&r.partnerInn!==direct.partnerInn){warnings.push('Различается ИНН партнёра');blockingChecks.push('Различается ИНН партнёра');}}
+      report.push({...r,pashaEnd:r.end,ofdEnd,ofdMonths:direct?direct.months:null,end:direct?ofdEnd:r.end,month:month(direct?ofdEnd:r.end),unit:direct?direct.unit:'',ofdPartner:direct?direct.partner:fallback.partner,channel:direct?classify(direct.partner,direct.center):fallback.channel,matchedBy:direct?'ИНН + РНМ':'',identityFound:!!direct,inPlanYear:!!direct&&direct.end>=day(year)&&direct.end<day(year+1),requiresReview:blockingChecks.length>0,status,warnings,blockingChecks});
+    }
+    report.push(...input.issues.map(r=>{const info=metadata(led&&led.clients.get(r.inn),snapshot);return {...r,pashaEnd:r.end,ofdEnd:null,ofdMonths:null,month:month(r.end),unit:'',ofdPartner:info.partner,channel:info.channel,matchedBy:'',identityFound:false,inPlanYear:false,warnings:r.validationWarnings||[]};}));return report;
+  }
   function matchExclusions(led,input,year,cut){
     const cached=exclusionCache.get(input);if(cached&&cached.led===led&&cached.year===year&&cached.cut===cut)return cached.result;
+    if(input.mode==='rnm'){
+      const report=identifyRnmExclusions(led,input,year,cut),excluded=new Set();
+      for(const r of report)if(r.identityFound){if(r.requiresReview)r.status='Найдено по РНМ, расхождения — не исключено';else if(!r.inPlanYear)r.status='Совпало, вне планового года';else{r.status='Исключено';excluded.add(r.inn+'|'+r.unit);}}
+      const result={mode:'rnm',excluded,report,sourceRows:input.sourceRows,duplicates:input.duplicates,files:input.files};exclusionCache.set(input,{led,year,cut,result});return result;
+    }
     const groups=new Map(),excluded=new Set(),report=[];const snapshot=Math.min(cut,day(year));
     if(led)for(const c of led.clients.values())for(const list of c.units.values()){
       const known=list.filter(r=>r.start<snapshot);if(!known.length)continue;
@@ -195,11 +250,11 @@
       report.push({...r,status,unit,month:month(r.end),ofdPartner:direct?direct.partner:info.partner,channel:direct?classify(direct.partner,direct.center):info.channel});
     }
     report.push(...input.issues.map(r=>{const info=metadata(led&&led.clients.get(r.inn),snapshot);return {...r,month:month(r.end),ofdPartner:info.partner,channel:info.channel};}));
-    const result={excluded,report,sourceRows:input.sourceRows,duplicates:input.duplicates,files:input.files};
+    const result={mode:input.mode||'legacy',excluded,report,sourceRows:input.sourceRows,duplicates:input.duplicates,files:input.files};
     exclusionCache.set(input,{led,year,cut,result});return result;
   }
   function filterExclusions(report,year,filters){
-    const unique=new Map();for(const r of report){const key=r.inn&&r.serial?r.inn+'|'+r.serial:[r.file,r.sheet,r.row].join('|');if(!unique.has(key))unique.set(key,r);}
+    const unique=new Map();for(const r of report){const key=exclusionKey(r);if(!unique.has(key))unique.set(key,r);}
     const f=filters||{};return [...unique.values()].filter(r=>(!f.status||f.status==='all'||(r.status==='Исключено')===(f.status==='excluded'))&&(!f.period||f.period==='all'||(r.end!=null&&r.end>=day(year)&&r.end<day(year+1))===(f.period==='plan'))&&(!f.month||month(r.end)===f.month));
   }
   function filterCandidate(r,excluded){
@@ -368,11 +423,11 @@
     const desc=[['Год плана',p.year],['Ретро',p.retroFrom+' — '+p.retroTo],['Срез на начало дня',p.asOf],['Средние чеки',p.vat==='with'?'С НДС':p.vat==='without'?'Без НДС':'Не отмечено'],['Формула','Клиенты × вероятность когорты × средний чек канала на одного продлившегося клиента'],['Кассы','На чек дополнительно не умножаются'],['Месяц','Первое окончание покрытия в плановом году, один годовой чек на ИНН в продукте'],['Канал ОФД','Канал покупки тарифа первого окончания. При неоднозначности требуется выбор'],['Канал 1С','Партнёр того же ИНН из ОФД, продукт и чеки отдельные'],['База','Известное покрытие на начало года; для будущего года — на дату среза. Уже продлённые за год плана кассы не включаются'],['Пустые значения','Не заданы. В суммах показана только рассчитанная часть'],['Статус при выгрузке',plan.complete?'Расчёт заполнен':'Расчёт не завершён'],...plan.warnings.map(w=>['Обратите внимание',w])];
     const extra=[];
     if(plan.exclusions){
-      extra.push({sheetName:'Исключения',headers:['ИНН','Заводской номер ККТ','Организация','Дата окончания ОФД','Тариф, мес','Статус','РНМ при однозначном совпадении','Файл','Лист','Строка','Партнёр по ОФД','Канал по ОФД','Месяц окончания'],rows:plan.exclusions.report.map(r=>[V(r.inn,7),V(r.serial,7),r.org,V(r.end,6),r.months,r.status,V(r.unit||'',7),r.file,r.sheet,r.row,r.ofdPartner,r.channel,r.month]),colWidths:[18,24,40,23,18,65,30,35,25,12,42,28,22],textCols:[0,1,6]});
+      extra.push({sheetName:'Исключения',headers:['ИНН','Заводской номер ККТ','Организация','Дата окончания в расчёте','Тариф в списке, мес','Статус','РНМ по ОФД','Файл','Лист','Строка','Партнёр по ОФД','Канал по ОФД','Месяц окончания','РНМ в списке','ЗН ФН','Дата окончания в списке','Дата окончания по ОФД','Тариф по ОФД, мес','Способ сопоставления','Расхождения полей'],rows:plan.exclusions.report.map(r=>[r.inn,r.serial,r.org,V(r.end,6),r.months,r.status,r.unit||'',r.file,r.sheet,r.row,r.ofdPartner,r.channel,r.month,r.rnm||'',r.fn||'',V(r.mode==='rnm'?r.pashaEnd:r.end,6),V(r.ofdEnd,6),r.ofdMonths,r.matchedBy||'',(r.warnings||[]).join('; ')]),colWidths:[18,24,40,25,24,65,30,35,25,12,42,28,22,24,24,25,25,22,36,90],textCols:[0,1,6,13,14]});
       extra.push({sheetName:'Сравнение',headers:['Показатель','Исходный прогноз','После исключений','Разница: исходный минус новый'],rows:[['Клиентов ОФД',plan.baseline.ofd?plan.baseline.ofd.base:null,plan.products.ofd.total?plan.products.ofd.total.base:null,plan.comparison.excludedClients],['Деньги рассчитанной части с апсейлом',V(plan.baseline.knownMoney?plan.baseline.money:null,4),V(plan.baseline.knownMoney?plan.money:null,4),V(plan.comparison.moneyDrop,4)],['Исключено касс ОФД',null,plan.comparison.excludedUnits,null]],colWidths:[55,25,25,36]});
     }
     if(plan.promo){const pr=plan.promo;extra.push({sheetName:'Промокоды',headers:['ИНН','Организация','Активация','Расчётное окончание','Тариф, мес','Результат','Партнёр по ОФД','Канал по ОФД','Файл','Лист','Строка'],rows:pr.report.map(r=>[V(r.inn,7),r.org,V(r.start,6),V(r.end,6),r.months,r.status,r.partner,r.channel,r.file,r.sheet,r.row]),colWidths:[18,40,22,26,18,50,42,28,42,25,12],textCols:[0]});extra.push({sheetName:'Сверка промокодов',headers:['Показатель','Без промокодов','С промокодами'],rows:[['Клиентов ретро',pr.beforeStats?pr.beforeStats.base:null,pr.afterStats.base],['Продлились',pr.beforeStats?pr.beforeStats.renewed:null,pr.afterStats.renewed],['Процент продления',V(pr.beforeStats?pr.beforeStats.rate:null,5),V(pr.afterStats.rate,5)],['Клиентов плана',pr.beforeClients,pr.afterClients],['Активированных промокодов',null,pr.activated],['Промокодов с окончанием в плановом году',null,pr.expiringCodes],['ИНН этих промокодов',null,pr.expiringClients],['Из них ИНН в общем плане',null,pr.clientsInPlan]],colWidths:[55,25,25]});}
-    desc.push(['Апсейл','К сумме ОФД пропорционально числу касс к продлению с тарифом менее 36 месяцев; 1С не затрагивает'],['Исключения','Только однозначное совпадение ИНН + даты окончания + тарифа. Заводской номер не приравнивается к РНМ. Когорты и ретро сохраняются']);
+    desc.push(['Апсейл','К сумме ОФД пропорционально числу касс к продлению с тарифом менее 36 месяцев; 1С не затрагивает'],['Исключения',plan.exclusions?.mode==='rnm'?'Сопоставление по ИНН клиента + РНМ. Пустые, некорректные номера и конфликтующие повторы не заменяются поиском по другим полям. Когорты и ретро сохраняются.':'Старый формат без РНМ: только однозначное совпадение ИНН + даты окончания + тарифа. Заводской номер не приравнивается к РНМ. Когорты и ретро сохраняются']);
     return {sheets:[
       {sheetName:'Описание',headers:['Параметр','Значение'],rows:desc,colWidths:[32,110]},
       {sheetName:'Параметры',headers:['Продукт','Канал / когорта','Показатель / источник','Значение','Единица'],rows:parameters,colWidths:[24,42,55,24,22]},
@@ -384,6 +439,6 @@
       {sheetName:'Проверки',headers:['Проверка','Значение'],rows:[['Уникальность ИНН в каждом продукте',new Set(plan.rows.map(r=>r.product+'|'+r.inn)).size===plan.rows.length?'Да':'Ошибка'],['Строк клиентов продуктов',plan.rows.length],['Уникальных ИНН двух продуктов',plan.uniqueClients],['Строк без вероятности',F(rows.length?"COUNTBLANK('Клиенты'!K2:K"+count+')':'0',plan.rows.filter(r=>r.prob==null).length)],['Строк без чека',F(rows.length?"COUNTBLANK('Клиенты'!L2:L"+count+')':'0',plan.rows.filter(r=>r.check==null).length)],['Строк без канала',plan.rows.filter(r=>r.channel===UNKNOWN).length],['Деньги рассчитанной части',F(rows.length?"SUM('Клиенты'!M2:M"+count+')':'0',plan.money,4)]],colWidths:[62,28]},...extra
     ]};
   }
-  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,EXCLUSION_HEADERS,PROMO_HEADERS,num,day,date,iso,displayDate,inn,age,classify,addMonths,parsePromos,mergePromos,buildWithPromos,filterExclusions,parseWorkbook,parseExclusions,matchExclusions,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
+  const api={DAY,EPOCH,UNKNOWN,CHANNELS,AGES,COHORTS,EXCLUSION_HEADERS,PROMO_HEADERS,num,day,date,iso,displayDate,inn,age,classify,addMonths,parsePromos,mergePromos,buildWithPromos,filterExclusions,parseWorkbook,parseExclusions,identifyRnmExclusions,matchExclusions,ledger,metadata,features,outcome,retro,candidates,defaults,normalizeParams,effectiveProb,build,aggregate,workbook};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;else root.Planning2=api;
 })(typeof window!=='undefined'?window:globalThis);
