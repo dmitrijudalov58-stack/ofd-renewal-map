@@ -48,7 +48,7 @@ async function main(){
  try{
  const context=await browser.newContext({viewport:{width:1440,height:1050},timezoneId:'Europe/Moscow',acceptDownloads:true});
  const reference=await context.newPage();await reference.goto(origin+'/');
- assert.equal(await reference.locator('details[data-group="b12"] [data-widget]').count(),6);
+ assert.equal(await reference.locator('details[data-group="b12"] [data-widget]').count(),8);
  assert.equal(await reference.locator('#planning2Link').count(),0);
 
  const integratedErrors=[];reference.on('pageerror',e=>integratedErrors.push(e.message));
@@ -65,25 +65,32 @@ async function main(){
  for(const [product,value]of [['ofd','1000'],['onec','7000']]){
   const input=settings.locator('[data-check="'+product+'"][data-channel="Партнёры"]');await input.fill(value);await input.dispatchEvent('change');
  }
- assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[15000,15000,15000,15000,15000]);
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].filter(a=>a.state.plan).map(a=>a.state.plan.money)),[15000,15000,15000,15000,15000]);
  assert.equal(await reference.locator('.p2-integrated[data-p2-tab="retro"] tr[data-cohort]').count(),8);
  assert.equal(await reference.locator('.p2-integrated[data-p2-tab="months"] tbody tr').count(),12);
  const downloadIntegrated=reference.waitForEvent('download');await settings.locator('#export').click();await (await downloadIntegrated).saveAs(path.join(folder,'integrated-export.xlsx'));
  const integratedXlsx=X.read(fs.readFileSync(path.join(folder,'integrated-export.xlsx')),{type:'buffer',cellFormula:true});
  assert.equal(integratedXlsx.Sheets['Проверки'].B8.v,15000);
 
- await reference.evaluate(()=>window.planCheckTest=[...OFDPlanning2.instances.values()].find(a=>a.planCheck));
- const activity=settings.locator('.p2-plan-check');assert.equal(await activity.count(),1);assert.equal(await reference.locator('.p2-plan-check').count(),1,'Only the first board mounts the additional check');
+ assert.equal(await settings.locator('.p2-plan-check').count(),0,'Main board is restored without embedded experiments');
+ await reference.evaluate(()=>{OFDCanvas.addWidget('pl2-experiment1');OFDCanvas.addWidget('pl2-experiment2');window.planCheckTest=[...OFDPlanning2.instances.values()].find(a=>a.kind===1);window.retroExperimentTest=[...OFDPlanning2.instances.values()].find(a=>a.kind===2);});
+ const activity=reference.locator('.p2-experiment[data-experiment="1"] .p2-plan-check'),retroActivity=reference.locator('.p2-experiment[data-experiment="2"] .p2-plan-check');assert.equal(await activity.count(),1);assert.equal(await reference.locator('.p2-plan-check').count(),2);
  await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-zero.xlsx'));assert.equal(await activity.locator('[data-check-export]').isDisabled(),true);
  await activity.locator('[data-check-file="partial"]').setInputFiles(path.join(folder,'activity-partial.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.status==='ready');
  assert.deepEqual(await reference.evaluate(()=>{const m=planCheckTest.planCheck.model;return [m.after.base,m.after.expected,m.after.money,m.one.money,m.bothAfter,OksanaPlanning.state.plan.money];}),[1,.5,500,14000,14500,15000]);
+ assert.deepEqual(await reference.evaluate(()=>{const m=retroExperimentTest.planCheck.model;return [m.before.base,m.before.renewed,m.after.base,m.after.renewed,m.after.rate];}),[1,1,1,1,1]);
+ const period=reference.locator('.p2-experiment[data-experiment="2"]');await period.locator('[data-experiment-param="retroFrom"]').fill('2024-01-01');await period.locator('[data-experiment-param="retroFrom"]').dispatchEvent('change');await period.locator('[data-experiment-param="retroTo"]').fill('2024-12-31');await period.locator('[data-experiment-param="retroTo"]').dispatchEvent('change');assert.equal(await retroActivity.getAttribute('data-plan-check-state'),'empty');assert.equal(await reference.evaluate(()=>OksanaPlanning.state.params.retroFrom),'2025-01-01');assert.equal(await reference.evaluate(()=>planCheckTest.state.params.retroFrom),'2025-01-01');await period.locator('[data-experiment-param="retroTo"]').fill('2025-12-31');await period.locator('[data-experiment-param="retroTo"]').dispatchEvent('change');await period.locator('[data-experiment-param="retroFrom"]').fill('2025-01-01');await period.locator('[data-experiment-param="retroFrom"]').dispatchEvent('change');
  const mean=settings.locator('[data-check="ofd"][data-channel="Партнёры"]');await mean.fill('2000');await mean.dispatchEvent('change');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),1000);await mean.fill('1000');await mean.dispatchEvent('change');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),500,'Check automatically follows current channel price');
  await activity.screenshot({path:path.join(folder,'activity-check.png')});
- await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-bad.xlsx'));await reference.waitForFunction(()=>document.querySelector('[data-check-status]').textContent.includes('Прежний загруженный файл сохранён'));assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),500,'Invalid replacement keeps the previously accepted file');
+ await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-bad.xlsx'));await reference.waitForFunction(()=>document.querySelector('[data-experiment="1"] [data-check-status]').textContent.includes('Прежний загруженный файл сохранён'));assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.money),500,'Invalid replacement keeps the previously accepted file');
  const activityDownload=reference.waitForEvent('download');await activity.locator('[data-check-export]').click();await (await activityDownload).saveAs(path.join(folder,'activity-check.xlsx'));
  const activityBook=X.read(fs.readFileSync(path.join(folder,'activity-check.xlsx')),{type:'buffer'});assert.equal(activityBook.Sheets['Клиенты'].A2.v,a);assert.equal(activityBook.Sheets['Клиенты'].A2.t,'s');assert.equal(activityBook.Sheets['Клиенты'].J2.v,.5);assert.equal(activityBook.Sheets['Каналы'].B2.v,1000);assert.equal(activityBook.Sheets['Сравнение'].C3.v,.5);
  await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-overlap.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.conflicts?.length===1);assert.equal(await activity.getAttribute('data-plan-check-state'),'ready');assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.expected),.5);assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.groups.partial.length),1);assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.delta.money),-500);assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15000);await activity.locator('[data-check-conflicts]').evaluate(el=>el.open=true);assert.ok((await activity.locator('[data-check-conflicts]').innerText()).includes(a));
  await activity.screenshot({path:path.join(folder,'activity-conflict.png')});assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.comparable.expected.base),1);
+ assert.equal(await reference.evaluate(()=>retroExperimentTest.planCheck.model.removed.length),0,'Overlap keeps factual retro, even when present in zero file');
+ await retroActivity.locator('[data-check-file="partial"]').setInputFiles(path.join(folder,'activity-zero.xlsx'));await reference.waitForFunction(()=>retroExperimentTest.planCheck.model?.after?.base===0);assert.equal(await reference.evaluate(()=>retroExperimentTest.planCheck.model.after.rate),null);assert.equal(await reference.evaluate(()=>planCheckTest.planCheck.model.after.expected),0,'Both experiments share uploaded lists');assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15000);
+ const retroDownload=reference.waitForEvent('download');await retroActivity.locator('[data-check-export]').click();await (await retroDownload).saveAs(path.join(folder,'experiment2.xlsx'));const retroBook=X.read(fs.readFileSync(path.join(folder,'experiment2.xlsx')),{type:'buffer'});assert.equal(retroBook.Sheets['Когорты'].B2.v,1);assert.equal(retroBook.Sheets['Когорты'].H2.v,0);assert.equal(retroBook.Sheets['Клиенты'].A2.v,a);assert.equal(retroBook.Sheets['Клиенты'].A2.t,'s');assert.equal(retroBook.Sheets['Клиенты'].F2.v,'Исключён');
+ await retroActivity.locator('[data-check-file="partial"]').setInputFiles(path.join(folder,'activity-partial.xlsx'));await reference.waitForFunction(()=>retroExperimentTest.planCheck.model?.after?.base===1);await period.screenshot({path:path.join(folder,'experiment2.png')});
  await activity.locator('[data-check-clear="zero"]').click();assert.equal(await activity.getAttribute('data-plan-check-state'),'pending');assert.equal(await activity.locator('[data-check-export]').isDisabled(),true);
  await activity.locator('[data-check-file="zero"]').setInputFiles(path.join(folder,'activity-zero.xlsx'));await reference.waitForFunction(()=>planCheckTest.planCheck.model?.status==='ready');
 
@@ -92,7 +99,7 @@ async function main(){
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.products.ofd.rows[0].dueUnits),1);
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.comparison.excludedClients),0);
  await settings.locator('#upsell').fill('10');await settings.locator('#upsell').dispatchEvent('change');
- assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[15100,15100,15100,15100,15100]);
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].filter(a=>a.state.plan).map(a=>a.state.plan.money)),[15100,15100,15100,15100,15100]);
  await settings.locator('#exclusionsFile').setInputFiles(path.join(folder,'exclude-all.xlsx'));
  await reference.waitForFunction(()=>OksanaPlanning.state.plan.comparison.excludedUnits===2);
  assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),14000);
@@ -135,7 +142,7 @@ async function main(){
  await settings.locator('#exclusionsClear').click();
  await reference.locator('#promoFileInput').setInputFiles(path.join(folder,'promos.xlsx'));
  await reference.waitForFunction(()=>OFDPlanning2.promoData&&OksanaPlanning.state.plan.promo);
- assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].map(a=>a.state.plan.money)),[22000,22000,22000,22000,22000]);
+ assert.deepEqual(await reference.evaluate(()=>[...OFDPlanning2.instances.values()].filter(a=>a.state.plan).map(a=>a.state.plan.money)),[22000,22000,22000,22000,22000]);
  const promoSummary=await reference.evaluate(()=>({active:OksanaPlanning.state.plan.promo.activated,before:OksanaPlanning.state.plan.promo.beforeClients,after:OksanaPlanning.state.plan.promo.afterClients,rate:OksanaPlanning.state.plan.promo.afterStats.rate}));assert.deepEqual(promoSummary,{active:3,before:2,after:3,rate:1});
  assert.doesNotMatch(await reference.locator('#statsBanner').innerText(),/undefined/);
  assert.match(await settings.locator('#promoInfo').innerText(),/Промокоды/);
@@ -145,11 +152,12 @@ async function main(){
  await settings.locator('[data-clear-promos]').click();assert.equal(await reference.evaluate(()=>OksanaPlanning.state.plan.money),15000);
  // Removing a board unregisters its subscriptions; restoring renders the same model.
  await reference.locator('[data-widget-id="pl2-clients"] .remove-btn').click();
- assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),4);
+ assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),6);
  await reference.evaluate(()=>OFDCanvas.addWidget('pl2-clients'));
- assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),5);
+ assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),7);
  assert.deepEqual(integratedErrors,[]);
  await reference.screenshot({path:path.join(folder,'integrated.png'),fullPage:true});
+ for(const key of ['checks','retro','channels','months','clients'])await reference.locator('[data-widget-id="pl2-'+key+'"] .remove-btn').click();assert.equal(await reference.evaluate(()=>OFDPlanning2.instances.size),2);assert.equal(await reference.evaluate(()=>retroExperimentTest.planCheck.model.after.base),1);await reference.setViewportSize({width:390,height:844});await reference.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await reference.screenshot({path:path.join(folder,'experiments-mobile.png')});assert.deepEqual(await reference.locator('.p2-experiment').evaluateAll(els=>els.map(el=>el.scrollWidth<=el.clientWidth)),[true,true]);
  await reference.close();
  await context.clearCookies();
  // Standalone regression starts with clean, isolated parameters.

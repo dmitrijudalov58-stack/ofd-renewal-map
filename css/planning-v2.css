@@ -70,3 +70,7 @@
 .p2-retrospective [data-bi-details] td:nth-child(2),.p2-retrospective [data-bi-details] td:nth-child(3){white-space:normal;min-width:200px;max-width:300px}
 
 .p2-plan-check{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);min-width:0;overflow-wrap:anywhere}.p2-plan-check .controls>div{flex:1;min-width:220px;max-width:100%}.p2-plan-check input[type=file]{display:none}.p2-plan-check details{margin:12px 0}.p2-plan-check summary{cursor:pointer}.p2-plan-check [data-check-status]{font-weight:600}.p2-plan-check[data-plan-check-state=partial] [data-check-status]{color:var(--warn)}.p2-plan-check[data-plan-check-state=error] [data-check-status]{color:var(--crit)}
+
+.p2-experiment{min-width:0}.p2-experiment .p2-plan-check{margin-top:12px;padding-top:0;border-top:0}.p2-experiment [data-experiment-param=year]{width:110px}.p2-experiment .p2-plan-check .controls>div{min-width:min(220px,100%)}
+
+.p2-experiment[data-experiment="2"] [data-check-result] td{white-space:nowrap}.p2-experiment[data-experiment="2"] [data-check-result] td:first-child{min-width:170px;white-space:normal}

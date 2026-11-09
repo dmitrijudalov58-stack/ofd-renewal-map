@@ -40,7 +40,7 @@ async function main(){
  try{
  const context=await browser.newContext({viewport:{width:1440,height:1050},timezoneId:'Europe/Moscow',acceptDownloads:true});
  const reference=await context.newPage();await reference.goto(origin+'/');
- assert.equal(await reference.locator('details[data-group="b12"] [data-widget]').count(),6);
+ assert.equal(await reference.locator('details[data-group="b12"] [data-widget]').count(),8);
  assert.equal(await reference.locator('#planning2Link').count(),0);
 
 
