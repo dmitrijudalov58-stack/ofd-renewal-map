@@ -11,23 +11,38 @@
   try{saved=JSON.parse(localStorage.getItem(KEY))||{};}catch{}
   let inactive=null,cached=null;
   const views=new Map();
+  // Aggregates only: finance sheet «исх.выгрузка», Jan–Sep 2026, quantity W and gross revenue Z.
+  const finance={months:9,checksPackages:708,checksRevenue:951120,kktRevenue:1977630};
+  const contract={checksBudget:1371000,integratorRenew:14700000,integratorActual:12099000,integratorCount:5};
+  const extrapolate=value=>value*12/finance.months;
   const fields=[
     ['partner','Чек Партнёры, ₽/ИНН',354],['agents','Чек Пенигина — ОП, ₽/ИНН',381],
     ['atolRate','Атол, продление %',55,100],['atolCheck','Чек Атол, ₽/ИНН',60],
-    ['checksMoney','1С Чеки ОФД · поступления 2027, ₽',1371000],['checksQty','1С Чеки ОФД · штук'],
-    ['integratorBase','Интеграторы · ориентир 2027, ₽',14700000],
-    ['integratorRenew','Интеграторы · продления, ₽'],['integratorConnect','Интеграторы · подключения, ₽'],
-    ['kktActual','Услуги ККТ · факт 2026, ₽'],['kktPlan','Услуги ККТ · план 2027, ₽']
+    ['checksMoney','1С Чеки ОФД · бюджет поступлений 2027, ₽',contract.checksBudget],
+    ['checksQty','1С Чеки ОФД · прогноз пакетов',extrapolate(finance.checksPackages),null,1],
+    ['integratorRenew','Интеграторы · продления 2027, ₽',contract.integratorRenew],
+    ['integratorNewCount','Интеграторы · новые договоры, шт.',0,null,1],
+    ['integratorNewCheck','Интеграторы · оценка на новый договор, ₽',contract.integratorActual/contract.integratorCount],
+    ['integratorConnect','Интеграторы · ручная сумма новых подключений, ₽'],
+    ['kktActual','Услуги ККТ · подтверждённый факт за весь 2026, ₽ с НДС'],
+    ['kktPlan','Услуги ККТ · ручной прогноз 2027, ₽ с НДС']
   ];
+  function initialValue(key,initial){
+    if(key==='integratorRenew'&&saved.integratorRenew==null)return saved.integratorBase??initial;
+    return saved[key]??initial;
+  }
   function parseNumber(value,max){
     const n=P.num(value);
     return n!=null&&n>=0&&(max==null||n<=max)?n:null;
   }
   function assumptions(){
     const result={};
-    for(const [key,,initial,max] of fields)result[key]=parseNumber(saved[key]??initial,max);
+    for(const [key,,initial,max] of fields)result[key]=parseNumber(initialValue(key,initial),max);
     result.atolRate=result.atolRate==null?null:result.atolRate/100;
     result.checks={'Партнёры':result.partner,'Пенигина — ОП':result.agents};
+    result.newEstimate=result.integratorConnect??(result.integratorNewCount===0?0:
+      result.integratorNewCount==null||result.integratorNewCheck==null?null:result.integratorNewCount*result.integratorNewCheck);
+    result.kktEstimate=result.kktPlan??result.kktActual??extrapolate(finance.kktRevenue);
     return result;
   }
   function save(key,value){
@@ -67,14 +82,36 @@
     ]):[['Коды ОФД','Загрузите выгрузку ОФД','—','—']];
     const oneBase=plan?.oneLoaded?plan.oneRows.length:null;
     summary.push(['Обмен с 1С',num(oneBase),oneBase==null||plan.oneRate==null?'—':num(oneBase*plan.oneRate,2)+' · '+pct(plan.oneRate),'Обогащение в 1С']);
-    summary.push(['1С Чеки ОФД',num(a.checksQty),'Подключения по данным 1С',rub(a.checksMoney)+' · ориентир']);
-    summary.push(['Интеграторы','—','Продления '+rub(a.integratorRenew)+' · подключения '+rub(a.integratorConnect),
-      a.integratorRenew==null||a.integratorConnect==null?rub(a.integratorBase)+' · ориентир':rub(a.integratorRenew+a.integratorConnect)]);
-    summary.push(['Услуги ККТ','—','Факт 2026: '+rub(a.kktActual),rub(a.kktPlan)+' · отдельная строка']);
+    summary.push(['1С Чеки ОФД',num(a.checksQty)+' пакетов · прогноз',
+      num(finance.checksPackages)+' пакетов реализовано за янв.–сен. 2026',rub(a.checksMoney)+' · бюджет контракта']);
+    summary.push(['Интеграторы','—','Продления '+rub(a.integratorRenew)+' · подключения '+rub(a.newEstimate),
+      a.integratorRenew==null||a.newEstimate==null?'—':rub(a.integratorRenew+a.newEstimate)+' · сценарий']);
+    summary.push(['Услуги ККТ','—','Факт за 9 мес.: '+rub(finance.kktRevenue)+' с НДС'+
+      (a.kktActual==null?'':' · полный факт: '+rub(a.kktActual)),rub(a.kktEstimate)+' · выручка отдельно']);
     let html=ofd&&plan?'<h3>Коды ОФД: '+num(plan.rows.length)+' ИНН к продлению за год</h3>':'';
-    html+=table(['Направление','База, ИНН / шт.','Ожидаемые продления / вводные','Поступления'],summary);
+    if(plan?.ofdRetro.length){
+      const total=plan.ofdRetro[0];
+      html+='<p class="tiny">Ретро всей базы по ИНН: '+pct(total.rate)+' · '+num(total.renewed)+' из '+num(total.base)+
+        (total.pending?' · ещё не закрыто: '+num(total.pending):'')+'.</p>';
+    }
+    html+=table(['Направление','База / объём','Факт и прогноз','Прогноз денег'],summary);
+    html+='<details><summary>Источники и допущения по остальным направлениям</summary>'+
+      '<p class="tiny">Факт: «Выручка офд 9 мес 2026», лист «исх.выгрузка», количество и выручка с НДС. Бюджет 2027: «Контракт 2027 v.5», лист «Вводные от продуктов».</p>'+
+      '<p class="tiny">1С Чеки ОФД: '+rub(finance.checksRevenue)+' выручки с НДС за январь–сентябрь 2026. '+
+      'При том же темпе за 12 месяцев — '+num(extrapolate(finance.checksPackages))+' пакетов и '+rub(extrapolate(finance.checksRevenue))+
+      ' выручки с НДС. Пакеты — количество из строк реализации, количество подключений и текущих клиентов источник не показывает.</p>'+
+      '<p class="tiny">Интеграторы: 14,7 млн ₽ на продления стоят в контракте. Оценка новых = число новых договоров × ориентир на договор. '+
+      'Ориентир по умолчанию — 12,099 млн ₽ за 2026 ÷ 5 единиц из контракта. По умолчанию новых договоров в сценарии 0; введите число из воронки или свою сумму.</p>'+
+      '<p class="tiny">Услуги ККТ: янв.–сен. 2026, выручка с НДС по регистрации ККТ, работе с ФН, техническому сопровождению, '+
+      'прошивке, диагностике, настройке и проверке отправки в ФНС. Годовая оценка при том же темпе — '+rub(extrapolate(finance.kktRevenue))+
+      '. До сверки с финансами сумма показана отдельно от кодов ОФД и без отнесения к подключениям или продлениям.</p></details>';
     if(!plan){out.innerHTML=html;return;}
 
+    if(plan.ofdRetro.length){
+      html+='<details><summary>Вся база ОФД по когортам · годовой расчёт по ИНН</summary>'+
+        table(['Когорта','ИНН к продлению','ИНН в ретро','Продлились','Не закрыто','Ретро'],
+          plan.ofdRetro.map(r=>[r.label,num(r.plan),num(r.base),num(r.renewed),num(r.pending),pct(r.rate)]))+'</details>';
+    }
     const salesCohorts=plan.sales?.cohorts.filter(c=>c.family==='own')||[];
     if(salesCohorts.length){
       html+='<details><summary>Годовой прогноз собственного канала по когортам</summary>'+
@@ -147,8 +184,8 @@
         '<div class="controls"><label>Год<input type="number" min="2000" max="2100" data-param="year" value="'+esc(saved.year??p.year)+'"></label>'+
         ['asOf','retroFrom','retroTo'].map((key,i)=>'<label>'+['Срез на начало дня','Начало ретро','Конец ретро'][i]+'<input type="date" data-param="'+key+'" value="'+esc(saved[key]??p[key])+'"></label>').join('')+'</div>'+
         '<details><summary>Средние чеки и вводные по остальным направлениям</summary>'+
-        '<p class="tiny">Начальные чеки — из 2.0; ставки Атола и денежные ориентиры — из контракта. Партнёры: 60%. ККТ указывается отдельно после сверки с финансами.</p><div class="controls">'+
-        fields.map(([key,label,initial,max])=>'<label>'+esc(label)+'<input type="number" min="0" step="'+(key==='checksQty'?'1':'0.01')+'" '+(max?'max="'+max+'"':'')+' data-assumption="'+key+'" value="'+esc(saved[key]??initial)+'"></label>').join('')+'</div></details>'+
+        '<p class="tiny">Начальные чеки — из 2.0; ставки Атола и денежные ориентиры — из контракта. Партнёры: 60%. ККТ вынесены отдельной строкой. Исходные факты и методы — под сводкой.</p><div class="controls">'+
+        fields.map(([key,label,initial,max,step])=>'<label>'+esc(label)+'<input type="number" min="0" step="'+(step??0.01)+'" '+(max?'max="'+max+'"':'')+' data-assumption="'+key+'" value="'+esc(initialValue(key,initial))+'"></label>').join('')+'</div></details>'+
         '<div class="controls"><label>Неактивные кассы ОФД<input type="file" data-file accept=".xlsx,.xls"></label><button type="button" class="btn" data-clear>Снять список</button></div>'+
         '<div class="controls"><label>Продукт списка<select data-product><option value="ofd">Коды ОФД</option><option value="onec">Обмен с 1С</option></select></label>'+
         '<label>Месяц выгрузки<select data-month><option value="">Весь год</option>'+Array.from({length:12},(_,i)=>{const m=String(i+1).padStart(2,'0');return '<option>'+m+'</option>';}).join('')+'</select></label>'+
@@ -175,7 +212,14 @@
         input.disabled=true;
         try{
           const bytes=await file.arrayBuffer();
-          inactive=P.parseExclusions(root.XLSX,root.XLSX.read(bytes,{type:'array',dense:true}),file.name);
+          const workbook=root.XLSX.read(bytes,{type:'array',dense:true});
+          if(workbook.SheetNames.includes('Кассы без чеков')){
+            const sheet=workbook.Sheets['Кассы без чеков'];
+            const headers=root.XLSX.utils.sheet_to_json(sheet,{header:1,range:0,blankrows:false})[0]||[];
+            if(headers.includes('Результат')&&!headers.some(h=>/рнм/i.test(String(h))))
+              throw new Error('Выбран отчёт сверки. Загрузите исходный список Паши с ИНН и РНМ либо исходный файл выгрузки по заводским номерам.');
+          }
+          inactive=P.parseExclusions(root.XLSX,workbook,file.name);
           refresh();
           view.status.textContent='Загружен список: '+file.name+' · строк: '+inactive.sourceRows;
         }catch(error){view.status.textContent=error.message;}
@@ -184,9 +228,10 @@
       get('clear').addEventListener('click',()=>{inactive=null;view.status.textContent='Список снят.';refresh();});
       view.actions.addEventListener('click',()=>{
         const isOne=view.product.value==='onec';
-        const headers=['ИНН','Организация','Касса','Первое подключение кассы','Начало тарифа','Окончание тарифа','Тариф, мес.','Когорта','Ретро ИНН, %','Статус активности','Частично активен','Онлайн'];
+        const headers=['ИНН','Организация','Касса','Первое подключение кассы','Начало тарифа','Окончание тарифа','Тариф, мес.','Когорта','Ретро ИНН, %','Статус активности','Частично активен','Онлайн','Первое наблюдаемое подключение ИНН','Касс с действующим покрытием на срез','Касс ИНН в списке неактивных','Канал','Партнёр','Месяц окончания'];
         const rows=view.rows.map(r=>[r.inn,r.org,r.unit,P.displayDate(r.connected),P.displayDate(r.start),P.displayDate(r.end),r.tariff,
-          isOne?'':r.cohort,(isOne?view.oneRate:r.prob)==null?'':(isOne?view.oneRate:r.prob)*100,isOne?'':r.activity,isOne?'':r.partial?'Да':'Нет',isOne?'':r.online?'Да':'Нет']);
+          isOne?'':r.cohort,(isOne?view.oneRate:r.prob)==null?'':(isOne?view.oneRate:r.prob)*100,isOne?'':r.activity,isOne?'':r.partial?'Да':'Нет',isOne?'':r.online?'Да':'Нет',
+          P.displayDate(r.clientConnected),r.currentCount,isOne?'':r.inactiveCount,r.channel,r.partner,r.month]);
         try{root.OFDExport.downloadXlsx('Планирование_3_'+view.year+(view.month.value?'-'+view.month.value:'')+'_'+view.product.value,{sheets:[{sheetName:'Кассы',headers,rows}]});}
         catch(error){view.status.textContent=error.message;}
       });
