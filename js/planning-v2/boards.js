@@ -21,7 +21,7 @@
   if(!cached||cached.ofd!==ofd||cached.onec!==onec||cached.key!==key||cached.exclusions!==root.OFDPlanning2.exclusionData||cached.promos!==root.OFDPlanning2.promoData)cached={ofd,onec,key,exclusions:root.OFDPlanning2.exclusionData,promos:root.OFDPlanning2.promoData,plan:P.buildWithPromos(ofd,onec,params,root.OFDPlanning2.exclusionData,root.OFDPlanning2.promoData)};
   return cached.plan;
  }
- function refresh(){instances.forEach(api=>api.syncShared());}
+ function refresh(){instances.forEach(api=>api.syncShared());root.OFDPlanning3?.refresh();}
  root.OFDPlanning2={parse,parseBuffer,combine,build,refresh,instances,exclusionData:null,promoData:null,setExclusions:function(data){this.exclusionData=data;refresh();},setPromos:function(data){this.promoData=data;refresh();root.dispatchEvent(new Event('planning2-promos-change'));}};
  [['checks','Параметры, средние чеки и сводный план'],['retro','Когорты и вероятности'],['channels','Каналы и когорты'],['months','План по месяцам'],['clients','Клиенты по ИНН']].forEach(([tab,title])=>{
   root.OFDWidgets.WIDGETS['pl2-'+tab]={title:'Планирование 2.0 — '+title,type:'таблица',scope:'план',span:true,defaultH:10,
