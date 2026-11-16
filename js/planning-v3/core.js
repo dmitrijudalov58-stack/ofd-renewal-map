@@ -31,10 +31,32 @@
     return 'Не определён';
   }
 
+  function allRetro(sales){
+    const counts=new Map();
+    function get(label){
+      if(!counts.has(label))counts.set(label,{label,plan:0,base:0,renewed:0,pending:0});
+      return counts.get(label);
+    }
+    for(const row of sales.rows)get(row.cohortLabel).plan++;
+    for(const row of sales.retro.rows){
+      const item=get(row.cohortLabel);
+      item.base++;
+      if(!row.complete)item.pending++;
+      else if(row.renewed)item.renewed++;
+    }
+    const total={label:'Вся база ОФД',plan:sales.rows.length,base:0,renewed:0,pending:0};
+    const ordered=[...new Set(S.COHORTS.map(c=>c.label)),'Требует проверки'];
+    const rows=ordered.filter(label=>counts.has(label)).map(label=>counts.get(label));
+    for(const row of rows)for(const key of ['base','renewed','pending'])total[key]+=row[key];
+    return [total,...rows].map(row=>({...row,rate:sales.retro.periodComplete&&row.base&&!row.pending?row.renewed/row.base:null}));
+  }
+
   function detailRows(rows,ledger,excluded,knownInactive,product,activityKnown){
     const details=[];
     for(const row of rows){
       const history=ledger.clients.get(row.inn);
+      const clientConnected=history.records.find(event=>event.start<row.snapshot)?.start;
+      const current=[...history.units].filter(([,events])=>events.some(event=>event.start<row.snapshot&&event.end>=row.snapshot));
       const units=[...history.units].filter(([,events])=>events[0].start<row.snapshot).map(([unit])=>unit);
       const partial=units.some(unit=>knownInactive.has(row.inn+'|'+unit)) &&
         units.some(unit=>!knownInactive.has(row.inn+'|'+unit));
@@ -45,7 +67,11 @@
         const first=history.units.get(event.unit)?.[0];
         details.push({
           inn:row.inn,org:row.org,unit:event.unit,month:P.iso(event.end).slice(0,7),
-          connected:first?.start??event.start,start:event.start,end:event.end,tariff:event.months,
+          connected:first?.start??event.start,clientConnected,currentCount:current.length,
+          inactiveCount:units.filter(unit=>knownInactive.has(row.inn+'|'+unit)).length,
+          partner:product==='ofd'?event.partner:row.partner,
+          channel:product==='ofd'?P.classify(event.partner,event.center):row.channel,
+          start:event.start,end:event.end,tariff:event.months,
           cohort:row.cohort,prob:row.prob,online:product==='ofd'&&online(event),
           activity:activityKnown?'Вне списка неактивных':'Нет списка',partial
         });
@@ -77,7 +103,7 @@
       otherMonths[Number(P.iso(event.end).slice(5,7))-1][kind]++;
     }
     return {
-      otherMonths,sales,rows,oneRows,oneRate,match,ofdDetails,oneDetails,oneLoaded:!!oneLedger,
+      ofdRetro:sales?allRetro(sales):[],otherMonths,sales,rows,oneRows,oneRate,match,ofdDetails,oneDetails,oneLoaded:!!oneLedger,
       oneMissing:oneRows.reduce((sum,row)=>sum+row.endings.length,0)-oneDetails.length,
       ofdUnitRate:rateForUnits(ofd,from,to,cut,own),
       oneUnitRate:rateForUnits(onec,from,to,cut,()=>true)
